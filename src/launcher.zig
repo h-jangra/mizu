@@ -525,9 +525,6 @@ pub const Launcher = struct {
         const input_w: u32 = w - 40;
         const input_h: u32 = 44;
 
-        if (self.input.focused) {
-            target.drawSoftShadow(input_x, input_y + 1, input_w, input_h, 14, 3, 25);
-        }
         target.fillSquircle(input_x, input_y, input_w, input_h, 14, self.cfg.theme.pill_bg);
         const search_border = if (self.input.focused or self.input.getText().len > 0) self.cfg.theme.accent else self.cfg.theme.pill_border;
         target.drawSquircleBorder(input_x, input_y, input_w, input_h, 14, 1, search_border);
@@ -598,7 +595,6 @@ pub const Launcher = struct {
 
                 // Card background
                 if (is_selected) {
-                    target.drawSoftShadow(rect.x, rect.y + 1, rect.w, rect.h, 12, 4, 30);
                     target.fillGlassSquircle(rect.x, rect.y, rect.w, rect.h, 12, self.cfg.theme.card_selected_bg);
                     target.drawSquircleBorder(rect.x, rect.y, rect.w, rect.h, 12, 1, self.cfg.theme.accent);
                 } else if (is_hovered) {

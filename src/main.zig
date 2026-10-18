@@ -97,6 +97,45 @@ fn printVersion() void {
     std.debug.print("mizu {s}\n", .{VERSION});
 }
 
+fn toggleOrLockInstance(comptime name: []const u8) bool {
+    var pid_path_buf: [64]u8 = undefined;
+    const pid_path = std.fmt.bufPrintZ(&pid_path_buf, "/tmp/mizu-{s}.pid", .{name}) catch return true;
+
+    // Check if pid file exists
+    if (c.fopen(pid_path.ptr, "r")) |f| {
+        var buf: [32]u8 = undefined;
+        const n = c.fread(&buf, 1, buf.len - 1, f);
+        _ = c.fclose(f);
+        if (n > 0) {
+            buf[n] = 0;
+            const pid_str = std.mem.trim(u8, buf[0..n], " \t\r\n");
+            const existing_pid = std.fmt.parseInt(c_int, pid_str, 10) catch 0;
+            if (existing_pid > 0 and existing_pid != c.getpid()) {
+                if (c.kill(existing_pid, 0) == 0) {
+                    _ = c.kill(existing_pid, c.SIGTERM);
+                    _ = c.unlink(pid_path.ptr);
+                    return false;
+                }
+            }
+        }
+    }
+
+    if (c.fopen(pid_path.ptr, "w")) |f| {
+        var buf: [32]u8 = undefined;
+        const pid_str = std.fmt.bufPrint(&buf, "{d}\n", .{c.getpid()}) catch "";
+        _ = c.fwrite(pid_str.ptr, 1, pid_str.len, f);
+        _ = c.fclose(f);
+    }
+    return true;
+}
+
+fn cleanupPidFile(comptime name: []const u8) void {
+    var pid_path_buf: [64]u8 = undefined;
+    if (std.fmt.bufPrintZ(&pid_path_buf, "/tmp/mizu-{s}.pid", .{name})) |pid_path| {
+        _ = c.unlink(pid_path.ptr);
+    } else |_| {}
+}
+
 pub fn main(init: std.process.Init.Minimal) u8 {
     // Setup signal handlers
     _ = c.signal(c.SIGINT, sigHandler);
@@ -140,6 +179,9 @@ pub fn main(init: std.process.Init.Minimal) u8 {
             return 0;
         },
         .launcher => {
+            if (!toggleOrLockInstance("launcher")) return 0;
+            defer cleanupPidFile("launcher");
+
             const allocator = std.heap.c_allocator;
             var cfg = loadConfig(allocator);
             defer cfg.deinit(allocator);
@@ -151,6 +193,9 @@ pub fn main(init: std.process.Init.Minimal) u8 {
             return 0;
         },
         .quicksettings => {
+            if (!toggleOrLockInstance("quicksettings")) return 0;
+            defer cleanupPidFile("quicksettings");
+
             const allocator = std.heap.c_allocator;
             var cfg = loadConfig(allocator);
             defer cfg.deinit(allocator);
@@ -162,6 +207,9 @@ pub fn main(init: std.process.Init.Minimal) u8 {
             return 0;
         },
         .calendar => {
+            if (!toggleOrLockInstance("calendar")) return 0;
+            defer cleanupPidFile("calendar");
+
             const allocator = std.heap.c_allocator;
             var cfg = loadConfig(allocator);
             defer cfg.deinit(allocator);
@@ -173,6 +221,9 @@ pub fn main(init: std.process.Init.Minimal) u8 {
             return 0;
         },
         .clipboard => {
+            if (!toggleOrLockInstance("clipboard")) return 0;
+            defer cleanupPidFile("clipboard");
+
             const allocator = std.heap.c_allocator;
             var cfg = loadConfig(allocator);
             defer cfg.deinit(allocator);

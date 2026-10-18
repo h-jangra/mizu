@@ -2,25 +2,31 @@ const renderer = @import("../renderer.zig");
 const theme = @import("../theme.zig");
 const types = @import("types.zig");
 
+pub fn toRoman(val: u32, buf: []u8) []const u8 {
+    _ = buf;
+    return switch (val) {
+        1 => "I",
+        2 => "II",
+        3 => "III",
+        4 => "IV",
+        5 => "V",
+        6 => "VI",
+        7 => "VII",
+        8 => "VIII",
+        9 => "IX",
+        10 => "X",
+        else => "•",
+    };
+}
+
 pub fn render(ctx: *types.BarContext, target: renderer.Renderer, start_x: i32) !i32 {
     var x = start_x;
 
     for (ctx.ipc.tags) |tag| {
         if (!tag.is_active and !tag.is_urgent and tag.client_count == 0) continue;
 
-        const label = switch (tag.index) {
-            1 => "I",
-            2 => "II",
-            3 => "III",
-            4 => "IV",
-            5 => "V",
-            6 => "VI",
-            7 => "VII",
-            8 => "VIII",
-            9 => "IX",
-            10 => "X",
-            else => "•",
-        };
+        var roman_buf: [16]u8 = undefined;
+        const label = toRoman(tag.index, &roman_buf);
 
         const text_w = target.measureText(ctx.font, label);
         const w: u32 = @max(text_w + 14, 26);

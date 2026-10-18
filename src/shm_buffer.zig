@@ -135,4 +135,49 @@ pub const BufferPool = struct {
 
         return buf;
     }
+
+    pub fn createSingleBuffer(shm: *c.wl_shm, width: u32, height: u32) !ShmBuffer {
+        const stride = width * 4;
+        const size: usize = @as(usize, stride) * @as(usize, height);
+        const fd = try createShmFd(size);
+        defer _ = c.close(fd);
+
+        const mmap_ptr = c.mmap(null, size, c.PROT_READ | c.PROT_WRITE, c.MAP_SHARED, fd, 0);
+        if (mmap_ptr == c.MAP_FAILED) {
+            return error.MmapFailed;
+        }
+
+        const pool = c.wl_shm_create_pool(shm, fd, @intCast(size));
+        if (pool == null) {
+            _ = c.munmap(mmap_ptr, size);
+            return error.CreatePoolFailed;
+        }
+        defer c.wl_shm_pool_destroy(pool);
+
+        const wl_buf = c.wl_shm_pool_create_buffer(
+            pool,
+            0,
+            @intCast(width),
+            @intCast(height),
+            @intCast(stride),
+            c.WL_SHM_FORMAT_ARGB8888,
+        );
+        if (wl_buf == null) {
+            _ = c.munmap(mmap_ptr, size);
+            return error.CreateBufferFailed;
+        }
+
+        const data_ptr: [*]u32 = @ptrCast(@alignCast(mmap_ptr));
+        @memset(data_ptr[0 .. size / 4], 0);
+
+        return ShmBuffer{
+            .buffer = wl_buf,
+            .data = data_ptr,
+            .size = size,
+            .width = width,
+            .height = height,
+            .stride = stride,
+            .busy = false,
+        };
+    }
 };

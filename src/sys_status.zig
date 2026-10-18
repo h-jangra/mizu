@@ -78,6 +78,7 @@ pub const SysStatus = struct {
 
     // Battery & Power Profile
     has_battery: bool = false,
+    ac_online: bool = false,
     bat_capacity: u32 = 0,
     bat_status: BatteryStatus = .none,
     power_profile: PowerProfile = .balanced,
@@ -135,6 +136,7 @@ pub const SysStatus = struct {
         self.updateCpu();
         self.updateMem();
         self.updateUptime();
+        self.updateVolume();
 
         // Battery, backlight, network & bluetooth every 2 seconds
         if (self.tick_count % 2 == 0) {
@@ -145,9 +147,8 @@ pub const SysStatus = struct {
             self.updateBluetooth();
         }
 
-        // Audio & MPRIS every 3 seconds
+        // MPRIS every 3 seconds
         if (self.tick_count % 3 == 0) {
-            self.updateVolume();
             self.updateMpris();
         }
     }
@@ -414,7 +415,35 @@ pub const SysStatus = struct {
 
     fn updateBattery(self: *SysStatus) void {
         var buf: [64]u8 = undefined;
-        const cap_len = readProcFile("/sys/class/power_supply/BAT0/capacity", &buf);
+
+        self.ac_online = false;
+        const ac_paths = [_][*:0]const u8{
+            "/sys/class/power_supply/ACAD/online",
+            "/sys/class/power_supply/AC/online",
+            "/sys/class/power_supply/ADP1/online",
+            "/sys/class/power_supply/ADP0/online",
+        };
+        for (ac_paths) |p| {
+            if (readProcFile(p, &buf)) |l| {
+                const s = std.mem.trim(u8, buf[0..l], " \t\r\n");
+                if (std.mem.eql(u8, s, "1")) {
+                    self.ac_online = true;
+                    break;
+                }
+            }
+        }
+
+        var cap_len = readProcFile("/sys/class/power_supply/BAT0/capacity", &buf);
+        var stat_len: ?usize = null;
+        if (cap_len != null) {
+            stat_len = readProcFile("/sys/class/power_supply/BAT0/status", &buf);
+        } else {
+            cap_len = readProcFile("/sys/class/power_supply/BAT1/capacity", &buf);
+            if (cap_len != null) {
+                stat_len = readProcFile("/sys/class/power_supply/BAT1/status", &buf);
+            }
+        }
+
         if (cap_len) |l| {
             self.has_battery = true;
             const trimmed = std.mem.trim(u8, buf[0..l], " \t\r\n");
@@ -424,16 +453,23 @@ pub const SysStatus = struct {
             return;
         }
 
-        const stat_len = readProcFile("/sys/class/power_supply/BAT0/status", &buf);
         if (stat_len) |l| {
             const s = std.mem.trim(u8, buf[0..l], " \t\r\n");
             if (std.mem.eql(u8, s, "Charging")) {
                 self.bat_status = .charging;
             } else if (std.mem.eql(u8, s, "Full")) {
                 self.bat_status = .full;
+            } else if (self.ac_online) {
+                if (self.bat_capacity >= 98) {
+                    self.bat_status = .full;
+                } else {
+                    self.bat_status = .charging;
+                }
             } else {
                 self.bat_status = .discharging;
             }
+        } else if (self.ac_online) {
+            self.bat_status = if (self.bat_capacity >= 98) .full else .charging;
         }
     }
 

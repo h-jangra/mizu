@@ -4,7 +4,18 @@ const theme = @import("../theme.zig");
 const types = @import("types.zig");
 
 fn batteryIcon(cap: u8, charging: bool) []const u8 {
-    if (charging) return "󰂄";
+    if (charging) {
+        if (cap >= 95) return "󰂄";
+        if (cap >= 90) return "󰂋";
+        if (cap >= 80) return "󰂊";
+        if (cap >= 70) return "󰢞";
+        if (cap >= 60) return "󰂉";
+        if (cap >= 50) return "󰢝";
+        if (cap >= 40) return "󰂈";
+        if (cap >= 30) return "󰂇";
+        if (cap >= 20) return "󰂆";
+        return "󰢜";
+    }
     if (cap >= 90) return "󰁹";
     if (cap >= 80) return "󰂂";
     if (cap >= 70) return "󰂁";
@@ -21,7 +32,7 @@ pub fn render(ctx: *types.BarContext, target: renderer.Renderer, right_x: i32) !
     if (!ctx.sys.has_battery) return right_x;
 
     const cap = @min(ctx.sys.bat_capacity, 100);
-    const charging = ctx.sys.bat_status == .charging;
+    const charging = ctx.sys.bat_status == .charging or ctx.sys.ac_online;
     const icon = batteryIcon(cap, charging);
 
     var buf: [4]u8 = undefined;

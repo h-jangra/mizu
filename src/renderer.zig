@@ -580,62 +580,21 @@ pub const Renderer = struct {
         }
     }
 
-    /// Noctalia-style multi-pass diffused ambient occlusion drop shadow
+    /// Shadow disabled for minimal flat aesthetic
     pub fn drawSoftShadow(self: Renderer, x: i32, y: i32, w: u32, h: u32, radius: u32, blur: u32, max_alpha: u8) void {
-        if (blur == 0 or max_alpha == 0 or w == 0 or h == 0) return;
-        const steps: u32 = 4;
-        var i: u32 = steps;
-        while (i > 0) : (i -= 1) {
-            const fi = @as(f32, @floatFromInt(i));
-            const fsteps = @as(f32, @floatFromInt(steps));
-            const spread = (@as(f32, @floatFromInt(blur)) * fi) / fsteps;
-            const a_factor = 1.0 - (fi / (fsteps + 1.0));
-            const a = @as(u8, @intFromFloat(@as(f32, @floatFromInt(max_alpha)) * a_factor * 0.18));
-            if (a == 0) continue;
-
-            const spread_i32 = @as(i32, @intFromFloat(spread));
-            const y_off = @as(i32, @intFromFloat(@as(f32, @floatFromInt(blur)) * 0.25));
-
-            const sx = x - spread_i32;
-            const sy = y - spread_i32 + y_off;
-            const sw = w + @as(u32, @intCast(spread_i32 * 2));
-            const sh = h + @as(u32, @intCast(spread_i32 * 2));
-            const sr = radius + @as(u32, @intCast(spread_i32));
-
-            self.fillSquircle(sx, sy, sw, sh, sr, Color.init(a, 0, 0, 0));
-        }
+        _ = self;
+        _ = x;
+        _ = y;
+        _ = w;
+        _ = h;
+        _ = radius;
+        _ = blur;
+        _ = max_alpha;
     }
 
-    /// Noctalia-style glass squircle with vertical illumination gradient and top edge catchlight
+    /// Clean minimal squircle
     pub fn fillGlassSquircle(self: Renderer, x: i32, y: i32, w: u32, h: u32, radius: u32, base_color: Color) void {
-        if (base_color.a == 0 or w == 0 or h == 0) return;
-
-        // Draw base squircle
         self.fillSquircle(x, y, w, h, radius, base_color);
-
-        // Glass illumination is only applied to larger containers/panels, never small chips or buttons
-        if (h > 40 and w > 60) {
-            const r_i32 = @as(i32, @intCast(@min(radius, @min(w / 2, h / 2))));
-            const inner_x = x + r_i32;
-            const inner_w = if (w > @as(u32, @intCast(r_i32 * 2))) w - @as(u32, @intCast(r_i32 * 2)) else 0;
-
-            if (inner_w > 0) {
-                // Subtle top edge catchlight strictly between corner radii
-                const catchlight_a: u8 = @min(base_color.a, 25);
-                self.fillRect(inner_x, y, inner_w, 1, Color.init(catchlight_a, 255, 255, 255));
-
-                // Soft top illumination gradient fading downwards
-                const glow_h = @min(h / 4, 16);
-                var gy: u32 = 1;
-                while (gy < glow_h) : (gy += 1) {
-                    const t = 1.0 - (@as(f32, @floatFromInt(gy)) / @as(f32, @floatFromInt(glow_h)));
-                    const glow_a = @as(u8, @intFromFloat(t * 10.0));
-                    if (glow_a > 0) {
-                        self.fillRect(inner_x, y + @as(i32, @intCast(gy)), inner_w, 1, Color.init(glow_a, 255, 255, 255));
-                    }
-                }
-            }
-        }
     }
 
     pub fn drawRoundedBorder(self: Renderer, x: i32, y: i32, w: u32, h: u32, radius: u32, border_w: u32, color: Color) void {
@@ -842,6 +801,41 @@ pub const Renderer = struct {
                 pen_x += cg.advance_x;
             } else {
                 pen_x += @as(i32, @intCast(size_px / 2));
+            }
+        }
+    }
+
+    pub fn drawTextRotated(self: Renderer, font: *Font, text: []const u8, center_x: i32, center_y: i32, angle: f32, size_px: u32, color: Color) void {
+        if (text.len == 0 or color.a == 0) return;
+
+        var utf8_view = std.unicode.Utf8View.init(text) catch return;
+        var it = utf8_view.iterator();
+        const cp = it.nextCodepoint() orelse return;
+        const cg = font.getOrLoadGlyph(cp, size_px) orelse return;
+
+        const cos_a = @cos(angle);
+        const sin_a = @sin(angle);
+        const cx_box = @as(f32, @floatFromInt(cg.width)) / 2.0;
+        const cy_box = @as(f32, @floatFromInt(cg.height)) / 2.0;
+
+        var r: u32 = 0;
+        while (r < cg.height) : (r += 1) {
+            const dy = (@as(f32, @floatFromInt(r)) + 0.5) - cy_box;
+            var c_col: u32 = 0;
+            while (c_col < cg.width) : (c_col += 1) {
+                const alpha_mask = cg.bitmap[r * cg.width + c_col];
+                if (alpha_mask == 0) continue;
+
+                const dx = (@as(f32, @floatFromInt(c_col)) + 0.5) - cx_box;
+                const rx = cos_a * dx - sin_a * dy;
+                const ry = sin_a * dx + cos_a * dy;
+
+                const px = center_x + @as(i32, @intFromFloat(rx));
+                const py = center_y + @as(i32, @intFromFloat(ry));
+
+                if (px >= 0 and px < self.width and py >= 0 and py < self.height) {
+                    self.setPixelCoverage(px, py, color, alpha_mask);
+                }
             }
         }
     }

@@ -167,6 +167,9 @@ pub const Bar = struct {
                     },
                     .dual_command => |dual| {
                         if (button == 272) {
+                            if (std.mem.indexOf(u8, dual.left, "wpctl set-mute") != null) {
+                                self.sys_status.volume_muted = !self.sys_status.volume_muted;
+                            }
                             self.spawnCommand(dual.left);
                         } else if (button == 273) {
                             self.spawnCommand(dual.right);

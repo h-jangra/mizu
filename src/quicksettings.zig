@@ -53,6 +53,7 @@ pub const WifiItem = struct {
     security: [32]u8 = [_]u8{0} ** 32,
     security_len: usize = 0,
     is_active: bool = false,
+    is_saved: bool = false,
 };
 
 pub const BluetoothItem = struct {
@@ -124,6 +125,9 @@ pub const QuickSettings = struct {
     wifi_worker_running: bool = false,
     pointer_x: i32 = -1,
     pointer_y: i32 = -1,
+    is_scanning: bool = false,
+    scan_angle: f32 = 0.0,
+    scan_ticks: u32 = 0,
 
     pub fn getDesiredHeight(self: *const QuickSettings) u32 {
         if (self.view_mode != .main) {
@@ -179,6 +183,31 @@ pub const QuickSettings = struct {
         if (theme.loadSavedTheme()) |saved| {
             if (saved != self.cfg.theme.kind) {
                 self.cfg.theme = saved.toTheme();
+            }
+        }
+
+        if (self.is_scanning) {
+            self.scan_angle += 0.45;
+            if (self.scan_angle > 6.2831853) {
+                self.scan_angle -= 6.2831853;
+            }
+            if (self.scan_ticks > 0) {
+                self.scan_ticks -= 1;
+                if (self.scan_ticks % 3 == 0) {
+                    if (self.view_mode == .wifi_menu) {
+                        self.scanWifi();
+                    } else if (self.view_mode == .bluetooth_menu) {
+                        self.scanBluetooth();
+                    }
+                }
+            } else {
+                self.is_scanning = false;
+                self.scan_angle = 0.0;
+                if (self.view_mode == .wifi_menu) {
+                    self.scanWifi();
+                } else if (self.view_mode == .bluetooth_menu) {
+                    self.scanBluetooth();
+                }
             }
         }
     }
@@ -311,12 +340,18 @@ pub const QuickSettings = struct {
                     .open_wifi_menu => {
                         self.view_mode = .wifi_menu;
                         self.scroll_offset = 0;
+                        sys_status.spawnCmd("nmcli dev wifi rescan 2>/dev/null || true");
+                        self.is_scanning = true;
+                        self.scan_ticks = 8;
                         self.scanWifi();
                         return true;
                     },
                     .open_bluetooth_menu => {
                         self.view_mode = .bluetooth_menu;
                         self.scroll_offset = 0;
+                        sys_status.spawnCmd("bluetoothctl --timeout 4 scan on 2>/dev/null || true");
+                        self.is_scanning = true;
+                        self.scan_ticks = 10;
                         self.scanBluetooth();
                         return true;
                     },
@@ -357,9 +392,14 @@ pub const QuickSettings = struct {
                         switch (self.view_mode) {
                             .wifi_menu => {
                                 sys_status.spawnCmd("nmcli dev wifi rescan 2>/dev/null || true");
+                                self.is_scanning = true;
+                                self.scan_ticks = 8;
                                 self.scanWifi();
                             },
                             .bluetooth_menu => {
+                                sys_status.spawnCmd("bluetoothctl --timeout 4 scan on 2>/dev/null || true");
+                                self.is_scanning = true;
+                                self.scan_ticks = 10;
                                 self.scanBluetooth();
                             },
                             .audio_menu => {
@@ -377,17 +417,19 @@ pub const QuickSettings = struct {
                             }
                             const sec_str = if (item.security_len > 0) item.security[0..item.security_len] else "";
                             const is_open = (item.security_len == 0 or std.mem.eql(u8, sec_str, "--") or (std.mem.indexOf(u8, sec_str, "WPA") == null and std.mem.indexOf(u8, sec_str, "WEP") == null and std.mem.indexOf(u8, sec_str, "802.1X") == null));
-                            if (is_open) {
+                            if (item.is_saved or is_open) {
                                 const ssid = item.ssid[0..item.ssid_len];
                                 var cmd_list = std.ArrayList(u8).empty;
                                 defer cmd_list.deinit(self.allocator);
-                                cmd_list.appendSlice(self.allocator, "nmcli dev wifi connect ") catch return true;
+                                cmd_list.appendSlice(self.allocator, "nmcli connection up ") catch return true;
                                 appendShellArg(self.allocator, &cmd_list, ssid) catch return true;
-                                cmd_list.appendSlice(self.allocator, " 2>/dev/null || nmcli connection up ") catch return true;
+                                cmd_list.appendSlice(self.allocator, " 2>/dev/null || nmcli dev wifi connect ") catch return true;
                                 appendShellArg(self.allocator, &cmd_list, ssid) catch return true;
                                 cmd_list.appendSlice(self.allocator, " 2>/dev/null || true") catch return true;
                                 sys_status.spawnCmd(cmd_list.items);
-                                self.sys.updateAll();
+                                self.is_scanning = true;
+                                self.scan_ticks = 12;
+                                self.scanWifi();
                             } else {
                                 if (self.wifi_input_idx == idx) {
                                     self.wifi_input_idx = null;
@@ -436,6 +478,8 @@ pub const QuickSettings = struct {
                                 const cmd = std.fmt.bufPrint(&cmd_buf, "bluetoothctl connect {s} 2>/dev/null || true", .{mac}) catch return true;
                                 sys_status.spawnCmd(cmd);
                             }
+                            self.is_scanning = true;
+                            self.scan_ticks = 10;
                             self.scanBluetooth();
                         }
                         return true;
@@ -710,6 +754,36 @@ pub const QuickSettings = struct {
 
     pub fn scanWifi(self: *QuickSettings) void {
         self.wifi_items.clearRetainingCapacity();
+
+        // 0. Query saved wifi connections
+        var saved_connections = std.ArrayList([64]u8).empty;
+        defer saved_connections.deinit(self.allocator);
+        var saved_lengths = std.ArrayList(usize).empty;
+        defer saved_lengths.deinit(self.allocator);
+
+        if (c.popen("nmcli -t -f name,type connection show 2>/dev/null", "r")) |pipe| {
+            defer _ = c.pclose(pipe);
+            var cbuf: [4096]u8 = undefined;
+            const n = c.fread(&cbuf, 1, cbuf.len - 1, pipe);
+            cbuf[n] = 0;
+            var it = std.mem.splitScalar(u8, cbuf[0..n], '\n');
+            while (it.next()) |raw_line| {
+                const line = std.mem.trim(u8, raw_line, " \t\r");
+                if (line.len == 0) continue;
+                if (std.mem.indexOf(u8, line, "wireless") != null) {
+                    if (std.mem.lastIndexOfScalar(u8, line, ':')) |col_idx| {
+                        const name = line[0..col_idx];
+                        if (name.len > 0 and name.len <= 64) {
+                            var entry: [64]u8 = [_]u8{0} ** 64;
+                            @memcpy(entry[0..name.len], name);
+                            saved_connections.append(self.allocator, entry) catch {};
+                            saved_lengths.append(self.allocator, name.len) catch {};
+                        }
+                    }
+                }
+            }
+        }
+
         const pipe = c.popen("nmcli -t -f active,ssid,signal,security dev wifi 2>/dev/null", "r") orelse return;
         defer _ = c.pclose(pipe);
 
@@ -738,6 +812,14 @@ pub const QuickSettings = struct {
             const is_active = std.mem.eql(u8, active_str, "yes");
             const signal = std.fmt.parseInt(u8, signal_str, 10) catch 0;
 
+            var is_saved = false;
+            for (saved_connections.items, saved_lengths.items) |sc, slen| {
+                if (std.mem.eql(u8, sc[0..slen], ssid)) {
+                    is_saved = true;
+                    break;
+                }
+            }
+
             // Deduplicate: if already seen this SSID, keep active or higher signal
             var found = false;
             for (self.wifi_items.items) |*existing| {
@@ -745,6 +827,9 @@ pub const QuickSettings = struct {
                     found = true;
                     if (is_active) {
                         existing.is_active = true;
+                    }
+                    if (is_saved) {
+                        existing.is_saved = true;
                     }
                     if (signal > existing.signal) {
                         existing.signal = signal;
@@ -760,6 +845,7 @@ pub const QuickSettings = struct {
                     .security = [_]u8{0} ** 32,
                     .security_len = @min(security_str.len, 32),
                     .is_active = is_active,
+                    .is_saved = is_saved,
                 };
                 @memcpy(item.ssid[0..item.ssid_len], ssid[0..item.ssid_len]);
                 @memcpy(item.security[0..item.security_len], security_str[0..item.security_len]);
@@ -767,10 +853,11 @@ pub const QuickSettings = struct {
             }
         }
 
-        // Sort: active first, then highest signal descending
+        // Sort: active first, then saved, then highest signal descending
         std.mem.sort(WifiItem, self.wifi_items.items, {}, struct {
             fn lessThan(_: void, a: WifiItem, b: WifiItem) bool {
                 if (a.is_active != b.is_active) return a.is_active;
+                if (a.is_saved != b.is_saved) return a.is_saved;
                 return a.signal > b.signal;
             }
         }.lessThan);
@@ -1026,7 +1113,7 @@ pub const QuickSettings = struct {
         // ======================== 1. Header ========================
         // Left: User avatar & hostname + uptime
         const avatar_size: u32 = 34;
-        target.fillRoundedRect(pad_x, cur_y, avatar_size, avatar_size, 17, self.cfg.theme.pill_bg);
+        target.fillSquircle(pad_x, cur_y, avatar_size, avatar_size, avatar_size / 2, self.cfg.theme.pill_bg);
         const avatar_icon = "";
         const icon_w = target.measureTextWithSize(&self.font, avatar_icon, 16);
         const icon_x = pad_x + @divTrunc(@as(i32, @intCast(avatar_size)) - @as(i32, @intCast(icon_w)), 2);
@@ -1141,7 +1228,7 @@ pub const QuickSettings = struct {
             "Audio",
             vol_sub,
             !self.sys.volume_muted,
-            .open_audio_menu,
+            .toggle_audio_mute,
             .open_audio_menu,
         );
 
@@ -1212,7 +1299,7 @@ pub const QuickSettings = struct {
                 bar_w,
                 slider_h,
                 self.sys.backlight_percent,
-                self.cfg.theme.battery_bg,
+                self.cfg.theme.warning_color,
                 .slider_brightness,
             );
 
@@ -1224,8 +1311,8 @@ pub const QuickSettings = struct {
         // ======================== 4. Media Player Card ========================
         if (self.sys.mpris_state != .stopped and self.sys.mpris_track_len > 0) {
             const media_h: u32 = 56;
-            target.fillRoundedRect(pad_x, cur_y, content_w, media_h, 12, self.cfg.theme.surface);
-            target.drawRoundedBorder(pad_x, cur_y, content_w, media_h, 12, 1, self.cfg.theme.border);
+            target.fillSquircle(pad_x, cur_y, content_w, media_h, 12, self.cfg.theme.surface);
+            target.drawSquircleBorder(pad_x, cur_y, content_w, media_h, 12, 1, self.cfg.theme.border);
 
             // Music note
             target.drawTextWithSize(&self.font, "󰎆", pad_x + 12, cur_y + 34, 18, self.cfg.theme.accent);
@@ -1260,8 +1347,8 @@ pub const QuickSettings = struct {
 
         // ======================== 5. System Status & Power Profile Card ========================
         const status_card_h: u32 = if (self.sys.has_battery) 94 else 72;
-        target.fillRoundedRect(pad_x, cur_y, content_w, status_card_h, 12, self.cfg.theme.surface);
-        target.drawRoundedBorder(pad_x, cur_y, content_w, status_card_h, 12, 1, self.cfg.theme.border);
+        target.fillSquircle(pad_x, cur_y, content_w, status_card_h, 12, self.cfg.theme.surface);
+        target.drawSquircleBorder(pad_x, cur_y, content_w, status_card_h, 12, 1, self.cfg.theme.border);
 
         // CPU & RAM on line 1
         var stat_line1_buf: [64]u8 = undefined;
@@ -1276,8 +1363,15 @@ pub const QuickSettings = struct {
         var row3_y: i32 = cur_y + 36;
         if (self.sys.has_battery) {
             var bat_line_buf: [64]u8 = undefined;
-            const bat_icon = if (self.sys.bat_status == .charging) "󰂄" else "󰂀";
-            const bat_state_str = switch (self.sys.bat_status) {
+            const is_charging = (self.sys.bat_status == .charging) or self.sys.ac_online;
+            const bat_icon = if (is_charging) "󰂄" else "󰂀";
+            const bat_state_str = if (self.sys.bat_status == .charging)
+                "Charging"
+            else if (self.sys.ac_online and self.sys.bat_status == .full)
+                "Full (Plugged in)"
+            else if (self.sys.ac_online)
+                "Plugged in"
+            else switch (self.sys.bat_status) {
                 .charging => "Charging",
                 .discharging => "Discharging",
                 .full => "Full",
@@ -1384,14 +1478,18 @@ pub const QuickSettings = struct {
         else
             self.cfg.theme.text_bright;
 
-        if (is_hovered) {
-            target.drawSoftShadow(x, y + 1, size, size, size / 2, 4, 35);
-        }
         target.fillSquircle(x, y, size, size, size / 2, bg);
         target.drawSquircleBorder(x, y, size, size, size / 2, 1, if (is_hovered) hover_color else self.cfg.theme.border);
-        const icon_w = target.measureTextWithSize(&self.font, icon, 14);
-        const icon_x = x + @divTrunc(@as(i32, @intCast(size)) - @as(i32, @intCast(icon_w)), 2);
-        target.drawTextWithSize(&self.font, icon, icon_x, y + 20, 14, fg);
+
+        if (action == .refresh_sub_menu and self.is_scanning) {
+            const cx = x + @as(i32, @intCast(size / 2));
+            const cy = y + @as(i32, @intCast(size / 2));
+            target.drawTextRotated(&self.font, icon, cx, cy, self.scan_angle, 14, fg);
+        } else {
+            const icon_w = target.measureTextWithSize(&self.font, icon, 14);
+            const icon_x = x + @divTrunc(@as(i32, @intCast(size)) - @as(i32, @intCast(icon_w)), 2);
+            target.drawTextWithSize(&self.font, icon, icon_x, y + 20, 14, fg);
+        }
 
         try self.hit_areas.append(self.allocator, .{
             .x = x,
@@ -1446,13 +1544,9 @@ pub const QuickSettings = struct {
             self.cfg.theme.text_muted;
 
         if (is_active) {
-            target.drawSoftShadow(x, y + 1, w, h, 12, 4, 30);
-            target.fillGlassSquircle(x, y, w, h, 12, bg);
+            target.fillSquircle(x, y, w, h, 12, bg);
             target.drawSquircleBorder(x, y, w, h, 12, 1, self.cfg.theme.accent);
         } else {
-            if (is_main_hovered) {
-                target.drawSoftShadow(x, y + 1, w, h, 12, 3, 20);
-            }
             target.fillSquircle(x, y, w, h, 12, bg);
             target.drawSquircleBorder(x, y, w, h, 12, 1, if (is_main_hovered) self.cfg.theme.pill_hover else self.cfg.theme.border);
         }
@@ -1465,7 +1559,7 @@ pub const QuickSettings = struct {
             (if (self.cfg.theme.accent.isLight()) theme.Color.init(40, 0, 0, 0) else theme.Color.init(55, 255, 255, 255))
         else
             self.cfg.theme.elevated;
-        target.fillRoundedRect(circle_x, circle_y, circle_size, circle_size, circle_size / 2, circle_bg);
+        target.fillSquircle(circle_x, circle_y, circle_size, circle_size, circle_size / 2, circle_bg);
 
         const icon_w = target.measureTextWithSize(&self.font, icon, 14);
         const icon_x = circle_x + @divTrunc(@as(i32, @intCast(circle_size)) - @as(i32, @intCast(icon_w)), 2);
@@ -1496,7 +1590,7 @@ pub const QuickSettings = struct {
             target.fillRect(chev_x, y + 8, 1, h - 16, self.cfg.theme.border);
 
             if (is_chev_hovered) {
-                target.fillRoundedRect(chev_x + 2, y + 4, chevron_w - 4, h - 8, 8, if (is_active) self.cfg.theme.elevated else self.cfg.theme.pill_hover);
+                target.fillSquircle(chev_x + 2, y + 4, chevron_w - 4, h - 8, 8, if (is_active) self.cfg.theme.elevated else self.cfg.theme.pill_hover);
             }
 
             const chev_icon = "󰅂";
@@ -1571,8 +1665,8 @@ pub const QuickSettings = struct {
                         bg = self.cfg.theme.elevated;
                     }
 
-                    target.fillRoundedRect(pad_x, list_y, content_w, cur_item_h, 10, bg);
-                    target.drawRoundedBorder(pad_x, list_y, content_w, cur_item_h, 10, 1, if (is_input_active or item.is_active) self.cfg.theme.accent else self.cfg.theme.border);
+                    target.fillSquircle(pad_x, list_y, content_w, cur_item_h, 10, bg);
+                    target.drawSquircleBorder(pad_x, list_y, content_w, cur_item_h, 10, 1, if (is_input_active or item.is_active) self.cfg.theme.accent else self.cfg.theme.border);
 
                     // Signal icon
                     const sig_icon = if (item.signal >= 75)
@@ -1604,15 +1698,15 @@ pub const QuickSettings = struct {
                     const sub_color = if (item.is_active) self.cfg.theme.accent else self.cfg.theme.text_muted;
                     target.drawTextWithSize(&self.font, sub_str, pad_x + 36, list_y + 36, 10, sub_color);
 
-                    // Trash / Forget button on the right
+                    // Trash / Forget button on the right (ONLY for saved networks!)
                     const trash_size: u32 = 24;
                     const trash_x = pad_x + @as(i32, @intCast(content_w)) - @as(i32, @intCast(trash_size)) - 6;
                     const trash_y = list_y + 12;
                     const is_trash_hov = self.isAreaHovered(trash_x, trash_y, trash_size, trash_size);
 
-                    if (!is_input_active) {
+                    if (!is_input_active and item.is_saved) {
                         if (is_trash_hov) {
-                            target.fillGlassSquircle(trash_x, trash_y, trash_size, trash_size, 5, theme.Color.init(60, self.cfg.theme.error_color.r, self.cfg.theme.error_color.g, self.cfg.theme.error_color.b));
+                            target.fillSquircle(trash_x, trash_y, trash_size, trash_size, 5, theme.Color.init(60, self.cfg.theme.error_color.r, self.cfg.theme.error_color.g, self.cfg.theme.error_color.b));
                             target.drawSquircleBorder(trash_x, trash_y, trash_size, trash_size, 5, 1, self.cfg.theme.error_color);
                         }
                         target.drawTextWithSize(&self.font, "󰆴", trash_x + 5, trash_y + 16, 12, if (is_trash_hov) self.cfg.theme.error_color else self.cfg.theme.text_muted);
@@ -1626,15 +1720,17 @@ pub const QuickSettings = struct {
                     }
 
                     // Checkmark if active
+                    const check_x = if (item.is_saved) trash_x - 22 else trash_x;
                     if (item.is_active) {
-                        target.drawTextWithSize(&self.font, "󰄬", trash_x - 22, list_y + 30, 15, self.cfg.theme.accent);
+                        target.drawTextWithSize(&self.font, "󰄬", check_x, list_y + 30, 15, self.cfg.theme.accent);
                     }
 
                     if (!is_input_active) {
+                        const hit_w = if (item.is_saved) content_w - trash_size - 10 else content_w;
                         try self.hit_areas.append(self.allocator, .{
                             .x = pad_x,
                             .y = list_y,
-                            .w = content_w - trash_size - 10,
+                            .w = hit_w,
                             .h = cur_item_h,
                             .action = .{ .select_wifi = actual_idx },
                         });
@@ -1654,9 +1750,9 @@ pub const QuickSettings = struct {
                         const input_w = content_w - 48;
                         const input_h: u32 = 26;
 
-                        target.fillRoundedRect(input_x, input_y, input_w, input_h, 6, self.cfg.theme.base);
+                        target.fillSquircle(input_x, input_y, input_w, input_h, 6, self.cfg.theme.base);
                         const input_border = if (has_error) self.cfg.theme.error_color else self.cfg.theme.accent;
-                        target.drawRoundedBorder(input_x, input_y, input_w, input_h, 6, 1, input_border);
+                        target.drawSquircleBorder(input_x, input_y, input_w, input_h, 6, 1, input_border);
 
                         if (self.wifi_input) |*inp| {
                             inp.render(
@@ -1701,8 +1797,8 @@ pub const QuickSettings = struct {
                         // Cancel button
                         const is_cancel_hovered = self.isAreaHovered(input_x, btn_y, cancel_w, btn_h);
                         const cancel_bg = if (is_cancel_hovered) self.cfg.theme.elevated else self.cfg.theme.surface;
-                        target.fillRoundedRect(input_x, btn_y, cancel_w, btn_h, 6, cancel_bg);
-                        target.drawRoundedBorder(input_x, btn_y, cancel_w, btn_h, 6, 1, self.cfg.theme.border);
+                        target.fillSquircle(input_x, btn_y, cancel_w, btn_h, 6, cancel_bg);
+                        target.drawSquircleBorder(input_x, btn_y, cancel_w, btn_h, 6, 1, self.cfg.theme.border);
                         const c_text_w = target.measureTextWithSize(&self.font, "Cancel", 11);
                         const c_text_x = input_x + @divTrunc(@as(i32, @intCast(cancel_w)) - @as(i32, @intCast(c_text_w)), 2);
                         target.drawTextWithSize(&self.font, "Cancel", c_text_x, btn_y + 16, 11, self.cfg.theme.text_bright);
@@ -1724,7 +1820,8 @@ pub const QuickSettings = struct {
                         else
                             self.cfg.theme.surface;
                         const conn_fg = if (is_conn_hovered and !is_connecting) self.cfg.theme.accent_fg else self.cfg.theme.text_bright;
-                        target.fillRoundedRect(conn_x, btn_y, connect_w, btn_h, 6, conn_bg);
+                        target.fillSquircle(conn_x, btn_y, connect_w, btn_h, 6, conn_bg);
+                        target.drawSquircleBorder(conn_x, btn_y, connect_w, btn_h, 6, 1, if (is_conn_hovered and !is_connecting) self.cfg.theme.accent else self.cfg.theme.border);
 
                         const conn_label = if (is_connecting) "Connecting..." else "Connect";
                         const k_text_w = target.measureTextWithSize(&self.font, conn_label, 11);
@@ -1737,6 +1834,7 @@ pub const QuickSettings = struct {
                             .h = btn_h,
                             .action = .wifi_connect_submit,
                         });
+
 
                         // Error message feedback
                         if (has_error) {
@@ -1767,8 +1865,8 @@ pub const QuickSettings = struct {
                         bg = self.cfg.theme.elevated;
                     }
 
-                    target.fillRoundedRect(pad_x, list_y, content_w, item_h, 10, bg);
-                    target.drawRoundedBorder(pad_x, list_y, content_w, item_h, 10, 1, if (item.connected) self.cfg.theme.accent else self.cfg.theme.border);
+                    target.fillSquircle(pad_x, list_y, content_w, item_h, 10, bg);
+                    target.drawSquircleBorder(pad_x, list_y, content_w, item_h, 10, 1, if (item.connected) self.cfg.theme.accent else self.cfg.theme.border);
 
                     const icon_color = if (item.connected) self.cfg.theme.accent else self.cfg.theme.text_bright;
                     target.drawTextWithSize(&self.font, item.icon, pad_x + 12, list_y + 30, 15, icon_color);
@@ -1791,7 +1889,7 @@ pub const QuickSettings = struct {
                     const is_trash_hov = self.isAreaHovered(trash_x, trash_y, trash_size, trash_size);
 
                     if (is_trash_hov) {
-                        target.fillGlassSquircle(trash_x, trash_y, trash_size, trash_size, 5, theme.Color.init(60, self.cfg.theme.error_color.r, self.cfg.theme.error_color.g, self.cfg.theme.error_color.b));
+                        target.fillSquircle(trash_x, trash_y, trash_size, trash_size, 5, theme.Color.init(60, self.cfg.theme.error_color.r, self.cfg.theme.error_color.g, self.cfg.theme.error_color.b));
                         target.drawSquircleBorder(trash_x, trash_y, trash_size, trash_size, 5, 1, self.cfg.theme.error_color);
                     }
                     target.drawTextWithSize(&self.font, "󰆴", trash_x + 5, trash_y + 16, 12, if (is_trash_hov) self.cfg.theme.error_color else self.cfg.theme.text_muted);
@@ -1838,8 +1936,8 @@ pub const QuickSettings = struct {
                         bg = self.cfg.theme.elevated;
                     }
 
-                    target.fillRoundedRect(pad_x, list_y, content_w, item_h, 10, bg);
-                    target.drawRoundedBorder(pad_x, list_y, content_w, item_h, 10, 1, if (item.is_default) self.cfg.theme.accent else self.cfg.theme.border);
+                    target.fillSquircle(pad_x, list_y, content_w, item_h, 10, bg);
+                    target.drawSquircleBorder(pad_x, list_y, content_w, item_h, 10, 1, if (item.is_default) self.cfg.theme.accent else self.cfg.theme.border);
 
                     // Icon (headphones or speaker)
                     const sink_name = item.name[0..item.name_len];
@@ -2252,4 +2350,49 @@ test "QuickSettings forget_wifi and remove_bluetooth actions" {
         .remove_bluetooth => |idx| try std.testing.expectEqual(@as(usize, 5), idx),
         else => try std.testing.expect(false),
     }
+}
+
+test "QuickSettings scanning animation and saved wifi item logic" {
+    const allocator = std.testing.allocator;
+    var cfg = config.Config.init(allocator);
+    defer cfg.deinit(allocator);
+
+    var qs = QuickSettings{
+        .allocator = allocator,
+        .cfg = cfg,
+        .font = undefined,
+        .sys = sys_status.SysStatus.init(allocator),
+        .hit_areas = std.ArrayList(HitArea).empty,
+        .wifi_items = std.ArrayList(WifiItem).empty,
+        .bt_items = std.ArrayList(BluetoothItem).empty,
+        .sink_items = std.ArrayList(AudioSinkItem).empty,
+    };
+    defer {
+        qs.wifi_items.deinit(allocator);
+        qs.bt_items.deinit(allocator);
+        qs.sink_items.deinit(allocator);
+        qs.hit_areas.deinit(allocator);
+    }
+
+    // Test scanning state and tick spin
+    qs.is_scanning = true;
+    qs.scan_ticks = 4;
+    qs.scan_angle = 0.0;
+    qs.tick();
+    try std.testing.expect(qs.scan_angle > 0.0);
+    try std.testing.expectEqual(@as(u32, 3), qs.scan_ticks);
+
+    // Test WifiItem is_saved field
+    const item_saved = WifiItem{
+        .signal = 90,
+        .is_saved = true,
+    };
+    const item_unsaved = WifiItem{
+        .signal = 95,
+        .is_saved = false,
+    };
+    try qs.wifi_items.append(allocator, item_saved);
+    try qs.wifi_items.append(allocator, item_unsaved);
+    try std.testing.expect(qs.wifi_items.items[0].is_saved);
+    try std.testing.expect(!qs.wifi_items.items[1].is_saved);
 }

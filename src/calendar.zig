@@ -378,7 +378,6 @@ pub const Calendar = struct {
             const is_hover = self.isAreaHovered(cx + 2, cy + 1, col_w - 4, cell_h - 2);
 
             if (is_today) {
-                target.drawSoftShadow(cx + 2, cy + 2, col_w - 4, cell_h - 2, 6, 3, 25);
                 target.fillSquircle(cx + 2, cy + 1, col_w - 4, cell_h - 2, 6, self.cfg.theme.accent);
             } else if (is_hover) {
                 target.fillSquircle(cx + 2, cy + 1, col_w - 4, cell_h - 2, 6, self.cfg.theme.elevated);

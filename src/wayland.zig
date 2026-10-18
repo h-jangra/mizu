@@ -30,6 +30,10 @@ pub const WaylandApp = struct {
 
     surface: ?*c.wl_surface = null,
     layer_surface: ?*c.zwlr_layer_surface_v1 = null,
+    backdrop_surface: ?*c.wl_surface = null,
+    backdrop_layer_surface: ?*c.zwlr_layer_surface_v1 = null,
+    backdrop_buf: ?shm_buffer.ShmBuffer = null,
+    current_pointer_surface: ?*c.wl_surface = null,
 
     buffer_pool: ?shm_buffer.BufferPool = null,
     cfg: config.Config,
@@ -175,6 +179,18 @@ pub const WaylandApp = struct {
         if (self.buffer_pool) |*pool| {
             pool.deinit();
         }
+        if (self.backdrop_buf) |*bb| {
+            bb.deinit();
+            self.backdrop_buf = null;
+        }
+        if (self.backdrop_layer_surface) |bls| {
+            c.zwlr_layer_surface_v1_destroy(bls);
+            self.backdrop_layer_surface = null;
+        }
+        if (self.backdrop_surface) |bs| {
+            c.wl_surface_destroy(bs);
+            self.backdrop_surface = null;
+        }
         if (self.layer_surface) |ls| {
             c.zwlr_layer_surface_v1_destroy(ls);
             self.layer_surface = null;
@@ -272,7 +288,42 @@ pub const WaylandApp = struct {
         _ = c.wl_display_roundtrip(self.display.?);
     }
 
+    pub fn createBackdrop(self: *WaylandApp) !void {
+        if (self.layer_shell == null or self.compositor == null) return;
+        const b_surf = c.wl_compositor_create_surface(self.compositor.?);
+        if (b_surf == null) return error.CreateSurfaceFailed;
+        self.backdrop_surface = b_surf;
+
+        const b_layer_surf = c.zwlr_layer_shell_v1_get_layer_surface(
+            self.layer_shell.?,
+            b_surf,
+            self.output,
+            c.ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY,
+            "mizu-backdrop",
+        );
+        if (b_layer_surf == null) return error.GetLayerSurfaceFailed;
+        self.backdrop_layer_surface = b_layer_surf;
+
+        _ = c.zwlr_layer_surface_v1_add_listener(b_layer_surf, &backdrop_layer_surface_listener, self);
+
+        const anchor = c.ZWLR_LAYER_SURFACE_V1_ANCHOR_TOP |
+            c.ZWLR_LAYER_SURFACE_V1_ANCHOR_BOTTOM |
+            c.ZWLR_LAYER_SURFACE_V1_ANCHOR_LEFT |
+            c.ZWLR_LAYER_SURFACE_V1_ANCHOR_RIGHT;
+        c.zwlr_layer_surface_v1_set_anchor(b_layer_surf, anchor);
+        c.zwlr_layer_surface_v1_set_size(b_layer_surf, 0, 0);
+        c.zwlr_layer_surface_v1_set_exclusive_zone(b_layer_surf, -1);
+        c.zwlr_layer_surface_v1_set_keyboard_interactivity(
+            b_layer_surf,
+            c.ZWLR_LAYER_SURFACE_V1_KEYBOARD_INTERACTIVITY_NONE,
+        );
+
+        c.wl_surface_commit(b_surf);
+        _ = c.wl_display_roundtrip(self.display.?);
+    }
+
     pub fn createLauncherSurface(self: *WaylandApp, w: u32, h: u32) !void {
+        try self.createBackdrop();
         self.width = w;
         self.height = h;
 
@@ -306,6 +357,7 @@ pub const WaylandApp = struct {
     }
 
     pub fn createQuickSettingsSurface(self: *WaylandApp, w: u32, h: u32) !void {
+        try self.createBackdrop();
         self.width = w;
         self.height = h;
 
@@ -342,6 +394,7 @@ pub const WaylandApp = struct {
     }
 
     pub fn createCalendarSurface(self: *WaylandApp, w: u32, h: u32) !void {
+        try self.createBackdrop();
         self.width = w;
         self.height = h;
 
@@ -378,6 +431,7 @@ pub const WaylandApp = struct {
     }
 
     pub fn createClipboardSurface(self: *WaylandApp, w: u32, h: u32) !void {
+        try self.createBackdrop();
         self.width = w;
         self.height = h;
 
@@ -713,10 +767,18 @@ pub const WaylandApp = struct {
     // Pointer Listener
     fn pointer_enter(data: ?*anyopaque, pointer: ?*c.wl_pointer, serial: u32, surface: ?*c.wl_surface, sx: c.wl_fixed_t, sy: c.wl_fixed_t) callconv(.c) void {
         _ = pointer;
-        _ = surface;
         const self: *WaylandApp = @ptrCast(@alignCast(data.?));
         self.pointer_serial = serial;
         self.current_cursor_shape = null;
+        if (surface != null) {
+            self.current_pointer_surface = surface;
+        }
+        if (surface != null and self.backdrop_surface != null and surface.? == self.backdrop_surface.?) {
+            self.pointer_x = -1;
+            self.pointer_y = -1;
+            self.updateCursorShape(.default);
+            return;
+        }
         const px = c.wl_fixed_to_int(sx);
         const py = c.wl_fixed_to_int(sy);
         self.pointer_x = px;
@@ -828,6 +890,19 @@ pub const WaylandApp = struct {
         _ = serial;
         _ = time;
         const self: *WaylandApp = @ptrCast(@alignCast(data.?));
+        // Dismiss panels if click was outside (on backdrop)
+        if (self.current_pointer_surface != null and self.backdrop_surface != null and self.current_pointer_surface.? == self.backdrop_surface.?) {
+            if (state == c.WL_POINTER_BUTTON_STATE_PRESSED) {
+                self.running = false;
+                if (self.calendar) |cal| cal.running = false;
+                if (self.clipboard) |clip| clip.running = false;
+                if (self.quicksettings) |qs| qs.running = false;
+                if (self.launcher) |l| l.running = false;
+                if (self.osd) |o| o.running = false;
+                return;
+            }
+        }
+
         // BTN_LEFT is 0x110 (272), BTN_RIGHT is 0x111 (273)
         if (self.osd) |o| {
             if (state == c.WL_POINTER_BUTTON_STATE_PRESSED) {
@@ -1005,5 +1080,39 @@ pub const WaylandApp = struct {
     const layer_surface_listener = c.zwlr_layer_surface_v1_listener{
         .configure = layer_surface_configure,
         .closed = layer_surface_closed,
+    };
+
+    // Backdrop Layer Surface Listener
+    fn backdrop_layer_surface_configure(
+        data: ?*anyopaque,
+        surface: ?*c.zwlr_layer_surface_v1,
+        serial: u32,
+        w: u32,
+        h: u32,
+    ) callconv(.c) void {
+        const self: *WaylandApp = @ptrCast(@alignCast(data.?));
+        c.zwlr_layer_surface_v1_ack_configure(surface, serial);
+        if (w > 0 and h > 0 and self.shm != null and self.backdrop_surface != null) {
+            if (self.backdrop_buf == null or self.backdrop_buf.?.width != w or self.backdrop_buf.?.height != h) {
+                if (self.backdrop_buf) |*b| b.deinit();
+                self.backdrop_buf = shm_buffer.BufferPool.createSingleBuffer(self.shm.?, w, h) catch null;
+                if (self.backdrop_buf) |*b| {
+                    c.wl_surface_attach(self.backdrop_surface.?, b.buffer.?, 0, 0);
+                    c.wl_surface_damage_buffer(self.backdrop_surface.?, 0, 0, @intCast(w), @intCast(h));
+                    c.wl_surface_commit(self.backdrop_surface.?);
+                }
+            }
+        }
+    }
+
+    fn backdrop_layer_surface_closed(data: ?*anyopaque, surface: ?*c.zwlr_layer_surface_v1) callconv(.c) void {
+        _ = surface;
+        const self: *WaylandApp = @ptrCast(@alignCast(data.?));
+        self.running = false;
+    }
+
+    const backdrop_layer_surface_listener = c.zwlr_layer_surface_v1_listener{
+        .configure = backdrop_layer_surface_configure,
+        .closed = backdrop_layer_surface_closed,
     };
 };
