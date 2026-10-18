@@ -1,0 +1,26 @@
+pub const c = @cImport({
+    @cDefine("_GNU_SOURCE", {});
+    @cDefine("_FORTIFY_SOURCE", "0");
+    @cInclude("sys/mman.h");
+    @cInclude("wayland-client.h");
+    @cInclude("wayland-cursor.h");
+    @cInclude("xdg-shell-client-protocol.h");
+    @cInclude("wlr-layer-shell-unstable-v1-client-protocol.h");
+    @cInclude("unistd.h");
+    @cInclude("fcntl.h");
+    @cInclude("poll.h");
+    @cInclude("sys/socket.h");
+    @cInclude("sys/un.h");
+    @cInclude("sys/timerfd.h");
+    @cInclude("sys/signalfd.h");
+    @cInclude("signal.h");
+    @cInclude("time.h");
+    @cInclude("stdio.h");
+    @cInclude("stdlib.h");
+    @cInclude("ft2build.h");
+    @cInclude("freetype/freetype.h");
+    @cInclude("fontconfig/fontconfig.h");
+    @cInclude("xkbcommon/xkbcommon.h");
+    @cInclude("dirent.h");
+    @cInclude("png.h");
+});

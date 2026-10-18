@@ -1,0 +1,14 @@
+.{
+    .name = .mizu,
+    .version = "0.1.0",
+    .fingerprint = 0x5ab114a22b19bb3a,
+    .dependencies = .{},
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+        "protocols",
+        "README.md",
+        "PLAN.md",
+    },
+}

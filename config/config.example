@@ -1,0 +1,28 @@
+# Mizu Configuration File
+# Location: ~/.config/mizu/config.ini
+
+# Bar dimensions and geometry
+height = 42
+margin_top = 4
+margin_bottom = 0
+margin_left = 8
+margin_right = 8
+border_width = 1
+bar_radius = 8
+pill_radius = 6
+panel_radius = 14
+
+# Typography and Clock
+font_family = Maple Mono NF, monospace
+font_size = 13
+clock_format = %a %b %d  %H:%M
+
+# Active theme preset: nord, catppuccin, tokyo_night, gruvbox, rose_pine, material_you
+theme = nord
+
+# Custom Theme Colors Override (Hex format #RRGGBB or #AARRGGBB)
+# bar_bg = #161817
+# bar_border = #525E5A
+# pill_bg = #525E5A
+# ws_active_bg = #DF6124
+# ws_active_fg = #161817
