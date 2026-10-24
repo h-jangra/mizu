@@ -8,17 +8,89 @@ margin_bottom = 0
 margin_left = 8
 margin_right = 8
 border_width = 1
-bar_radius = 8
-pill_radius = 6
-panel_radius = 14
+bar_radius = 12
+pill_radius = 10
+panel_radius = 16
 
-# Typography and Clock
+# Font family and clock
 font_family = Maple Mono NF, monospace
-font_size = 13
 clock_format = %a %b %d  %H:%M
 
-# Active theme preset: nord, catppuccin, tokyo_night, gruvbox, rose_pine, material_you
+# Typography (logical pixel sizes, clamped to 8-96)
+# ui: standard interface text; secondary: descriptions, timestamps, muted labels
+[typography]
+ui = 15
+secondary = 13
+heading = 18
+title = 20
+bar_text = 15
+bar_icon = 20
+quicksettings_text = 15
+quicksettings_icon = 23
+submenu_text = 15
+calendar_text = 16
+calendar_heading = 19
+button_text = 15
+keymap_text = 16
+
+# Legacy aliases still accepted: font_size -> ui, bar_font_size -> bar_text,
+# panel_font_size -> ui
+
+# Desktop & Lock Screen Wallpaper (PNG, JPEG)
+# If not specified, Mizu auto-detects and reuses the active desktop wallpaper without duplicating assets
+# wallpaper = /path/to/wallpaper.jpg
+
+# Active theme preset: frosted_neumorphic, nord, catppuccin, tokyo_night, gruvbox, rose_pine
+# Aliases: mizu, pastel, frost -> frosted_neumorphic; noctalia -> tokyo_night; material_you -> catppuccin
 theme = nord
+
+# On-screen keymap overlay (mizu keyoverlay)
+# Placement: top-left, top-center, top-right, bottom-left, bottom-center, bottom-right
+keymap_position = bottom-center
+# keymap_font_size = 16
+
+# Calendar holidays (optional)
+# Use your own local iCalendar file instead of the built-in India holiday feed.
+# Relative paths resolve from ~/.config/mizu (or $XDG_CONFIG_HOME/mizu).
+# calendar_file = holiday.ics
+
+# Modular Layout Configuration
+# Available modules: launcher, workspaces, buttons, keymaps, clock, mpris, recorder, tray, battery, memory, network, bluetooth, volume, theme_switch, separator
+modules_left = launcher, buttons, workspaces, keymaps
+modules_center = clock, mpris
+# Right modules build from right edge towards left:
+modules_right = theme_switch, volume, recorder, tray, bluetooth, network, memory, battery
+
+# Screen Recorder Settings
+# When recording: Left-click or right-click stops gracefully (SIGINT triggers save & on-saved notification).
+# When idle:
+#   - Left-click: prompts window or region selection via slurp, records at constant 60 fps
+#   - Right-click: directly records entire screen at constant 60 fps
+# On finish: sends a notification popup confirming the saved video in ~/Videos.
+recorder_cmd = gpu-screen-recorder -w screen -f 60 -fm cfr -fallback-cpu-encoding yes -o "$HOME/Videos/recording_$(date +%Y%m%d_%H%M%S).mp4"
+recorder_hide_when_idle = false
+
+# Quick-launch Custom Buttons (shown when 'buttons' is in modules_left/center/right)
+# Label = Shell Command or 'mizu <panel>'
+# [buttons]
+# 󰌌 Term = foot
+# 󰈹 Web = firefox
+# 󰉋 Files = thunar
+# 󰅍 Clip = mizu clipboard
+# 󰸗 Cal = mizu calendar
+# 󰒓 QS = mizu quicksettings
+# 󰚝 Audio = mizu mixer
+# 󰐥 Power = wlogout
+
+# Custom Panels & Drawers
+# Registered names can be launched or toggled directly via 'mizu <name>'
+# [panels]
+# mixer = pavucontrol
+# dashboard = foot -e btop
+# files = thunar
+# notes = foot -e nvim ~/.notes.md
+# power = wlogout
+# calc = gnome-calculator
 
 # Custom Theme Colors Override (Hex format #RRGGBB or #AARRGGBB)
 # bar_bg = #161817
@@ -26,3 +98,7 @@ theme = nord
 # pill_bg = #525E5A
 # ws_active_bg = #DF6124
 # ws_active_fg = #161817
+# panel_bg = #161817
+# panel_border = #525E5A
+# network_bg = #282C34
+# network_fg = #98C379

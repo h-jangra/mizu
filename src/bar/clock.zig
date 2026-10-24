@@ -1,12 +1,14 @@
 const std = @import("std");
-const renderer = @import("../renderer.zig");
-const types = @import("types.zig");
+const renderer = @import("../core/renderer.zig");
+const types = @import("context.zig");
 const c = @import("../c.zig").c;
+
+var tz_initialized: bool = false;
 
 pub fn renderCenter(ctx: *types.BarContext, target: renderer.Renderer, total_w: u32) !struct { x: i32, w: u32 } {
     var buf: [64]u8 = undefined;
     const label = formatClockTime(ctx.cfg.clock_format, &buf);
-    const width = target.measureText(ctx.font, label) + 18;
+    const width = target.measureTextWithSize(ctx.font, label, ctx.textFontSize()) + 18 * ctx.scale;
     const x = @divTrunc(@as(i32, @intCast(total_w)) - @as(i32, @intCast(width)), 2);
 
     try drawClock(ctx, target, x, width, label);
@@ -16,7 +18,7 @@ pub fn renderCenter(ctx: *types.BarContext, target: renderer.Renderer, total_w: 
 pub fn render(ctx: *types.BarContext, target: renderer.Renderer, right_x: i32) !i32 {
     var buf: [64]u8 = undefined;
     const label = formatClockTime(ctx.cfg.clock_format, &buf);
-    const width = target.measureText(ctx.font, label) + 18;
+    const width = target.measureTextWithSize(ctx.font, label, ctx.textFontSize()) + 18 * ctx.scale;
     const x = right_x - @as(i32, @intCast(width));
 
     try drawClock(ctx, target, x, width, label);
@@ -33,8 +35,15 @@ fn drawClock(ctx: *types.BarContext, target: renderer.Renderer, x: i32, width: u
     });
 }
 
+pub fn formatNow(fmt: []const u8, buf: []u8) []const u8 {
+    return formatClockTime(fmt, buf);
+}
+
 fn formatClockTime(fmt: []const u8, buf: []u8) []const u8 {
-    c.tzset();
+    if (!tz_initialized) {
+        c.tzset();
+        tz_initialized = true;
+    }
     const now = c.time(null);
     var tm: c.struct_tm = undefined;
     _ = c.localtime_r(&now, &tm);

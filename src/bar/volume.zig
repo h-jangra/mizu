@@ -1,28 +1,26 @@
 const std = @import("std");
-const renderer = @import("../renderer.zig");
-const types = @import("types.zig");
+const renderer = @import("../core/renderer.zig");
+const types = @import("context.zig");
+const icons = @import("../graphics/icons.zig");
 
-pub fn render(ctx: *types.BarContext, target: renderer.Renderer, right_x: i32) !struct { new_x: i32, area: types.ClickableArea } {
-    const icon = if (ctx.sys.volume_muted) "󰖁" else if (ctx.sys.volume_percent >= 70) "󰕾" else if (ctx.sys.volume_percent >= 30) "󰖀" else "󰕿";
-    var buf: [16]u8 = undefined;
-    const label = if (ctx.sys.volume_muted) "Muted" else std.fmt.bufPrint(&buf, "{d}%", .{ctx.sys.volume_percent}) catch "50%";
-    const icon_w = target.measureText(ctx.font, icon);
-    const text_w = target.measureText(ctx.font, label);
-    const w = icon_w + 6 + text_w + 16;
-    const x = right_x - @as(i32, @intCast(w));
+pub fn render(ctx: *types.BarContext, target: renderer.Renderer, right_x: i32) !i32 {
+    const icon_size = ctx.iconFontSize();
+    const icon_name = if (ctx.sys.volume_muted) "volume-muted" else if (ctx.sys.volume_percent >= 67) "volume-high" else if (ctx.sys.volume_percent >= 34) "volume-medium" else "volume-low";
     const fg = if (ctx.sys.volume_muted) ctx.cfg.theme.text_muted else ctx.cfg.theme.audio_fg;
 
-    ctx.drawChipWithIcon(target, x, ctx.chip_y, w, ctx.chip_h, icon, fg, label, ctx.cfg.theme.text_main, ctx.cfg.theme.audio_bg);
+    const w: u32 = icon_size + 16 * ctx.scale;
+    const x = right_x - @as(i32, @intCast(w));
+    const cx = x + @as(i32, @intCast(icon_size / 2));
+    const cy = ctx.chip_y + @as(i32, @intCast(ctx.chip_h / 2));
+
+    icons.drawSvgIcon(target, ctx.allocator, icon_name, icon_size, ctx.scale, cx, cy, fg);
 
     const action: types.ClickAction = .{ .dual_command = .{
-        .left = "wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle",
-        .right = "mizu quicksettings",
+        .left = "mizu quicksettings",
+        .right = "wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle",
     } };
 
-    try ctx.addClickable(x, ctx.chip_y, w, ctx.chip_h, action);
+    try ctx.addInteractiveArea(x, ctx.chip_y, w, ctx.chip_h, action, .volume);
 
-    return .{
-        .new_x = x,
-        .area = .{ .x = x, .y = ctx.chip_y, .w = w, .h = ctx.chip_h, .action = action },
-    };
+    return x;
 }

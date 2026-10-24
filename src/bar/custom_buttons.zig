@@ -1,6 +1,6 @@
 const std = @import("std");
-const renderer = @import("../renderer.zig");
-const types = @import("types.zig");
+const renderer = @import("../core/renderer.zig");
+const types = @import("context.zig");
 
 pub fn render(ctx: *types.BarContext, target: renderer.Renderer, start_x: i32) !i32 {
     var cur_x = start_x;
@@ -8,8 +8,8 @@ pub fn render(ctx: *types.BarContext, target: renderer.Renderer, start_x: i32) !
     for (ctx.cfg.buttons.items) |btn| {
         if (btn.label.len == 0) continue;
 
-        const text_w = target.measureText(ctx.font, btn.label);
-        const chip_w = text_w + 14;
+        const text_w = target.measureTextWithSize(ctx.font, btn.label, ctx.textFontSize());
+        const chip_w = text_w + 18 * ctx.scale;
 
         ctx.drawChip(
             target,
@@ -24,7 +24,7 @@ pub fn render(ctx: *types.BarContext, target: renderer.Renderer, start_x: i32) !
 
         try ctx.addClickable(cur_x, ctx.chip_y, chip_w, ctx.chip_h, .{ .command = btn.command });
 
-        cur_x += @as(i32, @intCast(chip_w + 4));
+        cur_x += @as(i32, @intCast(chip_w + 5 * ctx.scale));
     }
 
     return cur_x;

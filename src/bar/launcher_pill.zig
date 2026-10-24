@@ -1,12 +1,12 @@
 const std = @import("std");
-const renderer = @import("../renderer.zig");
-const types = @import("types.zig");
+const theme = @import("../core/theme.zig");
+const draw = @import("../draw.zig");
+const types = @import("context.zig");
 
-pub fn render(ctx: *types.BarContext, target: renderer.Renderer, cur_x: i32) !i32 {
-    const symbol = ctx.current_theme_kind.icon();
-    const font_size: u32 = 16;
-    const text_w = target.measureTextWithSize(ctx.font, symbol, font_size);
-    const chip_w = text_w + 20;
+pub fn render(ctx: *types.BarContext, ui: *draw.DrawContext, cur_x: i32) !i32 {
+    const icon_size = ctx.iconFontSize();
+    const padding = ui.scale(10);
+    const chip_w = icon_size + padding * 2;
 
     const is_hov = ctx.isHovered(cur_x, ctx.chip_y, chip_w, ctx.chip_h);
     const bg = if (is_hov)
@@ -14,7 +14,7 @@ pub fn render(ctx: *types.BarContext, target: renderer.Renderer, cur_x: i32) !i3
     else
         ctx.cfg.theme.launcher_bg;
 
-    target.fillGlassSquircle(
+    ui.roundedRect(
         cur_x,
         ctx.chip_y,
         chip_w,
@@ -22,24 +22,36 @@ pub fn render(ctx: *types.BarContext, target: renderer.Renderer, cur_x: i32) !i3
         ctx.cfg.pill_radius,
         bg,
     );
-    if (is_hov) {
-        target.drawSquircleBorder(cur_x, ctx.chip_y, chip_w, ctx.chip_h, ctx.cfg.pill_radius, 1, ctx.cfg.theme.pill_hover);
-    } else if (ctx.cfg.theme.pill_border.a > 0) {
-        target.drawSquircleBorder(cur_x, ctx.chip_y, chip_w, ctx.chip_h, ctx.cfg.pill_radius, 1, ctx.cfg.theme.pill_border);
-    }
 
-    const text_x = cur_x + @divTrunc(@as(i32, @intCast(chip_w)) - @as(i32, @intCast(text_w)), 2);
-    const baseline = ctx.chip_y + @divTrunc(@as(i32, @intCast(ctx.chip_h)) + @as(i32, @intCast(font_size)), 2) - 1;
-    target.drawTextWithSize(
-        ctx.font,
-        symbol,
-        text_x,
-        baseline,
-        font_size,
+    if (is_hov) {
+        // ui.roundedBorder(cur_x, ctx.chip_y, chip_w, ctx.chip_h,
+        //     ctx.cfg.pill_radius, 1, ctx.cfg.theme.accent);
+    } else if (ctx.cfg.theme.pill_border.a > 0) {}
+
+    const icon_x = cur_x + @divTrunc(
+        @as(i32, @intCast(chip_w)) - @as(i32, @intCast(icon_size)),
+        2,
+    );
+    const icon_y = ctx.chip_y + @divTrunc(
+        @as(i32, @intCast(ctx.chip_h)) - @as(i32, @intCast(icon_size)),
+        2,
+    );
+
+    ui.icon(
+        "launcher",
+        icon_x,
+        icon_y,
+        icon_size,
         ctx.cfg.theme.launcher_fg,
     );
 
-    try ctx.addClickable(cur_x, ctx.chip_y, chip_w, ctx.chip_h, .{ .command = "mizu launcher" });
+    try ui.addClickable(
+        cur_x,
+        ctx.chip_y,
+        chip_w,
+        ctx.chip_h,
+        .{ .command = "mizu launcher" },
+    );
 
-    return cur_x + @as(i32, @intCast(chip_w + 4));
+    return cur_x + @as(i32, @intCast(chip_w + ui.scale(4)));
 }

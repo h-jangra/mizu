@@ -6,12 +6,21 @@ It provides a cohesive desktop shell experience without GTK, Qt, Electron, rayli
 
 ---
 
+## Documentation
+
+Full detailed documentation is available in the [`docs/`](docs/README.md) directory:
+- [**Panels & Drawers Guide**](docs/panels.md): Built-in panels, creating custom panels via `[panels]`, native layer-shell development, and instance toggling.
+- [**Custom Buttons Guide**](docs/custom_buttons.md): Adding custom buttons to the top bar (`[buttons]`), positioning, icons, and wiring to commands.
+- [**IPC & CLI Commands Guide**](docs/ipc_and_commands.md): Unified CLI commands, panel toggling, CLI options, and window manager integration.
+- [**Configuration Reference**](docs/configuration.md): Complete reference for `~/.config/mizu/config.ini`.
+
+---
+
 ## Features
 
 ### Stage 1: Top Bar (Modular Architecture & Squircle UI)
 - **Modular Bar Architecture (`src/bar/*`)**: Each bar component is an independent, reusable module:
   - `src/bar/types.zig`: `BarContext`, `ClickAction`, `ClickableArea`
-  - `src/bar/omarchy.zig`: Dragon glyph launcher pill (`"⻯"` / theme icon)
   - `src/bar/workspaces.zig`: Roman numerals (`Ⅰ`, `Ⅱ`, `Ⅲ`, `Ⅳ`, `Ⅴ`, `Ⅵ`, `Ⅶ`, `Ⅷ`, `Ⅸ`) with active, urgent, and occupied states
   - `src/bar/custom_buttons.zig`: User-configured quick launch buttons from `config.ini`
   - `src/bar/mpris.zig`: Center media pill with play/pause and track title
@@ -25,7 +34,7 @@ It provides a cohesive desktop shell experience without GTK, Qt, Electron, rayli
   - `src/bar/bar.zig`: Modular coordinator orchestrating layout, tick, and input handling
 - **Continuous-Curvature Squircle Rendering**: Built-in superellipse squircle geometry ($n \approx 4$, G2-continuous curvature) for all pills, chips, capsules, and containers using symmetric cubic Bézier curves, providing smooth corners without sharp arc transitions.
 - **Dynamic Theme Switcher**:
-  - Live on-bar module displaying active theme icon + name (`󰔎 Nord`, `󰔎 Catppuccin`, `󰔎 Tokyo Night`, `󰔎 Gruvbox`, `󰔎 Rosé Pine`, `󰔎 Material You`, `󰔎 Omarchy`).
+  - Live on-bar module displaying active theme icon + name (`󰔎 Nord`, `󰔎 Catppuccin`, `󰔎 Tokyo Night`, `󰔎 Gruvbox`, `󰔎 Rosé Pine`).
   - Left-click or scroll up cycles to the next theme; Right-click or scroll down cycles to the previous theme.
   - Instantly updates bar styling and persists choice to `~/.cache/mizu/current_theme`.
   - CLI theme control via `mizu theme [next|prev|set <name>|list]`.
@@ -33,7 +42,7 @@ It provides a cohesive desktop shell experience without GTK, Qt, Electron, rayli
 ### Stage 2: Application Launcher
 - **Centered Layer-Shell Overlay Surface**: Appears centered (`anchor = 0`, `layer = overlay`) with exclusive keyboard focus (`keyboard_interactivity = exclusive`).
 - **Application Grid Layout with Icons**: Displays applications in an elegant 5x3 card grid (15 apps per page) with 48x48 icons and centered labels.
-- **PNG Icon Resolution & Caching**: Fast standard XDG icon lookup across `/usr/share/icons/hicolor/`, `/usr/share/pixmaps/`, and custom desktop icon paths. Cached Cairo image surfaces avoid repeated disk I/O.
+- **Icon Resolution & Caching**: Fast standard XDG icon lookup across `/usr/share/icons/hicolor/`, `/usr/share/pixmaps/`, and custom desktop icon paths. Decoded image buffers and SVG icon rasters are cached to avoid repeated disk I/O.
 - **Material You Adaptive Fallback Badges**: Applications without bitmap icons display a sleek Material You adaptive icon tile with pastel tonal background (hashed from app name) and crisp centered initial letter.
 - **2D Keyboard & Mouse Grid Navigation**:
   - `Left` / `Right`: Navigate horizontally
@@ -46,7 +55,7 @@ It provides a cohesive desktop shell experience without GTK, Qt, Electron, rayli
 - **Zero Overhead While Closed**: Launches on-demand and terminates immediately upon launch or dismissal, using 0 MB memory when closed.
 
 ### Stage 3: Quick Settings & Panels
-- **Floating Top-Right Drawer**: Anchored to `TOP | RIGHT` right below the bar with 16px corner radius, crisp borders, and dark Omarchy/Material You styling.
+- **Floating Top-Right Drawer**: Anchored to `TOP | RIGHT` right below the bar with 16px corner radius, crisp borders.
 - **System Header**: Displays user & host (`user@host`), system uptime (`up Xh Ym`), and quick power action buttons: Lock (`󰌾`), Suspend (`󰒲`), Shutdown (`󰐥`), and Close (`󰅖`).
 - **2x2 Quick Toggles Grid**:
   - **Wi-Fi**: Live connection discovery & SSID; click toggles Wi-Fi on/off (`nmcli` / sysfs rfkill).
@@ -66,6 +75,24 @@ It provides a cohesive desktop shell experience without GTK, Qt, Electron, rayli
   - Top-right banner alert with `󰂚` icon, bold summary, muted message, and click-to-dismiss.
 - **Zero Overhead**: Automatically terminates after 3.5s; leaves 0 background daemons and uses 0 MB memory when closed.
 
+### Stage 5: Native Wayland Lock Screen (`mizu lock`)
+- **Native Wayland Session Lock Protocol (`ext-session-lock-v1`)**:
+  - Full-screen hardware-level blanking and locking across all active and newly plugged outputs.
+  - Desktop content is completely hidden and guarded against unauthorized access.
+  - If the compositor lacks protocol support, gracefully delegates to an installed trusted locker (`hyprlock`, `swaylock`) without compromising security with an insecure pseudo-window.
+- **Wallpaper Reuse & Translucent Overlay**:
+  - Automatically discovers and decodes the active desktop wallpaper (`~/.cache/wm/current_wallpaper`, `swaybg -i`, or `config.ini`).
+  - Zero asset duplication; decodes in-memory and caches per-output resolution with a subtle translucent dark overlay for clean typography contrast.
+- **Lightweight Zero-Continuous-Redraw Rendering**:
+  - Pre-rendered background blitting in microseconds.
+  - Timer-driven 1-second clock updates and double-buffered SHM pools; 0% idle CPU between updates.
+- **Secure PAM Authentication**:
+  - Asynchronous background worker thread authenticates via system PAM services (`mizu`, `hyprlock`, `swaylock`, `login`).
+  - Zero hardcoded credentials or cleartext credential caching; password memory is securely zeroed immediately following authentication attempts.
+  - Interactive feedback: masked password bullets (`● ● ●`), blinking caret, `Verifying...` indicator, and failed attempt counter.
+  - `Enter` to authenticate, `Escape` to clear input without unlocking.
+
+
 ---
 
 ## Environment & Dependency Audit (Void Linux)
@@ -79,20 +106,21 @@ Verified on **Void Linux** (Linux kernel 6.18, x86_64):
 | **Wayland Client** | `1.26.0` | `wayland`, `wayland-devel` | Core Wayland client library |
 | **Wayland Protocols** | `1.49` | `wayland-protocols` | Protocol XML specifications (`xdg-shell`) |
 | **Keyboard Library** | `1.13.2` | `libxkbcommon`, `libxkbcommon-devel` | Keyboard map translation and keycodes |
-| **Cairo** | `1.18.4` | `cairo`, `cairo-devel` | High-quality 2D vector rendering, PNG icons, and text |
 | **FreeType** | `2.14.3` | `freetype`, `freetype-devel` | Font rasterization & glyph rendering |
+| **NanoSVG** | vendored | `src/core/nanosvg.{h,c}` | SVG icon parsing (zlib licensed, bundled source) |
+| **NanoSVG Rasterizer** | vendored | `src/core/nanosvg_rasterizer.{h,c}` | SVG alpha rasterization for crisp icons (zlib licensed, bundled source) |
 | **Fontconfig** | `2.17.1` | `fontconfig`, `fontconfig-devel` | Font discovery and matching |
 | **Protocol Generator** | `1.26.0` | `wayland-devel` (`wayland-scanner`) | C code/header generation from protocol XML |
 
 ### Installation on Void Linux
 
 ```bash
-sudo xbps-install -S wayland-devel wayland-protocols libxkbcommon-devel cairo-devel freetype-devel fontconfig-devel pkg-config
+sudo xbps-install -S wayland-devel wayland-protocols libxkbcommon-devel freetype-devel fontconfig-devel pkg-config
 ```
 
 ---
 
-## CLI Subcommand Interface
+## CLI Commands & Subcommands
 
 Mizu is built as a single unified executable with dedicated subcommands:
 
@@ -103,12 +131,15 @@ A lightweight, from-scratch Wayland desktop shell for Void Linux and MangoWC.
 
 Commands:
   bar             Start the top desktop bar
-  launcher        Open the application launcher overlay
-  quicksettings   Open the quick settings control panel (aliases: qs, panel)
+  lock            Lock the session with native Wayland lock screen
+  launcher        Open the application launcher overlay (aliases: -l, --launcher)
+  quicksettings   Open the quick settings control panel (aliases: qs, panel, -q)
   calendar        Open interactive month/year calendar (aliases: cal, -c)
   clipboard       Open clipboard history search & manager (aliases: clip)
   notify          Show a desktop notification popup (mizu notify <title> [body])
   theme           Switch or inspect themes (mizu theme [next|prev|set <name>|list])
+  keyoverlay      Show on-screen key combination overlay (aliases: keymap, keys)
+  list            List all available built-in and configured custom panels
   help            Display this help message
   version         Display version information
 
@@ -117,13 +148,17 @@ Options:
   -v, --version   Display version information
 ```
 
-- `mizu bar` — starts the Wayland desktop top bar.
-- `mizu launcher` — opens the on-demand centered application launcher overlay.
-- `mizu quicksettings` (or `mizu qs`, `mizu panel`) — opens the quick settings control drawer.
-- `mizu --help` / `mizu help` — displays usage and available commands (exit code 0).
-- `mizu --version` / `mizu version` — displays version (e.g. `mizu 0.1.0`, exit code 0).
-- `mizu` (no arguments) — displays usage information (exit code 0).
-- Unknown commands (e.g. `mizu invalid`) — prints error and usage to stderr (exit code 1).
+### Direct Panel & Action Commands
+- `mizu lock` — locks all monitors using the native Wayland session-lock protocol with PAM authentication.
+- `mizu launcher` — toggles the application launcher overlay.
+- `mizu quicksettings` (or `mizu qs`) — toggles the quick settings control drawer.
+- `mizu calendar` (or `mizu cal`) — toggles the interactive calendar.
+- `mizu clipboard` (or `mizu clip`) — toggles clipboard history search.
+- `mizu keyoverlay` (or `mizu keys`) — toggles keyboard shortcut cheat sheet.
+- `mizu <custom_panel>` — toggles any custom panel defined in `[panels]`.
+- `mizu list` — lists all built-in and registered custom panels.
+- `mizu notify <title> [body]` — posts a desktop notification.
+- `mizu theme [next|prev|set <name>|list]` — manages themes.
 
 ---
 
@@ -199,8 +234,14 @@ pill_radius = 6
 
 # Typography & Time
 font_family = Maple Mono NF, monospace
-font_size = 13
 clock_format = %a %b %d  %H:%M
+
+# Logical pixel sizes; see docs/configuration.md for every key
+[typography]
+ui = 15
+secondary = 13
+bar_text = 15
+bar_icon = 20
 
 # Nord Colors
 bar_bg = #2E3440
@@ -209,12 +250,22 @@ pill_bg = #3B4252
 ws_active_bg = #88C0D0
 ws_active_fg = #2E3440
 
-# Custom Buttons (Label = Shell Command)
+# Custom Buttons (Label = Shell Command or 'mizu <panel>')
 [buttons]
 󰍉 Menu = mizu launcher
 󰌌 Term = foot
-󰉋 Files = foot -e lf
+󰉋 Files = thunar
 󰈹 Web = firefox
+󰅍 Clip = mizu clipboard
+󰸗 Cal = mizu calendar
+󰒓 QS = mizu quicksettings
+󰚝 Audio = mizu mixer
+
+# Custom Panels (Toggle directly via 'mizu <name>')
+[panels]
+mixer = pavucontrol
+dashboard = foot -e btop
+notes = foot -e nvim ~/.notes.md
 ```
 
 ---

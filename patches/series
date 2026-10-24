@@ -1,0 +1,8 @@
+# Patch Series File
+
+List patches in application order. Each line is a patch filename relative to
+this directory.
+
+# Example:
+# my-feature.diff
+# another-fix.diff
