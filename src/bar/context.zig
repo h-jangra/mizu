@@ -136,11 +136,17 @@ pub const BarContext = struct {
     }
 
     pub fn textFontSize(self: *const BarContext) u32 {
-        return self.cfg.typography.bar_text * self.scale;
+        const logical_chip_h: u32 = if (self.cfg.height > 8) self.cfg.height - 8 else self.cfg.height;
+        const max_text: u32 = if (logical_chip_h > 4) logical_chip_h - 4 else logical_chip_h;
+        const base_text = @min(self.cfg.typography.bar_text, max_text);
+        return base_text * self.scale;
     }
 
     pub fn iconFontSize(self: *const BarContext) u32 {
-        return self.cfg.typography.bar_icon * self.scale;
+        const logical_chip_h: u32 = if (self.cfg.height > 8) self.cfg.height - 8 else self.cfg.height;
+        const max_icon: u32 = if (logical_chip_h > 6) logical_chip_h - 6 else logical_chip_h;
+        const base_icon = @min(self.cfg.typography.bar_icon, max_icon);
+        return base_icon * self.scale;
     }
 
     pub fn iconBaseline(self: *const BarContext) i32 {

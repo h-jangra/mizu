@@ -25,6 +25,7 @@ pub fn render(ctx: *types.BarContext, ui: *ui_mod.Ui) !void {
             .radius = ui.f(ctx.cfg.pill_radius),
             .border = if (border_col != null) ui.su(1) else 0,
             .border_color = border_col,
+            .align_x = .center,
             .align_y = .center,
         });
         ui.text(btn.label, .{

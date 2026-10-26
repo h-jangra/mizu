@@ -6,8 +6,13 @@ const parseKbValue = proc_file.parseKbValue;
 
 pub const ProcessInfo = struct {
     pid: u32 = 0,
+    ppid: u32 = 0,
     name: [128]u8 = [_]u8{0} ** 128,
     name_len: usize = 0,
+    exe: [128]u8 = [_]u8{0} ** 128,
+    exe_len: usize = 0,
+    cmdline: [512]u8 = [_]u8{0} ** 512,
+    cmdline_len: usize = 0,
     rss_kb: u64 = 0,
 };
 
@@ -114,6 +119,15 @@ pub fn collectProcesses(allocator: std.mem.Allocator, out: *std.ArrayList(Proces
         const comm = stat_content[first_paren + 1 .. last_paren];
         if (comm.len == 0) continue;
 
+        var ppid: u32 = 0;
+        if (last_paren + 1 < stat_content.len) {
+            var stat_it = std.mem.tokenizeAny(u8, stat_content[last_paren + 1 ..], " \t\r\n");
+            _ = stat_it.next(); // state (e.g. 'R', 'S')
+            if (stat_it.next()) |ppid_str| {
+                ppid = std.fmt.parseInt(u32, ppid_str, 10) catch 0;
+            }
+        }
+
         var statm_path_buf: [128]u8 = undefined;
         const statm_path = std.fmt.bufPrintZ(&statm_path_buf, "/proc/{d}/statm", .{pid}) catch continue;
 
@@ -129,9 +143,53 @@ pub fn collectProcesses(allocator: std.mem.Allocator, out: *std.ArrayList(Proces
 
         var info = ProcessInfo{
             .pid = pid,
+            .ppid = ppid,
             .rss_kb = resident_pages * page_kb,
         };
         info.name_len = sanitizeName(&info.name, comm);
+
+        // Read executable symlink /proc/{pid}/exe
+        var exe_path_buf: [128]u8 = undefined;
+        const exe_path = std.fmt.bufPrintZ(&exe_path_buf, "/proc/{d}/exe", .{pid}) catch "";
+        if (exe_path.len > 0) {
+            var raw_exe_buf: [256]u8 = undefined;
+            const link_len = c.readlink(exe_path.ptr, &raw_exe_buf, raw_exe_buf.len - 1);
+            if (link_len > 0) {
+                const full_exe = raw_exe_buf[0..@intCast(link_len)];
+                const bname = std.fs.path.basename(full_exe);
+                const n = @min(bname.len, info.exe.len);
+                @memcpy(info.exe[0..n], bname[0..n]);
+                info.exe_len = n;
+            }
+        }
+        if (info.exe_len == 0) {
+            const n = @min(info.name_len, info.exe.len);
+            @memcpy(info.exe[0..n], info.name[0..n]);
+            info.exe_len = n;
+        }
+
+        // Read cmdline for full subprocess command
+        var cmd_path_buf: [128]u8 = undefined;
+        const cmd_path = std.fmt.bufPrintZ(&cmd_path_buf, "/proc/{d}/cmdline", .{pid}) catch "";
+        if (cmd_path.len > 0) {
+            var raw_cmd_buf: [512]u8 = undefined;
+            const cmd_read = readProcFile(cmd_path.ptr, &raw_cmd_buf) orelse 0;
+            if (cmd_read > 0) {
+                var out_idx: usize = 0;
+                for (raw_cmd_buf[0..cmd_read]) |b| {
+                    if (out_idx >= info.cmdline.len) break;
+                    info.cmdline[out_idx] = if (b == 0) ' ' else (if (b >= 0x20 and b < 0x7f) b else ' ');
+                    out_idx += 1;
+                }
+                const trimmed = std.mem.trim(u8, info.cmdline[0..out_idx], " ");
+                info.cmdline_len = trimmed.len;
+            }
+        }
+        if (info.cmdline_len == 0) {
+            const clen = @min(info.name_len, info.cmdline.len);
+            @memcpy(info.cmdline[0..clen], info.name[0..clen]);
+            info.cmdline_len = clen;
+        }
 
         out.append(allocator, info) catch break;
     }

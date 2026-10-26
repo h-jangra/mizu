@@ -4,6 +4,31 @@ const proc_file = @import("proc_file.zig");
 const exec = @import("../core/exec.zig");
 const readProcFile = proc_file.read;
 
+pub const dbus_monitor = struct {
+    pub const MizuMprisState = enum(c_int) {
+        stopped = 0,
+        paused = 1,
+        playing = 2,
+    };
+
+    pub const MizuMprisSnapshot = extern struct {
+        mpris_state: c_int,
+        mpris_track: [128]u8,
+        mpris_title: [128]u8,
+        mpris_artist: [128]u8,
+        mpris_art_url: [256]u8,
+        version: u32,
+    };
+
+    pub extern "c" fn mizu_dbus_monitor_init(wake_fd: c_int) c_int;
+    pub extern "c" fn mizu_dbus_monitor_set_wake_fd(wake_fd: c_int) void;
+    pub extern "c" fn mizu_dbus_monitor_get_mpris(out: *MizuMprisSnapshot) bool;
+    pub extern "c" fn mizu_dbus_monitor_check_network_dirty() bool;
+    pub extern "c" fn mizu_dbus_monitor_check_bluetooth_dirty() bool;
+    pub extern "c" fn mizu_dbus_monitor_trigger_mpris_refresh() void;
+    pub extern "c" fn mizu_dbus_monitor_deinit() void;
+};
+
 pub const BatteryStatus = enum {
     none,
     charging,
@@ -87,6 +112,8 @@ pub const AsyncSysData = struct {
     mpris_state: MprisState = .stopped,
     mpris_track: [128]u8 = [_]u8{0} ** 128,
     mpris_track_len: usize = 0,
+    mpris_art_url: [256]u8 = [_]u8{0} ** 256,
+    mpris_art_url_len: usize = 0,
     wifi_ssid: [64]u8 = [_]u8{0} ** 64,
     wifi_ssid_len: usize = 0,
     bluetooth_connected: bool = false,
@@ -149,6 +176,8 @@ pub const SysStatus = struct {
     mpris_state: MprisState = .stopped,
     mpris_track: [128]u8 = [_]u8{0} ** 128,
     mpris_track_len: usize = 0,
+    mpris_art_url: [256]u8 = [_]u8{0} ** 256,
+    mpris_art_url_len: usize = 0,
 
     // Network & Bluetooth
     wifi_enabled: bool = false,
@@ -235,16 +264,38 @@ pub const SysStatus = struct {
     }
 
     pub fn pullAsyncData(self: *SysStatus) void {
+        var mpris_snap: dbus_monitor.MizuMprisSnapshot = undefined;
+        if (dbus_monitor.mizu_dbus_monitor_get_mpris(&mpris_snap)) {
+            if (mpris_snap.version > 0) {
+                self.mpris_state = switch (mpris_snap.mpris_state) {
+                    1 => .paused,
+                    2 => .playing,
+                    else => .stopped,
+                };
+                const track_span = std.mem.span(@as([*:0]const u8, @ptrCast(&mpris_snap.mpris_track)));
+                const tlen = @min(track_span.len, self.mpris_track.len);
+                @memcpy(self.mpris_track[0..tlen], track_span[0..tlen]);
+                self.mpris_track_len = tlen;
+
+                const art_span = std.mem.span(@as([*:0]const u8, @ptrCast(&mpris_snap.mpris_art_url)));
+                const alen = @min(art_span.len, self.mpris_art_url.len);
+                @memcpy(self.mpris_art_url[0..alen], art_span[0..alen]);
+                self.mpris_art_url_len = alen;
+            }
+        }
+
         const s = self.shared orelse return;
         s.lock.lock();
         defer s.lock.unlock();
 
         self.volume_percent = s.data.volume_percent;
         self.volume_muted = s.data.volume_muted;
-        self.mpris_state = s.data.mpris_state;
-        const mlen = @min(s.data.mpris_track_len, self.mpris_track.len);
-        @memcpy(self.mpris_track[0..mlen], s.data.mpris_track[0..mlen]);
-        self.mpris_track_len = mlen;
+        if (self.mpris_track_len == 0 and s.data.mpris_track_len > 0) {
+            self.mpris_state = s.data.mpris_state;
+            const mlen = @min(s.data.mpris_track_len, self.mpris_track.len);
+            @memcpy(self.mpris_track[0..mlen], s.data.mpris_track[0..mlen]);
+            self.mpris_track_len = mlen;
+        }
 
         if (self.wifi_enabled) {
             const wlen = @min(s.data.wifi_ssid_len, self.wifi_ssid.len);
@@ -927,7 +978,7 @@ pub const SysStatus = struct {
     // Interactive control actions
     pub fn stepVolume(self: *SysStatus, delta: i32) void {
         const cur: i32 = @intCast(self.volume_percent);
-        const next: u32 = @intCast(@min(100, @max(0, cur + delta)));
+        const next: u32 = @intCast(@min(200, @max(0, cur + delta)));
         self.volume_percent = next;
         if (self.shared) |s| {
             s.lock.lock();
@@ -935,12 +986,12 @@ pub const SysStatus = struct {
             s.lock.unlock();
         }
         var cmd_buf: [128]u8 = undefined;
-        const cmd = std.fmt.bufPrint(&cmd_buf, "wpctl set-volume @DEFAULT_AUDIO_SINK@ {d}% 2>/dev/null || pactl set-sink-volume @DEFAULT_SINK@ {d}% 2>/dev/null || true", .{ next, next }) catch return;
+        const cmd = std.fmt.bufPrint(&cmd_buf, "wpctl set-volume -l 2.0 @DEFAULT_AUDIO_SINK@ {d}% 2>/dev/null || pactl set-sink-volume @DEFAULT_SINK@ {d}% 2>/dev/null || true", .{ next, next }) catch return;
         spawnCmd(cmd);
     }
 
     pub fn setVolume(self: *SysStatus, percent: u32) void {
-        const clamped = @min(100, percent);
+        const clamped = @min(200, percent);
         self.volume_percent = clamped;
         if (self.shared) |s| {
             s.lock.lock();
@@ -948,7 +999,7 @@ pub const SysStatus = struct {
             s.lock.unlock();
         }
         var cmd_buf: [128]u8 = undefined;
-        const cmd = std.fmt.bufPrint(&cmd_buf, "wpctl set-volume @DEFAULT_AUDIO_SINK@ {d}% 2>/dev/null || pactl set-sink-volume @DEFAULT_SINK@ {d}% 2>/dev/null || true", .{ clamped, clamped }) catch return;
+        const cmd = std.fmt.bufPrint(&cmd_buf, "wpctl set-volume -l 2.0 @DEFAULT_AUDIO_SINK@ {d}% 2>/dev/null || pactl set-sink-volume @DEFAULT_SINK@ {d}% 2>/dev/null || true", .{ clamped, clamped }) catch return;
         spawnCmd(cmd);
     }
 
@@ -1014,7 +1065,7 @@ pub const SysStatus = struct {
     }
 };
 
-fn monotonicMs() i64 {
+pub fn monotonicMs() i64 {
     var ts: c.struct_timespec = undefined;
     if (c.clock_gettime(c.CLOCK_MONOTONIC, &ts) != 0) return 0;
     return @as(i64, @intCast(ts.tv_sec)) * 1000 + @divTrunc(@as(i64, @intCast(ts.tv_nsec)), 1_000_000);
@@ -1076,7 +1127,7 @@ fn queryVolume(vol: *u32, muted: *bool) void {
         }
         if (end_idx > 0) {
             const vol_float = std.fmt.parseFloat(f32, rem[0..end_idx]) catch 0.5;
-            vol.* = @intFromFloat(@min(100.0, vol_float * 100.0));
+            vol.* = @intFromFloat(@min(200.0, vol_float * 100.0));
         }
     }
 }
@@ -1230,6 +1281,13 @@ fn workerLoop(shared: *SharedWorkerState) void {
         };
         var changed = false;
 
+        if (dbus_monitor.mizu_dbus_monitor_check_network_dirty()) {
+            last_wifi = 0;
+        }
+        if (dbus_monitor.mizu_dbus_monitor_check_bluetooth_dirty()) {
+            last_bluetooth = 0;
+        }
+
         if (tools.wpctl and now - last_volume >= volume_interval_ms) {
             queryVolume(&snap.volume_percent, &snap.volume_muted);
             last_volume = now;
@@ -1237,9 +1295,12 @@ fn workerLoop(shared: *SharedWorkerState) void {
         }
 
         if (tools.playerctl and now - last_mpris >= mpris_interval_ms) {
-            queryMpris(&snap.mpris_state, &snap.mpris_track, &snap.mpris_track_len);
+            var snap_mpris: dbus_monitor.MizuMprisSnapshot = undefined;
+            if (!dbus_monitor.mizu_dbus_monitor_get_mpris(&snap_mpris) or snap_mpris.version == 0) {
+                queryMpris(&snap.mpris_state, &snap.mpris_track, &snap.mpris_track_len);
+                changed = true;
+            }
             last_mpris = now;
-            changed = true;
         }
 
         if (now - last_wifi >= network_interval_ms) {

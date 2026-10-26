@@ -47,15 +47,52 @@ pub const HolidayStore = struct {
     pub fn init(allocator: std.mem.Allocator, calendar_file: ?[]const u8) HolidayStore {
         var self = initEmpty(allocator);
         if (builtin.is_test) return self;
+        // Explicit file path takes precedence. Otherwise scan the config
+        // directory for any *.ics and use the first found — there is no
+        // hardcoded filename. Multiple files are intentionally ignored so any
+        // single .ics is consumed as-is.
         if (calendar_file) |raw| {
             if (self.setCustomPath(raw)) {
                 self.loadCache();
                 return self;
             }
+        } else {
+            self.tryScanIcs();
+            if (self.isCustom()) {
+                self.loadCache();
+            } else {
+                self.startFetch();
+            }
         }
-        self.loadCache();
-        self.startFetch();
         return self;
+    }
+
+    /// Scan config dir for any *.ics (no hardcoded filename) and use first found.
+    fn tryScanIcs(self: *HolidayStore) void {
+        var dir_buf: [512]u8 = undefined;
+        const dir = cacheDir(&dir_buf) orelse return;
+        var cmd_buf: [1024]u8 = undefined;
+        const cmd = std.fmt.bufPrintZ(&cmd_buf, "find \"{s}\" -maxdepth 1 -type f -name '*.ics' | sort | head -n 1", .{dir}) catch return;
+        const f = c.popen(cmd.ptr, "r") orelse return;
+        defer _ = c.pclose(f);
+        var line_buf: [512]u8 = undefined;
+        if (c.fgets(&line_buf, line_buf.len, f)) |line_ptr| {
+            const line = std.mem.trim(u8, std.mem.span(line_ptr), " \t\r\n");
+            if (line.len > 0 and std.mem.startsWith(u8, line, "/")) {
+                _ = self.setCustomPath(line);
+            }
+        }
+    }
+
+    fn cacheDir(buf: []u8) ?[]const u8 {
+        if (c.getenv("XDG_CONFIG_HOME")) |raw| {
+            const base = std.mem.span(raw);
+            if (base.len > 0) return std.fmt.bufPrint(buf, "{s}/mizu", .{base}) catch null;
+        }
+        const raw_home = c.getenv("HOME") orelse return null;
+        const home = std.mem.span(raw_home);
+        if (home.len == 0) return null;
+        return std.fmt.bufPrint(buf, "{s}/.config/mizu", .{home}) catch null;
     }
 
     fn setCustomPath(self: *HolidayStore, raw: []const u8) bool {
@@ -103,17 +140,6 @@ pub const HolidayStore = struct {
         if (size <= 0 or size == self.last_size) return false;
         self.loadCache();
         return true;
-    }
-
-    fn cacheDir(buf: []u8) ?[]const u8 {
-        if (c.getenv("XDG_CONFIG_HOME")) |raw| {
-            const base = std.mem.span(raw);
-            if (base.len > 0) return std.fmt.bufPrint(buf, "{s}/mizu", .{base}) catch null;
-        }
-        const raw_home = c.getenv("HOME") orelse return null;
-        const home = std.mem.span(raw_home);
-        if (home.len == 0) return null;
-        return std.fmt.bufPrint(buf, "{s}/.config/mizu", .{home}) catch null;
     }
 
     fn cachePath(buf: []u8) ?[]const u8 {

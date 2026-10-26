@@ -759,6 +759,9 @@ fn runBar(allocator: std.mem.Allocator, cfg: config.Config) !void {
     }
     defer tray_dbus.mizu_tray_dbus_deinit();
 
+    _ = sys_status.dbus_monitor.mizu_dbus_monitor_init(-1);
+    defer sys_status.dbus_monitor.mizu_dbus_monitor_deinit();
+
     std.debug.print("Mizu bar started successfully. Listening for events...\n", .{});
 
     const display_fd = c.wl_display_get_fd(app.display.?);
@@ -1093,6 +1096,7 @@ fn runQuickSettings(allocator: std.mem.Allocator, cfg: config.Config) !void {
             var val: u64 = 0;
             _ = c.read(qs.wake_fd, &val, @sizeOf(u64));
             if (qs.drainAll()) app.needs_redraw = true;
+            if (qs.tick()) app.needs_redraw = true;
         }
 
         if (timer_fd >= 0 and (poll_fds[1].revents & c.POLLIN != 0)) {
@@ -1158,22 +1162,27 @@ fn runCalendar(allocator: std.mem.Allocator, cfg: config.Config) !void {
             .{ .fd = if (sig_fd >= 0) sig_fd else -1, .events = c.POLLIN, .revents = 0 },
         };
 
-        const poll_res = c.poll(&poll_fds, 3, -1);
+        const poll_res = c.poll(&poll_fds, 3, 1000);
         if (poll_res < 0) {
             c.wl_display_cancel_read(app.display.?);
             if (quit_requested) break;
             continue;
         }
 
-        if (poll_fds[0].revents & (c.POLLHUP | c.POLLERR) != 0) {
+        if (poll_res == 0) {
             c.wl_display_cancel_read(app.display.?);
-            break;
-        }
-
-        if (poll_fds[0].revents & c.POLLIN != 0) {
-            _ = c.wl_display_read_events(app.display.?);
+            if (cal.tick()) app.needs_redraw = true;
         } else {
-            c.wl_display_cancel_read(app.display.?);
+            if (poll_fds[0].revents & (c.POLLHUP | c.POLLERR) != 0) {
+                c.wl_display_cancel_read(app.display.?);
+                break;
+            }
+
+            if (poll_fds[0].revents & c.POLLIN != 0) {
+                _ = c.wl_display_read_events(app.display.?);
+            } else {
+                c.wl_display_cancel_read(app.display.?);
+            }
         }
         _ = c.wl_display_dispatch_pending(app.display.?);
 

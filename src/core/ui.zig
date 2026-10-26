@@ -79,6 +79,7 @@ pub const Custom = union(enum) {
         size: u32,
         scale: u32,
         color: Color,
+        rotation: f32 = 0.0,
     },
     callback: struct {
         function: *const fn (target: renderer.Renderer, rect: Rect, data: *const anyopaque) void,
@@ -282,12 +283,17 @@ pub const Ui = struct {
     }
 
     pub fn icon(self: *Ui, name: []const u8, size: u32, color: Color, index: u32) void {
+        self.iconRotated(name, size, color, 0.0, index);
+    }
+
+    pub fn iconRotated(self: *Ui, name: []const u8, size: u32, color: Color, rotation: f32, index: u32) void {
         const data = self.allocator.create(Custom) catch return;
         data.* = .{ .icon = .{
             .name = name,
             .size = size,
             .scale = self.scale,
             .color = color,
+            .rotation = rotation,
         } };
         self.custom(.{ .fixed = @floatFromInt(size) }, .{ .fixed = @floatFromInt(size) }, data, index);
         self.close();
@@ -492,7 +498,13 @@ pub const Ui = struct {
                             std.debug.print("mizu: missing icon '{s}'\n", .{ic.name});
                             return;
                         };
-                        icons.drawIconRasterAt(target.*, raster, bounds.x, bounds.y, self.applyOverlay(ic.color));
+                        const cx = bounds.x + @divTrunc(@as(i32, @intCast(bounds.w)), 2);
+                        const cy = bounds.y + @divTrunc(@as(i32, @intCast(bounds.h)), 2);
+                        if (ic.rotation != 0.0) {
+                            icons.drawIconRasterRotated(target.*, raster, cx, cy, ic.rotation, self.applyOverlay(ic.color));
+                        } else {
+                            icons.drawIconRaster(target.*, raster, cx, cy, self.applyOverlay(ic.color));
+                        }
                     },
                     .callback => |cb| cb.function(target.*, bounds, cb.data),
                 }

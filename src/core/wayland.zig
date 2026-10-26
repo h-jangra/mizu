@@ -778,6 +778,10 @@ pub const WaylandApp = struct {
             try b.render(target_renderer, ipc_ptr, self.output_scale_factor);
         }
 
+        if (self.surface) |surf| {
+            c.wl_surface_set_buffer_scale(surf, @intCast(@max(1, self.output_scale_factor)));
+        }
+
         c.wl_surface_attach(self.surface.?, buf.buffer.?, 0, 0);
         c.wl_surface_damage_buffer(self.surface.?, 0, 0, @intCast(phys_w), @intCast(phys_h));
         buf.busy = true;
@@ -865,7 +869,14 @@ pub const WaylandApp = struct {
     fn output_scale_cb(data: ?*anyopaque, _: ?*c.wl_output, factor: i32) callconv(.c) void {
         const self: *WaylandApp = @ptrCast(@alignCast(data.?));
         if (factor > 0) {
-            self.output_scale_factor = @as(u32, @intCast(factor));
+            const u_factor = @as(u32, @intCast(factor));
+            if (self.output_scale_factor != u_factor) {
+                self.output_scale_factor = u_factor;
+                if (self.surface) |s| {
+                    c.wl_surface_set_buffer_scale(s, factor);
+                }
+                self.needs_redraw = true;
+            }
         }
     }
 

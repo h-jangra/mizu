@@ -2278,7 +2278,7 @@ test "Clipboard performance latency measurements" {
     std.debug.print("[BENCHMARK] Panel deinit (closing during decode/history) latency: {d:.2} µs ({d:.3} ms)\n\n", .{ deinit_us, deinit_us / 1000.0 });
 
     // Allow detached background threads in this unit test to finish exiting cleanly
-    _ = c.usleep(60000);
+    _ = c.usleep(150000);
 }
 
 test "ImageCache enforces byte budget and evicts LRU" {

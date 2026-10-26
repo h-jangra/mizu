@@ -13,14 +13,12 @@ pub fn render(ctx: *types.BarContext, ui: *ui_mod.Ui) !void {
         else if (tag.client_count > 0)
             14
         else
-            10;
+            8;
+
+        const pill_h: u32 = 8;
 
         const id = "bar-workspace";
         const hovered = ui.hovered(id, tag.index);
-
-        const pill_h: u32 = if (tag.is_active or tag.is_urgent)
-            if (ctx.chip_h > 4) ctx.chip_h - 4 else ctx.chip_h
-        else if (ctx.chip_h > 12) ctx.chip_h - 12 else 8;
 
         const bg = if (tag.is_active)
             ctx.cfg.theme.ws_active_bg
@@ -40,19 +38,22 @@ pub fn render(ctx: *types.BarContext, ui: *ui_mod.Ui) !void {
         else
             null;
 
+        const scaled_w = ui.s(w);
+        const scaled_h = ui.s(pill_h);
+
         _ = ui.open(.{
             .id = id,
             .index = tag.index,
-            .width = .{ .fixed = ui.s(w) },
+            .width = .{ .fixed = scaled_w },
             .height = .{ .grow = .{} },
             .align_x = .center,
             .align_y = .center,
         });
         _ = ui.open(.{
-            .width = .{ .fixed = ui.s(w) },
-            .height = .{ .fixed = ui.s(pill_h) },
+            .width = .{ .fixed = scaled_w },
+            .height = .{ .fixed = scaled_h },
             .bg = bg,
-            .radius = ui.f(pill_h / 2),
+            .radius = scaled_h / 2.0,
             .border = if (border_col != null) ui.su(1) else 0,
             .border_color = border_col,
         });

@@ -25,7 +25,6 @@ pub fn render(ctx: *types.BarContext, ui: *ui_mod.Ui) !void {
     const is_active = isKeymapsActive();
     const icon_size = ctx.iconFontSize();
     const id = "bar-keymaps";
-    const chip_w = @as(f32, @floatFromInt(icon_size)) + ui.s(22);
     const hovered = ui.hovered(id, 0);
 
     const icon_fg = if (is_active) ctx.cfg.theme.accent else ctx.cfg.theme.text_muted;
@@ -39,8 +38,9 @@ pub fn render(ctx: *types.BarContext, ui: *ui_mod.Ui) !void {
 
     _ = ui.open(.{
         .id = id,
-        .width = .{ .fixed = chip_w },
+        .width = .fit,
         .height = .{ .grow = .{} },
+        .padding = .{ .left = ui.su(10), .right = ui.su(10) },
         .bg = bg,
         .radius = ui.f(ctx.cfg.pill_radius),
         .border = if (border_col != null) ui.su(1) else 0,

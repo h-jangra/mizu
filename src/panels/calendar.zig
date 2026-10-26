@@ -6,6 +6,7 @@ const config = @import("../core/config.zig");
 const animation = @import("../core/animation.zig");
 const icons = @import("../graphics/icons.zig");
 const sys_status = @import("../services/system_status.zig");
+const holidays = @import("../services/holidays.zig");
 const ui_mod = @import("../core/ui.zig");
 
 /// Shared layout tokens used by Calendar and Quick Settings panels.
@@ -57,8 +58,8 @@ pub const Calendar = struct {
     cfg: config.Config,
     font: renderer.Font,
 
-    width: u32 = 340,
-    height: u32 = 460,
+    width: u32 = 640,
+    height: u32 = 520,
     running: bool = true,
 
     view_year: u32,
@@ -82,6 +83,9 @@ pub const Calendar = struct {
     panel_anim: animation.AnimationGroup = .{},
     panel_alpha: f32 = 1.0,
     panel_slide_y: i32 = 0,
+    last_sec: u8 = 255,
+
+    holiday_store: ?holidays.HolidayStore = null,
 
     pub fn init(allocator: std.mem.Allocator, cfg: config.Config) !Calendar {
         const font = try renderer.Font.init(allocator, cfg.theme.font_family, cfg.typography.calendar_text);
@@ -101,8 +105,8 @@ pub const Calendar = struct {
             .allocator = allocator,
             .cfg = cfg,
             .font = font,
-            .width = 340,
-            .height = 460,
+            .width = 600,
+            .height = 400,
             .view_year = y,
             .view_month = m,
             .today_year = y,
@@ -113,16 +117,22 @@ pub const Calendar = struct {
             .selected_day = d,
             .dnd_enabled = is_dnd,
             .hit_areas = std.ArrayList(CalendarHitArea).empty,
+            .holiday_store = null,
         };
 
-        // Panel open animation: fade in with slight upward slide.
-        cal.panel_anim.add(0.0, 1.0, 180, &animation.Easing.easeOutCubic);
-        cal.panel_anim.set(1, -12.0, 0.0, 180, &animation.Easing.easeOutCubic);
+        // Load any available .ics file (scans config path, no hardcoded name).
+        cal.holiday_store = holidays.HolidayStore.init(allocator, cfg.calendar_file);
+        cal.panel_alpha = 1.0;
+        cal.panel_slide_y = 0;
 
         return cal;
     }
 
     pub fn deinit(self: *Calendar) void {
+        if (self.holiday_store) |*store| {
+            store.deinit();
+            self.holiday_store = null;
+        }
         self.hit_areas.deinit(self.allocator);
         self.font.deinit();
     }
@@ -135,11 +145,14 @@ pub const Calendar = struct {
             changed = true;
         }
 
-        // Update panel open/close animation.
-        const anim_dt: u32 = 16;
-        if (self.panel_anim.updateAll(anim_dt)) changed = true;
-        self.panel_alpha = self.panel_anim.get(0);
-        self.panel_slide_y = @as(i32, @intFromFloat(self.panel_anim.get(1)));
+        const cur_time = c.time(null);
+        var tm: c.struct_tm = undefined;
+        _ = c.localtime_r(&cur_time, &tm);
+        const s: u8 = @intCast(tm.tm_sec);
+        if (self.last_sec != s) {
+            self.last_sec = s;
+            changed = true;
+        }
 
         return changed;
     }
@@ -155,13 +168,13 @@ pub const Calendar = struct {
         return 30;
     }
 
-    // Returns 0 for Monday .. 6 for Sunday
+    // Returns 0 for Sunday .. 6 for Saturday
     pub fn firstDayOfWeek(year: u32, month: u32) u32 {
         const t = [_]u32{ 0, 3, 2, 5, 0, 3, 5, 1, 4, 6, 2, 4 };
         var y = year;
         if (month < 3) y -= 1;
         const dow = (y + y / 4 - y / 100 + y / 400 + t[month - 1] + 1) % 7;
-        return (dow + 6) % 7;
+        return dow;
     }
 
     pub fn weekdayOf(year: u32, month: u32, day: u32) u32 {
@@ -429,90 +442,64 @@ pub const Calendar = struct {
             .border_color = self.cfg.theme.panel_border,
         });
 
-        // Header: previous, month/year title, next.
+        // 2-column layout: left = calendar (header + grid); right = date info + holiday
         _ = ui.open(.{
             .width = .{ .grow = .{} },
-            .height = .{ .fixed = @floatFromInt(nav_size) },
+            .height = .{ .grow = .{} },
+            .direction = .row,
+            .gap = ui.su(10),
+        });
+        // LEFT COLUMN - Calendar
+        _ = ui.open(.{
+            .width = .{ .percent = 0.55 },
+            .height = .{ .grow = .{} },
+            .direction = .column,
+            .gap = ui.su(6),
+        });
+        // Month header: < Month >
+        _ = ui.open(.{
+            .width = .{ .grow = .{} },
+            .height = .{ .fixed = @floatFromInt(44 * scale) },
+            .direction = .row,
             .align_y = .center,
-            .gap = ui.su(4),
+            .gap = ui.su(6),
         });
         {
-            const prev_hov = ui.hovered("cal-prev", 0);
-            _ = ui.open(.{
-                .id = "cal-prev",
-                .width = .{ .fixed = @floatFromInt(nav_size) },
-                .height = .{ .fixed = @floatFromInt(nav_size) },
-                .bg = if (prev_hov) self.cfg.theme.card_hover_bg else self.cfg.theme.surface,
-                .radius = ui.f(6),
-                .align_x = .center,
-                .align_y = .center,
-            });
-            ui.icon("left", head_sz, if (prev_hov) self.cfg.theme.accent else self.cfg.theme.text_main, 0);
+            const prev_mo = ui.hovered("cal-month-prev", 0);
+            _ = ui.open(.{ .id = "cal-month-prev", .index = 0, .width = .{ .fixed = @floatFromInt(nav_size) }, .height = .{ .fixed = @floatFromInt(nav_size) }, .bg = if (prev_mo) self.cfg.theme.card_hover_bg else null, .radius = ui.f(6), .align_x = .center, .align_y = .center });
+            ui.icon("left", head_sz, if (prev_mo) self.cfg.theme.accent else self.cfg.theme.text_muted, 0);
             ui.close();
-            pending[pending_len] = .{ .name = "cal-prev", .index = 0, .action = .prev_month };
+            pending[pending_len] = .{ .name = "cal-month-prev", .index = 0, .action = .prev_month };
             pending_len += 1;
 
-            const title_hov = ui.hovered("cal-title", 0);
             var title_buf: [48]u8 = undefined;
             const title_str = std.fmt.bufPrint(&title_buf, "{s} {d}", .{ monthName(self.view_month), self.view_year }) catch "Calendar";
-            _ = ui.open(.{
-                .id = "cal-title",
-                .width = .{ .grow = .{} },
-                .height = .{ .fixed = @floatFromInt(nav_size) },
-                .align_x = .center,
-                .align_y = .center,
-            });
-            ui.text(title_str, .{
-                .size = head_sz,
-                .color = if (title_hov) self.cfg.theme.accent else self.cfg.theme.text_bright,
-            });
+            _ = ui.open(.{ .id = "cal-month-title", .index = 0, .width = .{ .grow = .{} }, .height = .{ .fixed = @floatFromInt(nav_size) }, .align_x = .center, .align_y = .center });
+            ui.text(title_str, .{ .size = head_sz, .color = self.cfg.theme.text_bright });
             ui.close();
-            pending[pending_len] = .{ .name = "cal-title", .index = 0, .action = .jump_today };
+            pending[pending_len] = .{ .name = "cal-month-title", .index = 0, .action = .jump_today };
             pending_len += 1;
 
-            const next_hov = ui.hovered("cal-next", 0);
-            _ = ui.open(.{
-                .id = "cal-next",
-                .width = .{ .fixed = @floatFromInt(nav_size) },
-                .height = .{ .fixed = @floatFromInt(nav_size) },
-                .bg = if (next_hov) self.cfg.theme.card_hover_bg else self.cfg.theme.surface,
-                .radius = ui.f(6),
-                .align_x = .center,
-                .align_y = .center,
-            });
-            ui.icon("right", head_sz, if (next_hov) self.cfg.theme.accent else self.cfg.theme.text_main, 1);
+            const next_mo = ui.hovered("cal-month-next", 0);
+            _ = ui.open(.{ .id = "cal-month-next", .index = 0, .width = .{ .fixed = @floatFromInt(nav_size) }, .height = .{ .fixed = @floatFromInt(nav_size) }, .bg = if (next_mo) self.cfg.theme.card_hover_bg else null, .radius = ui.f(6), .align_x = .center, .align_y = .center });
+            ui.icon("right", head_sz, if (next_mo) self.cfg.theme.accent else self.cfg.theme.text_muted, 1);
             ui.close();
-            pending[pending_len] = .{ .name = "cal-next", .index = 0, .action = .next_month };
+            pending[pending_len] = .{ .name = "cal-month-next", .index = 0, .action = .next_month };
             pending_len += 1;
         }
         ui.close();
 
-        // Weekday header.
-        const weekdays = [_][]const u8{ "Mo", "Tu", "We", "Th", "Fr", "Sa", "Su" };
-        _ = ui.open(.{
-            .width = .{ .grow = .{} },
-            .height = .{ .fixed = ui.s(22) },
-            .direction = .row,
-            .gap = 0,
-        });
+        // Weekday header (starts on Sunday)
+        const weekdays = [_][]const u8{ "Su", "Mo", "Tu", "We", "Th", "Fr", "Sa" };
+        _ = ui.open(.{ .width = .{ .grow = .{} }, .height = .{ .fixed = ui.s(22) }, .direction = .row, .gap = 0 });
         for (weekdays) |day_name| {
-            _ = ui.open(.{
-                .width = .{ .percent = 1.0 / 7.0 },
-                .height = .{ .grow = .{} },
-                .align_x = .center,
-                .align_y = .center,
-            });
-            ui.text(day_name, .{
-                .size = sec_sz,
-                .color = self.cfg.theme.text_muted,
-            });
+            _ = ui.open(.{ .width = .{ .percent = 1.0 / 7.0 }, .height = .{ .grow = .{} }, .align_x = .center, .align_y = .center });
+            ui.text(day_name, .{ .size = sec_sz, .color = self.cfg.theme.text_muted });
             ui.close();
         }
         ui.close();
 
-        // Six-week date grid. Geometry comes entirely from Clay; hit rectangles
-        // are read back after layout so calendar actions cannot drift from the
-        // painted cells.
+        // Date grid
         const start_dow = firstDayOfWeek(self.view_year, self.view_month);
         const total_days = daysInMonth(self.view_year, self.view_month);
         const prev_m: u32 = if (self.view_month == 1) 12 else self.view_month - 1;
@@ -556,10 +543,10 @@ pub const Calendar = struct {
                 _ = ui.open(.{
                     .id = "cal-cell",
                     .index = cell_idx,
-                    .width = .{ .percent = 1.0 / 7.0 },
-                    .height = .{ .grow = .{} },
+                    .width = .{ .fixed = @floatFromInt(44 * scale) },
+                    .height = .{ .fixed = @floatFromInt(44 * scale) },
                     .bg = cell_bg,
-                    .radius = ui.f(8),
+                    .radius = ui.f(14),
                     .border = if (is_selected) ui.su(2) else 0,
                     .border_color = if (is_selected) self.cfg.theme.accent else null,
                     .align_x = .center,
@@ -568,9 +555,13 @@ pub const Calendar = struct {
 
                 var num_buf: [8]u8 = undefined;
                 const num_str = std.fmt.bufPrint(&num_buf, "{d}", .{date.day}) catch "";
+                const holiday_opt = if (self.holiday_store) |store| store.find(date.year, date.month, date.day) else null;
+                const has_hol = holiday_opt != null;
                 const num_color = if (is_today)
                     self.cfg.theme.accent_fg
                 else if (is_selected)
+                    self.cfg.theme.accent
+                else if (has_hol)
                     self.cfg.theme.accent
                 else if (!in_current)
                     self.cfg.theme.text_muted
@@ -579,7 +570,7 @@ pub const Calendar = struct {
                 else
                     self.cfg.theme.text_main;
                 ui.text(num_str, .{
-                    .size = day_sz,
+                    .size = day_sz * 3 / 2,
                     .color = num_color,
                 });
                 ui.close();
@@ -595,6 +586,128 @@ pub const Calendar = struct {
             ui.close();
         }
         ui.close(); // grid
+
+        ui.close(); // left column
+
+        // RIGHT COLUMN - Date info + holiday (vertical stack)
+        _ = ui.open(.{
+            .width = .{ .percent = 0.45 },
+            .height = .{ .grow = .{} },
+            .direction = .column,
+            .padding = .xy(ui.su(10), ui.su(10)),
+            .gap = ui.su(10),
+            .bg = self.cfg.theme.surface,
+            .radius = ui.f(self.cfg.theme.radius_panel),
+        });
+
+        // 1. Top: Nice styled digital clock with seconds, AM/PM, and outline
+        c.tzset();
+        const cur_time = c.time(null);
+        var tm: c.struct_tm = undefined;
+        _ = c.localtime_r(&cur_time, &tm);
+        const raw_hour: u32 = @intCast(tm.tm_hour);
+        const min_u: u32 = @intCast(tm.tm_min);
+        const sec_u: u32 = @intCast(tm.tm_sec);
+        const hr_12: u32 = if (raw_hour == 0) 12 else if (raw_hour > 12) raw_hour - 12 else raw_hour;
+        const am_pm: []const u8 = if (raw_hour >= 12) "PM" else "AM";
+
+        var clock_buf: [32]u8 = undefined;
+        const clock_str = std.fmt.bufPrint(&clock_buf, "{d:0>2}:{d:0>2}:{d:0>2}", .{ hr_12, min_u, sec_u }) catch "12:00:00";
+
+        _ = ui.open(.{
+            .width = .{ .grow = .{} },
+            .height = .{ .fixed = @floatFromInt(56 * scale) },
+            .direction = .row,
+            .align_x = .center,
+            .align_y = .center,
+            .gap = ui.su(8),
+            .bg = self.cfg.theme.card_bg,
+            .radius = ui.f(10),
+            .border = ui.su(1),
+            .border_color = self.cfg.theme.accent,
+            .padding = .xy(ui.su(12), ui.su(8)),
+        });
+        ui.text(clock_str, .{
+            .size = sec_sz * 3,
+            .color = self.cfg.theme.text_bright,
+            .line_height = @intCast(sec_sz * 3 + 4),
+        });
+        ui.text(am_pm, .{
+            .size = sec_sz + 1,
+            .color = self.cfg.theme.accent,
+            .line_height = @intCast(sec_sz + 2),
+        });
+        ui.close(); // clock card
+
+        // 2. Current day card (no outline, larger day, month on right: "26 Oct")
+        _ = ui.open(.{
+            .width = .{ .grow = .{} },
+            .height = .{ .fixed = @floatFromInt(120 * scale) },
+            .direction = .column,
+            .align_x = .center,
+            .align_y = .center,
+            .gap = ui.su(6),
+            .bg = self.cfg.theme.card_bg,
+            .radius = ui.f(10),
+            .padding = .xy(ui.su(12), ui.su(10)),
+        });
+        _ = ui.open(.{
+            .direction = .row,
+            .align_x = .center,
+            .align_y = .center,
+            .gap = ui.su(10),
+        });
+        var today_day_buf: [16]u8 = undefined;
+        const today_day_str = std.fmt.bufPrint(&today_day_buf, "{d}", .{self.today_day}) catch "";
+        ui.text(today_day_str, .{
+            .size = sec_sz * 5,
+            .color = self.cfg.theme.text_bright,
+            .line_height = @intCast(sec_sz * 5 + 4),
+        });
+        const m_full = monthName(self.today_month);
+        const m_short = if (m_full.len >= 3) m_full[0..3] else m_full;
+        ui.text(m_short, .{
+            .size = sec_sz * 2,
+            .color = self.cfg.theme.accent,
+            .line_height = @intCast(sec_sz * 2 + 2),
+        });
+        ui.close(); // row of day + month
+
+        var today_full_date_buf: [64]u8 = undefined;
+        const weekday_names = [_][]const u8{ "Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday" };
+        const dow = weekdayOf(self.today_year, self.today_month, self.today_day);
+        const dow_str = if (dow < 7) weekday_names[dow] else "";
+        const today_sub_str = std.fmt.bufPrint(&today_full_date_buf, "{s} {d:0>2}/{d:0>2}/{d}", .{
+            dow_str,
+            @as(u32, self.today_day),
+            @as(u32, self.today_month),
+            self.today_year,
+        }) catch "";
+        ui.text(today_sub_str, .{
+            .size = sec_sz * 13 / 8,
+            .color = self.cfg.theme.text_bright,
+            .line_height = @intCast(sec_sz * 13 / 8 + 2),
+        });
+        ui.close(); // day card
+
+        // Holiday info below date
+        const sel_hol = if (self.holiday_store) |store| store.find(self.selected_year, self.selected_month, self.selected_day) else null;
+        if (sel_hol) |hld| {
+            _ = ui.open(.{
+                .width = .{ .grow = .{} },
+                .bg = self.cfg.theme.surface,
+                .radius = ui.f(8),
+                .padding = .xy(ui.su(8), ui.su(6)),
+            });
+            var hbuf: [128]u8 = undefined;
+            const hstr = std.fmt.bufPrint(&hbuf, "{s}", .{hld.summarySlice()}) catch "";
+            ui.text(hstr, .{ .size = head_sz, .color = self.cfg.theme.secondary });
+            ui.close();
+        }
+
+        ui.close(); // right column
+
+        ui.close(); // row
         ui.close(); // root
 
         const commands = ui.endLayout();
@@ -681,6 +794,9 @@ test "Calendar date calculations" {
     try std.testing.expectEqual(@as(u32, 28), Calendar.daysInMonth(2026, 2));
     try std.testing.expectEqual(@as(u32, 29), Calendar.daysInMonth(2024, 2));
     try std.testing.expectEqual(@as(u32, 31), Calendar.daysInMonth(2026, 10));
+    try std.testing.expectEqual(@as(u32, 4), Calendar.firstDayOfWeek(2026, 10)); // Oct 1, 2026 is Thursday (0=Sun..4=Thu)
+    try std.testing.expectEqual(@as(u32, 0), Calendar.weekdayOf(2026, 10, 4)); // Oct 4, 2026 is Sunday (0)
+    try std.testing.expectEqual(@as(u32, 1), Calendar.weekdayOf(2026, 10, 5)); // Oct 5, 2026 is Monday (1)
 
     const allocator = std.testing.allocator;
     var cfg = config.Config.init(allocator);
