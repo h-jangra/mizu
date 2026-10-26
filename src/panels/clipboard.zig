@@ -7,6 +7,7 @@ const config = @import("../core/config.zig");
 const sys_status = @import("../services/system_status.zig");
 const text_input = @import("../core/text_input.zig");
 const icons = @import("../graphics/icons.zig");
+const ui_mod = @import("../core/ui.zig");
 
 pub const ClipType = enum {
     text,
@@ -463,6 +464,47 @@ pub const ClipAction = union(enum) {
     close,
 };
 
+const ClipInputDraw = struct {
+    panel: *ClipboardPanel,
+    size: u32,
+
+    fn draw(target: renderer.Renderer, rect: renderer.Rect, data: *const anyopaque) void {
+        const self: *const ClipInputDraw = @ptrCast(@alignCast(data));
+        self.panel.input.render(
+            target,
+            &self.panel.font,
+            rect.x,
+            rect.y,
+            rect.w,
+            rect.h,
+            rect.x,
+            self.panel.cfg.theme.text_bright,
+            self.panel.cfg.theme.text_muted,
+            self.panel.cfg.theme.accent,
+            self.size,
+        );
+    }
+};
+
+const ClipPreviewDraw = struct {
+    panel: *ClipboardPanel,
+    selected: ?usize,
+    scale: u32,
+
+    fn draw(target: renderer.Renderer, rect: renderer.Rect, data: *const anyopaque) void {
+        const self: *const ClipPreviewDraw = @ptrCast(@alignCast(data));
+        self.panel.renderPreviewColumn(
+            target,
+            rect.x,
+            rect.y,
+            rect.w,
+            rect.h,
+            self.selected,
+            self.scale,
+        ) catch {};
+    }
+};
+
 pub const ClipboardPanel = struct {
     allocator: std.mem.Allocator,
     cfg: config.Config,
@@ -471,6 +513,7 @@ pub const ClipboardPanel = struct {
     // 2-column layout dimensions
     width: u32 = 1500,
     height: u32 = 750,
+    ui_scale: u32 = 1,
     running: bool = true,
 
     items: std.ArrayList(ClipItem),
@@ -965,8 +1008,8 @@ pub const ClipboardPanel = struct {
         self.pointer_y = y;
 
         if (self.input.drag_active) {
-            const pad_x: i32 = 18;
-            const text_ox = pad_x + 28;
+            const sc: i32 = @intCast(self.ui_scale);
+            const text_ox = (24 + 40) * sc;
             _ = self.input.handlePointerMotion(x, text_ox, &self.font);
             return true;
         }
@@ -983,11 +1026,12 @@ pub const ClipboardPanel = struct {
     pub fn handlePointerButton(self: *ClipboardPanel, x: i32, y: i32, button: u32, is_pressed: bool) bool {
         if (button != 272) return false; // BTN_LEFT
 
-        const pad_x: i32 = 18;
-        const col1_w: u32 = 310;
-        const search_y: i32 = 16 + 28;
-        const search_h: u32 = 32;
-        const text_ox = pad_x + 28;
+        const sc: i32 = @intCast(self.ui_scale);
+        const pad_x: i32 = 24 * sc;
+        const col1_w: u32 = 480 * self.ui_scale;
+        const search_y: i32 = (20 + 36) * sc;
+        const search_h: u32 = 48 * self.ui_scale;
+        const text_ox = (24 + 40) * sc;
 
         if (is_pressed) {
             if (self.input.handlePointerDown(x, y, pad_x, search_y, col1_w, search_h, text_ox, &self.font)) {
@@ -1159,244 +1203,295 @@ pub const ClipboardPanel = struct {
 
     pub fn render(self: *ClipboardPanel, target: renderer.Renderer, scale: u32) !void {
         self.hit_areas.clearRetainingCapacity();
+        self.ui_scale = scale;
 
-        // 0. Transparent base
         target.clear(theme.Color.transparent);
 
         const w = target.width;
         const h = target.height;
         const radius: u32 = self.cfg.panel_radius * scale;
 
-        // Container: Clean flat surface with subtle rounded border and drop shadow
         target.drawDropShadow(0, 0, w, h, radius, 10 * scale, self.cfg.theme.shadow_dark);
-        target.fillRoundedRect(0, 0, w, h, radius, self.cfg.theme.panel_bg);
-        target.drawRoundedBorder(0, 0, w, h, radius, 1 * scale, self.cfg.theme.panel_border);
 
-        const pad_x: i32 = 24 * @as(i32, @intCast(scale));
-        const head_y: i32 = 20 * @as(i32, @intCast(scale));
-
-        // ================= COLUMN 1: List (Left, 480px) =================
-        const col1_x: i32 = pad_x;
-        const col1_w: u32 = 480 * scale;
-
-        // Header: Clean title, count, and minimal clear action
         const icon_sz = self.cfg.typography.bar_icon * scale;
         const sec_sz = self.cfg.typography.secondary * scale;
         const title_sz = self.cfg.typography.title * scale;
-        const icon_cx = col1_x + @divTrunc(@as(i32, @intCast(icon_sz)), 2);
-        const icon_cy = head_y + 20 * @as(i32, @intCast(scale)) + @divTrunc(@as(i32, @intCast(icon_sz)), 2);
-        icons.drawSvgIcon(
-            target,
-            self.allocator,
-            "clipboard",
-            icon_sz,
-            scale,
-            icon_cx,
-            icon_cy,
-            self.cfg.theme.accent,
-        );
-        const text_x = icon_cx + @divTrunc(@as(i32, @intCast(icon_sz)), 2) + 6 * @as(i32, @intCast(scale));
-        const ascender_half = @as(u32, @intCast(self.font.ascender_px)) * scale / 2;
-        target.drawTextWithSize(&self.font, "Clipboard", text_x, icon_cy + @as(i32, @intCast(ascender_half)), title_sz, self.cfg.theme.text_bright);
-
-        // Simple count text / loading indicator
-        var count_buf: [32]u8 = undefined;
-        const count_str = if (self.history_loading)
-            "..."
-        else
-            (std.fmt.bufPrint(&count_buf, "{d}", .{self.items.items.len}) catch "");
-        target.drawTextWithSize(&self.font, count_str, col1_x + 148 * @as(i32, @intCast(scale)), head_y + 20 * @as(i32, @intCast(scale)), sec_sz, self.cfg.theme.text_muted);
-
-        // Clear action button: minimal text button
-        const clear_w: u32 = 64 * scale;
-        const clear_h: u32 = 28 * scale;
-        const clear_x = col1_x + @as(i32, @intCast(col1_w)) - @as(i32, @intCast(clear_w));
-        const clear_hover = self.isAreaHovered(clear_x, head_y, clear_w, clear_h);
-        if (clear_hover) {
-            target.fillSquircle(clear_x, head_y, clear_w, clear_h, 6 * scale, self.cfg.theme.elevated);
-        }
-        const clr_fg = if (clear_hover) self.cfg.theme.error_color else self.cfg.theme.text_muted;
-        const clr_text = "Clear";
-        const clr_tw = target.measureTextWithSize(&self.font, clr_text, self.cfg.typography.button_text * scale);
-        const clr_tx = clear_x + @divTrunc(@as(i32, @intCast(clear_w)) - @as(i32, @intCast(clr_tw)), 2);
-        target.drawTextWithSize(&self.font, clr_text, clr_tx, head_y + 19 * @as(i32, @intCast(scale)), self.cfg.typography.button_text * scale, clr_fg);
-        try self.hit_areas.append(self.allocator, .{
-            .x = clear_x,
-            .y = head_y,
-            .w = clear_w,
-            .h = clear_h,
-            .action = .clear_all,
-        });
-
-        // Search Input Box (Flat, 48px height)
-        const search_y: i32 = head_y + 36;
-        const search_h: u32 = 48;
-        const is_query_active = self.input.getText().len > 0 or self.input.focused;
-
-        target.fillRoundedRect(col1_x, search_y, col1_w, search_h, self.cfg.theme.radius_pill, self.cfg.theme.surface);
-        const search_border_col = if (is_query_active) self.cfg.theme.accent else self.cfg.theme.border;
-        target.drawRoundedBorder(col1_x, search_y, col1_w, search_h, self.cfg.theme.radius_pill, 1, search_border_col);
-
-        const icon_col = if (self.input.focused) self.cfg.theme.accent else self.cfg.theme.text_muted;
-        icons.drawSvgIcon(
-            target,
-            self.allocator,
-            "search",
-            self.cfg.typography.bar_icon * scale,
-            scale,
-            col1_x + 12 + @divTrunc(@as(i32, @intCast(self.cfg.typography.bar_icon * scale)), 2),
-            search_y + 32,
-            icon_col,
-        );
-
-        const text_ox = col1_x + 40 * @as(i32, @intCast(scale));
-        self.input.render(
-            target,
-            &self.font,
-            col1_x,
-            search_y,
-            col1_w,
-            search_h,
-            text_ox,
-            self.cfg.theme.text_bright,
-            self.cfg.theme.text_muted,
-            self.cfg.theme.accent,
-            self.cfg.typography.ui * scale,
-        );
-
-        // History items list (Clean flat cards, 10 visible rows)
-        const list_start_y: i32 = search_y + 58;
-        const item_h: u32 = 52;
-        const item_gap: u32 = 6;
-        const visible_rows: usize = 10;
+        const button_sz = self.cfg.typography.button_text * scale;
+        const ui_sz = self.cfg.typography.ui * scale;
+        const col1_w = 480 * scale;
 
         const total_filtered = self.filtered_indices.items.len;
+        const selected_actual: ?usize = if (total_filtered > 0 and self.selected_index < total_filtered)
+            self.filtered_indices.items[self.selected_index]
+        else
+            null;
+
+        var ui = try ui_mod.Ui.begin(
+            self.allocator,
+            &self.font,
+            w,
+            h,
+            scale,
+            self.pointer_x,
+            self.pointer_y,
+            false,
+            1.0 / 60.0,
+        );
+        defer ui.deinit();
+
+        ui.root(.{
+            .direction = .row,
+            .padding = .{
+                .left = ui.su(24),
+                .right = ui.su(24),
+                .top = ui.su(20),
+                .bottom = ui.su(20),
+            },
+            .gap = ui.su(16),
+            .bg = self.cfg.theme.panel_bg,
+            .radius = ui.f(self.cfg.panel_radius),
+            .border = ui.su(1),
+            .border_color = self.cfg.theme.panel_border,
+            .align_y = .top,
+        });
+
+        // Left: header, search, list.
+        _ = ui.open(.{
+            .width = .{ .fixed = @floatFromInt(col1_w) },
+            .height = .{ .grow = .{} },
+            .direction = .column,
+            .gap = 0,
+        });
+
+        _ = ui.open(.{
+            .width = .{ .grow = .{} },
+            .height = .{ .fixed = @floatFromInt(36 * scale) },
+            .direction = .row,
+            .gap = ui.su(6),
+            .align_y = .center,
+        });
+        _ = ui.open(.{
+            .width = .{ .fixed = @floatFromInt(icon_sz) },
+            .height = .{ .fixed = @floatFromInt(icon_sz) },
+            .align_x = .center,
+            .align_y = .center,
+        });
+        ui.icon("clipboard", icon_sz, self.cfg.theme.accent, 0);
+        ui.close();
+        ui.text("Clipboard", .{ .size = title_sz, .color = self.cfg.theme.text_bright });
+
+        var count_buf: [32]u8 = undefined;
+        const count_str = if (self.history_loading) "..." else (std.fmt.bufPrint(&count_buf, "{d}", .{self.items.items.len}) catch "");
+        ui.text(count_str, .{ .size = sec_sz, .color = self.cfg.theme.text_muted });
+
+        ui.spacerSized(.{ .grow = .{} }, .{ .fixed = 0 });
+
+        const clear_hov = ui.hovered("clip-clear", 0);
+        _ = ui.open(.{
+            .id = "clip-clear",
+            .width = .{ .fixed = @floatFromInt(64 * scale) },
+            .height = .{ .fixed = @floatFromInt(28 * scale) },
+            .bg = if (clear_hov) self.cfg.theme.elevated else null,
+            .radius = ui.f(6),
+            .align_x = .center,
+            .align_y = .center,
+        });
+        ui.text("Clear", .{
+            .size = button_sz,
+            .color = if (clear_hov) self.cfg.theme.error_color else self.cfg.theme.text_muted,
+        });
+        ui.close();
+        ui.close(); // header
+
+        // Search field.
+        const is_query_active = self.input.getText().len > 0 or self.input.focused;
+        _ = ui.open(.{
+            .width = .{ .grow = .{} },
+            .height = .{ .fixed = @floatFromInt(48 * scale) },
+            .direction = .row,
+            .padding = .{ .left = ui.su(12), .right = ui.su(12) },
+            .gap = ui.su(8),
+            .bg = self.cfg.theme.surface,
+            .radius = ui.f(self.cfg.theme.radius_pill),
+            .border = ui.su(1),
+            .border_color = if (is_query_active) self.cfg.theme.accent else self.cfg.theme.border,
+            .align_y = .center,
+        });
+        _ = ui.open(.{
+            .width = .{ .fixed = @floatFromInt(icon_sz) },
+            .height = .{ .fixed = @floatFromInt(icon_sz) },
+            .align_x = .center,
+            .align_y = .center,
+        });
+        ui.icon("search", icon_sz, if (self.input.focused) self.cfg.theme.accent else self.cfg.theme.text_muted, 0);
+        ui.close();
+
+        const input_data = try ui.allocator.create(ClipInputDraw);
+        input_data.* = .{ .panel = self, .size = ui_sz };
+        const input_custom = try ui.allocator.create(ui_mod.Custom);
+        input_custom.* = .{ .callback = .{ .function = ClipInputDraw.draw, .data = input_data } };
+        ui.custom(.{ .grow = .{} }, .{ .grow = .{} }, input_custom, 0);
+        ui.close();
+        ui.close(); // search
+
+        // History list.
+        _ = ui.open(.{
+            .width = .{ .grow = .{} },
+            .height = .{ .grow = .{} },
+            .direction = .column,
+            .gap = ui.su(6),
+            .padding = .{ .top = ui.su(10) },
+            .clip_vertical = true,
+        });
+
         if (total_filtered == 0) {
-            const empty_y = list_start_y + 160;
+            _ = ui.open(.{
+                .width = .{ .grow = .{} },
+                .height = .{ .grow = .{} },
+                .direction = .column,
+                .align_x = .center,
+                .align_y = .center,
+                .gap = ui.su(10),
+            });
             const empty_msg = if (self.history_loading)
                 "Loading clipboard history..."
             else if (self.items.items.len == 0)
                 "Clipboard is empty"
             else
                 "No matching items";
-            const empty_icon_name = if (self.history_loading) "refresh" else "clipboard";
-            const empty_icon_sz = self.cfg.typography.title * scale;
-            const em_w = target.measureTextWithSize(&self.font, empty_msg, self.cfg.typography.ui);
-            const em_x = col1_x + @divTrunc(@as(i32, @intCast(col1_w)) - @as(i32, @intCast(em_w)), 2);
-            icons.drawSvgIcon(
-                target,
-                self.allocator,
-                empty_icon_name,
-                empty_icon_sz,
-                scale,
-                em_x + @divTrunc(@as(i32, @intCast(em_w)), 2),
-                empty_y - 12,
-                self.cfg.theme.text_muted,
-            );
-            target.drawTextWithSize(&self.font, empty_msg, em_x, empty_y, self.cfg.typography.ui, self.cfg.theme.text_muted);
+            ui.icon(if (self.history_loading) "refresh" else "clipboard", title_sz, self.cfg.theme.text_muted, 0);
+            ui.text(empty_msg, .{ .size = ui_sz, .color = self.cfg.theme.text_muted });
+            ui.close();
         } else {
+            const visible_rows: usize = 10;
             var r: usize = 0;
-            var cur_y = list_start_y;
             while (r < visible_rows and (self.scroll_offset + r) < total_filtered) : (r += 1) {
                 const filter_idx = self.scroll_offset + r;
                 const actual_idx = self.filtered_indices.items[filter_idx];
                 const item = self.items.items[actual_idx];
-
                 const is_selected = (filter_idx == self.selected_index);
-                const is_hovered = self.isAreaHovered(col1_x, cur_y, col1_w, item_h);
+                const card_hov = ui.hovered("clip-card", @intCast(r));
 
-                // Card surface & subtle selection / hover styling
-                if (is_selected) {
-                    const sel_bg = Color.init(42, self.cfg.theme.accent.r, self.cfg.theme.accent.g, self.cfg.theme.accent.b);
-                    target.fillRoundedRect(col1_x, cur_y, col1_w, item_h, self.cfg.theme.radius_button, sel_bg);
-                    target.drawRoundedBorder(col1_x, cur_y, col1_w, item_h, self.cfg.theme.radius_button, 1, Color.init(80, self.cfg.theme.accent.r, self.cfg.theme.accent.g, self.cfg.theme.accent.b));
-                    target.fillRoundedRect(col1_x + 2, cur_y + 8, 4, item_h - 16, 2, self.cfg.theme.accent);
-                } else if (is_hovered) {
-                    target.fillRoundedRect(col1_x, cur_y, col1_w, item_h, self.cfg.theme.radius_button, self.cfg.theme.surface);
-                    target.drawRoundedBorder(col1_x, cur_y, col1_w, item_h, self.cfg.theme.radius_button, 1, self.cfg.theme.border);
-                }
-
-                // First line from pre-parsed in-memory preview
                 const first_line = if (item.first_line_len > 0) item.first_line[0..item.first_line_len] else item.preview[0..item.preview_len];
                 var clean_buf: [160]u8 = undefined;
                 var clean_len: usize = 0;
                 for (first_line) |b| {
                     if (clean_len >= clean_buf.len) break;
                     if (b == '\n' or b == '\r') break;
-                    if (b == '\t') {
-                        clean_buf[clean_len] = ' ';
-                    } else {
-                        clean_buf[clean_len] = b;
-                    }
+                    clean_buf[clean_len] = if (b == '\t') ' ' else b;
                     clean_len += 1;
                 }
                 const clean_slice = std.mem.trim(u8, clean_buf[0..clean_len], " ");
 
-                const del_size: u32 = 36;
-                const text_start_x = if (is_selected) col1_x + 16 else col1_x + 12;
-                const max_txt_w = col1_w - @as(u32, @intCast(text_start_x - col1_x)) - del_size - 14;
-
                 var trunc_buf: [160]u8 = undefined;
-                const t_str = truncateStr(target, &self.font, clean_slice, max_txt_w, &trunc_buf);
-                const txt_color = if (is_selected) self.cfg.theme.text_bright else self.cfg.theme.text_main;
-                const text_baseline = cur_y + @divTrunc(@as(i32, @intCast(item_h)) + self.font.ascender_px, 2) - 1;
-                target.drawText(&self.font, t_str, text_start_x, text_baseline, txt_color);
+                const t_str = truncateStr(target, &self.font, clean_slice, col1_w -| 92 * scale, &trunc_buf);
 
-                // Subtle Delete button on the right
-                const del_x = col1_x + @as(i32, @intCast(col1_w)) - @as(i32, @intCast(del_size)) - 10;
-                const del_y = cur_y + @divTrunc(@as(i32, @intCast(item_h)) - @as(i32, @intCast(del_size)), 2);
-                const del_hover = self.isAreaHovered(del_x, del_y, del_size, del_size);
-                if (del_hover) {
-                    target.fillSquircle(del_x, del_y, del_size, del_size, 5, Color.init(45, self.cfg.theme.error_color.r, self.cfg.theme.error_color.g, self.cfg.theme.error_color.b));
+                _ = ui.open(.{
+                    .id = "clip-card",
+                    .index = @intCast(r),
+                    .width = .{ .grow = .{} },
+                    .height = .{ .fixed = @floatFromInt(52 * scale) },
+                    .direction = .row,
+                    .padding = .{ .left = ui.su(10), .right = ui.su(10) },
+                    .gap = ui.su(6),
+                    .bg = if (is_selected)
+                        Color.init(42, self.cfg.theme.accent.r, self.cfg.theme.accent.g, self.cfg.theme.accent.b)
+                    else if (card_hov)
+                        self.cfg.theme.surface
+                    else
+                        null,
+                    .radius = ui.f(self.cfg.theme.radius_button),
+                    .border = if (is_selected or card_hov) ui.su(1) else 0,
+                    .border_color = if (is_selected)
+                        Color.init(80, self.cfg.theme.accent.r, self.cfg.theme.accent.g, self.cfg.theme.accent.b)
+                    else
+                        self.cfg.theme.border,
+                    .align_y = .center,
+                });
+
+                if (is_selected) {
+                    ui.rect(.{ .fixed = @floatFromInt(4 * scale) }, .{ .fixed = @floatFromInt(36 * scale) }, self.cfg.theme.accent, ui.f(2), .{});
                 }
-                icons.drawSvgIcon(
-                    target,
-                    self.allocator,
-                    "trash",
-                    self.cfg.typography.bar_icon * scale,
-                    scale,
-                    del_x + @divTrunc(@as(i32, @intCast(del_size)), 2),
-                    del_y + @divTrunc(@as(i32, @intCast(del_size)), 2),
-                    if (del_hover) self.cfg.theme.error_color else Color.init(100, self.cfg.theme.text_muted.r, self.cfg.theme.text_muted.g, self.cfg.theme.text_muted.b),
-                );
 
-                try self.hit_areas.append(self.allocator, .{
-                    .x = del_x,
-                    .y = del_y,
-                    .w = del_size,
-                    .h = del_size,
-                    .action = .{ .delete_item = actual_idx },
+                _ = ui.open(.{
+                    .width = .{ .grow = .{} },
+                    .height = .{ .grow = .{} },
+                    .align_y = .center,
+                    .clip_horizontal = true,
                 });
-
-                // Card click hit area: selects or copies
-                try self.hit_areas.append(self.allocator, .{
-                    .x = col1_x,
-                    .y = cur_y,
-                    .w = col1_w - del_size - 12,
-                    .h = item_h,
-                    .action = .{ .click_card = filter_idx },
+                ui.text(t_str, .{
+                    .size = self.cfg.typography.ui * scale,
+                    .color = if (is_selected) self.cfg.theme.text_bright else self.cfg.theme.text_main,
                 });
+                ui.close();
 
-                cur_y += @as(i32, @intCast(item_h + item_gap));
+                const del_hov = ui.hovered("clip-del", @intCast(r));
+                _ = ui.open(.{
+                    .id = "clip-del",
+                    .index = @intCast(r),
+                    .width = .{ .fixed = @floatFromInt(36 * scale) },
+                    .height = .{ .fixed = @floatFromInt(36 * scale) },
+                    .bg = if (del_hov) Color.init(45, self.cfg.theme.error_color.r, self.cfg.theme.error_color.g, self.cfg.theme.error_color.b) else null,
+                    .radius = ui.f(5),
+                    .align_x = .center,
+                    .align_y = .center,
+                });
+                ui.icon("trash", icon_sz, if (del_hov) self.cfg.theme.error_color else Color.init(100, self.cfg.theme.text_muted.r, self.cfg.theme.text_muted.g, self.cfg.theme.text_muted.b), 0);
+                ui.close();
+
+                ui.close(); // card
+            }
+        }
+        ui.close(); // list
+        ui.close(); // left column
+
+        ui.rect(.{ .fixed = @floatFromInt(scale) }, .{ .grow = .{} }, Color.init(30, self.cfg.theme.border.r, self.cfg.theme.border.g, self.cfg.theme.border.b), 0, .{});
+
+        // Right: live preview uses the existing renderer through a Clay custom leaf.
+        const preview_data = try ui.allocator.create(ClipPreviewDraw);
+        preview_data.* = .{ .panel = self, .selected = selected_actual, .scale = scale };
+        const preview_custom = try ui.allocator.create(ui_mod.Custom);
+        preview_custom.* = .{ .callback = .{ .function = ClipPreviewDraw.draw, .data = preview_data } };
+        ui.custom(.{ .grow = .{} }, .{ .grow = .{} }, preview_custom, 0);
+        ui.close(); // preview
+
+        ui.close(); // root
+
+        const commands = ui.endLayout();
+        const iscale: i32 = @intCast(scale);
+        if (ui.rectOf("clip-clear", 0)) |rect| {
+            try self.appendHitRect(rect, iscale, .clear_all);
+        }
+        if (total_filtered > 0) {
+            const visible_rows: usize = 10;
+            var r: usize = 0;
+            while (r < visible_rows and (self.scroll_offset + r) < total_filtered) : (r += 1) {
+                const filter_idx = self.scroll_offset + r;
+                const actual_idx = self.filtered_indices.items[filter_idx];
+                // Delete is appended first so it wins the overlap test.
+                if (ui.rectOf("clip-del", @intCast(r))) |rect| {
+                    try self.appendHitRect(rect, iscale, .{ .delete_item = actual_idx });
+                }
+                if (ui.rectOf("clip-card", @intCast(r))) |rect| {
+                    try self.appendHitRect(rect, iscale, .{ .click_card = filter_idx });
+                }
             }
         }
 
-        // ================= VERTICAL DIVIDER =================
-        const sep_x: i32 = col1_x + @as(i32, @intCast(col1_w)) + 16;
-        const sep_y: i32 = 20;
-        const sep_h: u32 = if (h > 40) h - 40 else h;
-        target.fillRect(sep_x, sep_y, 1, sep_h, Color.init(30, self.cfg.theme.border.r, self.cfg.theme.border.g, self.cfg.theme.border.b));
+        ui.render(target, commands);
+    }
 
-        // ================= COLUMN 2: Minimal Live Preview (Right) =================
-        const col2_x: i32 = sep_x + 18;
-        const col2_w: u32 = if (w > @as(u32, @intCast(col2_x + pad_x))) w - @as(u32, @intCast(col2_x + pad_x)) else 400;
-
-        const selected_actual: ?usize = if (total_filtered > 0 and self.selected_index < total_filtered)
-            self.filtered_indices.items[self.selected_index]
-        else
-            null;
-
-        try self.renderPreviewColumn(target, col2_x, head_y, col2_w, sep_h, selected_actual, scale);
+    fn appendHitRect(self: *ClipboardPanel, rect: renderer.Rect, iscale: i32, action: ClipAction) !void {
+        const lw: u32 = @intCast(@divTrunc(@as(i32, @intCast(rect.w)) + iscale - 1, iscale));
+        const lh: u32 = @intCast(@divTrunc(@as(i32, @intCast(rect.h)) + iscale - 1, iscale));
+        if (lw == 0 or lh == 0) return;
+        try self.hit_areas.append(self.allocator, .{
+            .x = @divTrunc(rect.x, iscale),
+            .y = @divTrunc(rect.y, iscale),
+            .w = lw,
+            .h = lh,
+            .action = action,
+        });
     }
 
     fn renderPreviewColumn(
@@ -1409,9 +1504,8 @@ pub const ClipboardPanel = struct {
         selected_actual_idx: ?usize,
         scale: u32,
     ) !void {
-        _ = h;
         const card_y = y + 36;
-        const card_h: u32 = if (self.height > @as(u32, @intCast(card_y)) + 64) self.height - @as(u32, @intCast(card_y)) - 64 else 580;
+        const card_h: u32 = if (h > 36) h - 36 else 0;
 
         if (selected_actual_idx == null or selected_actual_idx.? >= self.items.items.len) {
             target.fillSquircle(x, card_y, w, card_h, 10, self.cfg.theme.surface);

@@ -1,7 +1,7 @@
 const std = @import("std");
 const theme = @import("../core/theme.zig");
-const draw = @import("../draw.zig");
 const types = @import("context.zig");
+const ui_mod = @import("../core/ui.zig");
 
 fn formatBatteryLabel(buf: *[32]u8, cap: u8, charging: bool, seconds: ?i64) []const u8 {
     if (seconds) |sec| {
@@ -39,12 +39,12 @@ fn batterySvgName(cap: u8, charging: bool) []const u8 {
     if (cap <= 10) return "battery-empty";
     if (cap >= 90) return "battery-full";
     if (cap >= 60) return "battery-high";
-    if (cap >= 30) return "battery-medium";
+    if (cap >= 30) return "battery-middle";
     return "battery-low";
 }
 
-pub fn render(ctx: *types.BarContext, ui: *draw.DrawContext, right_x: i32) !i32 {
-    if (!ctx.sys.has_battery) return right_x;
+pub fn render(ctx: *types.BarContext, ui: *ui_mod.Ui) !void {
+    if (!ctx.sys.has_battery) return;
 
     const cap: u8 = @min(ctx.sys.bat_capacity, 100);
     const charging = ctx.sys.bat_status == .charging;
@@ -54,10 +54,14 @@ pub fn render(ctx: *types.BarContext, ui: *draw.DrawContext, right_x: i32) !i32 
     const label = formatBatteryLabel(&label_buf, cap, charging, ctx.sys.bat_seconds_remaining);
 
     const icon_size = ctx.iconFontSize();
-    const text_size = ctx.textFontSize();
-    const text_w = ui.textWidth(ctx.font, label, text_size);
-    const width = icon_size + ui.scale(8) + text_w + ui.scale(20);
-    const x = right_x - @as(i32, @intCast(width));
+    const id = "bar-battery";
+    const hovered = ui.hovered(id, 0);
+    const border_col = if (hovered)
+        ctx.cfg.theme.accent
+    else if (ctx.cfg.theme.pill_border.a > 0)
+        ctx.cfg.theme.pill_border
+    else
+        null;
 
     const color = if (ctx.sys.ac_online)
         theme.Color.rgb(0x81, 0xC7, 0x84)
@@ -66,15 +70,27 @@ pub fn render(ctx: *types.BarContext, ui: *draw.DrawContext, right_x: i32) !i32 
     else
         ctx.cfg.theme.battery_fg;
 
-    ui.roundedRect(x, ctx.chip_y, width, ctx.chip_h, ctx.cfg.pill_radius, ctx.cfg.theme.battery_bg);
+    _ = ui.open(.{
+        .id = id,
+        .width = .fit,
+        .height = .{ .grow = .{} },
+        .padding = .{
+            .left = ui.su(6),
+            .right = ui.su(10),
+        },
+        .gap = ui.su(8),
+        .bg = if (hovered) ctx.cfg.theme.pill_hover else ctx.cfg.theme.battery_bg,
+        .radius = ui.f(ctx.cfg.pill_radius),
+        .border = if (border_col != null) ui.su(1) else 0,
+        .border_color = border_col,
+        .align_y = .center,
+    });
+    ui.icon(svg_name, icon_size, color, 0);
+    ui.text(label, .{
+        .size = ctx.textFontSize(),
+        .color = ctx.cfg.theme.text_main,
+    });
+    ui.close();
 
-    const icon_x = x + @as(i32, @intCast(ui.scale(6)));
-    const icon_y = ctx.chip_y + @divTrunc(@as(i32, @intCast(ctx.chip_h)) - @as(i32, @intCast(icon_size)), 2);
-    ui.icon(svg_name, icon_x, icon_y, icon_size, color);
-
-    const text_x = icon_x + @as(i32, @intCast(icon_size)) + @as(i32, @intCast(ui.scale(8)));
-    ui.textCenteredY(ctx.font, label, text_x, ctx.chip_y, ctx.chip_h, text_size, ctx.cfg.theme.text_main);
-
-    try ui.addClickable(x, ctx.chip_y, width, ctx.chip_h, .{ .command = "mizu quicksettings" });
-    return x;
+    try ctx.linkClick(ui, id, 0, .{ .command = "mizu quicksettings" }, null);
 }

@@ -695,7 +695,7 @@ pub const WaylandApp = struct {
 
         _ = c.zwlr_layer_surface_v1_add_listener(layer_surf, &layer_surface_listener, self);
 
-        // Center on screen
+        // Centered overlay
         c.zwlr_layer_surface_v1_set_anchor(layer_surf, 0);
         c.zwlr_layer_surface_v1_set_size(layer_surf, w, h);
         c.zwlr_layer_surface_v1_set_exclusive_zone(layer_surf, -1);
@@ -751,7 +751,7 @@ pub const WaylandApp = struct {
         defer target_renderer.deinit();
 
         if (self.power) |p| {
-            try p.render(target_renderer);
+            try p.render(target_renderer, self.output_scale_factor);
         } else if (self.keyoverlay) |ko| {
             try ko.render(target_renderer, self.output_scale_factor);
         } else if (self.osd) |o| {

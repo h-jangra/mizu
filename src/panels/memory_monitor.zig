@@ -6,6 +6,7 @@ const icons = @import("../graphics/icons.zig");
 const text_input = @import("../core/text_input.zig");
 const theme_mod = @import("../core/theme.zig");
 const proc_mem = @import("../services/process_memory.zig");
+const ui_mod = @import("../core/ui.zig");
 
 const Color = theme_mod.Color;
 
@@ -29,6 +30,16 @@ const POINTER_BUTTON_LEFT: u32 = 272;
 
 const FILTER_TEXT_LEFT: f64 = 38.0;
 const FILTER_INNER_RIGHT: f64 = 36.0;
+
+const MemFilterDraw = struct {
+    panel: *MemoryMonitor,
+    scale: u32,
+
+    fn draw(target: renderer.Renderer, rect: renderer.Rect, data: *const anyopaque) void {
+        const self: *const MemFilterDraw = @ptrCast(@alignCast(data));
+        self.panel.drawFilterContent(target, rect, self.scale);
+    }
+};
 
 pub const MemoryMonitor = struct {
     allocator: std.mem.Allocator,
@@ -493,165 +504,304 @@ pub const MemoryMonitor = struct {
     }
 
     pub fn render(self: *MemoryMonitor, target: renderer.Renderer, scale: u32) void {
-        const px = panelX();
-        const py = panelY();
         const th = self.cfg.theme;
         const is_light = th.panel_bg.isLight();
         const overlay = if (is_light) Color.rgb(0, 0, 0) else Color.rgb(255, 255, 255);
-
         const text_main = th.text_main;
         const text_muted = th.text_muted;
         const accent = th.accent;
-        const panel_bg = th.panel_bg;
-        const panel_border = th.panel_border;
 
         target.clear(Color.transparent);
 
-        const shadow_col = Color.init(61, 0, 0, 0);
+        const inset: u32 = @intFromFloat(INSET * @as(f64, @floatFromInt(scale)));
+        const panel_w: u32 = @intFromFloat(PANEL_W * @as(f64, @floatFromInt(scale)));
+        const panel_h: u32 = @intFromFloat(PANEL_H * @as(f64, @floatFromInt(scale)));
         target.drawDropShadow(
-            @as(i32, @intFromFloat(px)),
-            @as(i32, @intFromFloat(py)),
-            @as(u32, @intFromFloat(PANEL_W)),
-            @as(u32, @intFromFloat(PANEL_H)),
-            16,
-            @as(u32, @intFromFloat(@as(f64, @floatFromInt(scale)) * 8.0)),
-            shadow_col,
-        );
-        target.fillRoundedRect(
-            @as(i32, @intFromFloat(px)),
-            @as(i32, @intFromFloat(py)),
-            @as(u32, @intFromFloat(PANEL_W)),
-            @as(u32, @intFromFloat(PANEL_H)),
-            16,
-            panel_bg,
-        );
-        target.drawRoundedBorder(
-            @as(i32, @intFromFloat(px)),
-            @as(i32, @intFromFloat(py)),
-            @as(u32, @intFromFloat(PANEL_W - 1)),
-            @as(u32, @intFromFloat(PANEL_H - 1)),
-            15,
-            1,
-            panel_border,
+            @intCast(inset),
+            @intCast(inset),
+            panel_w,
+            panel_h,
+            @intFromFloat(16 * @as(f64, @floatFromInt(scale))),
+            8 * scale,
+            Color.init(61, 0, 0, 0),
         );
 
-        self.renderHeader(target, text_main, text_muted, accent, overlay, is_light);
-        self.renderFilter(target, text_main, text_muted, accent, overlay, is_light);
-        self.renderColumns(target, text_muted);
-        self.renderList(target, text_main, text_muted, accent, overlay, is_light);
-    }
+        var ui = ui_mod.Ui.begin(
+            self.allocator,
+            &self.measure,
+            target.width,
+            target.height,
+            scale,
+            -1,
+            -1,
+            false,
+            1.0 / 60.0,
+        ) catch return;
+        defer ui.deinit();
 
-    fn renderHeader(
-        self: *MemoryMonitor,
-        target: renderer.Renderer,
-        text_main: Color,
-        text_muted: Color,
-        accent: Color,
-        overlay: Color,
-        is_light: bool,
-    ) void {
-        const py = panelY();
-        const title_sz = self.cfg.typography.title;
-        const sec_sz = self.cfg.typography.secondary;
+        ui.root(.{
+            .direction = .column,
+            .padding = .all(ui.su(@intFromFloat(INSET))),
+            .align_x = .left,
+            .align_y = .top,
+        });
 
-        target.drawTextWithSize(&self.measure, "Memory", @as(i32, @intFromFloat(contentX0())), @as(i32, @intFromFloat(py + 32.0)), title_sz, text_main);
+        _ = ui.open(.{
+            .width = .{ .grow = .{} },
+            .height = .{ .grow = .{} },
+            .direction = .column,
+            .padding = .{ .left = ui.su(PAD), .right = ui.su(PAD) },
+            .bg = th.panel_bg,
+            .radius = ui.f(16),
+            .border = ui.su(1),
+            .border_color = th.panel_border,
+            .align_y = .top,
+        });
+
+        // Header: title, usage summary, and memory bar.
+        _ = ui.open(.{
+            .width = .{ .grow = .{} },
+            .height = .{ .fixed = ui.s(66) },
+            .direction = .column,
+            .padding = .{ .top = ui.su(14) },
+            .gap = ui.su(6),
+            .align_y = .top,
+        });
 
         const used_gib = @as(f64, @floatFromInt(self.mem.used_kb)) / 1048576.0;
         const total_gib = @as(f64, @floatFromInt(self.mem.total_kb)) / 1048576.0;
         const percent = self.mem.used_percent;
-
         var pct_buf: [32]u8 = undefined;
         const pct_str = std.fmt.bufPrint(&pct_buf, "{d:.0}%", .{percent}) catch "0%";
-
         var mem_buf: [64]u8 = undefined;
         const mem_str = std.fmt.bufPrint(&mem_buf, "{d:.1} / {d:.1} GB", .{ used_gib, total_gib }) catch "";
 
-        const pct_w = self.measure.measureTextWithSize(pct_str, sec_sz);
-        const pct_x = @as(i32, @intFromFloat(contentX1())) - @as(i32, @intCast(pct_w));
-        target.drawTextWithSize(&self.measure, pct_str, pct_x, @as(i32, @intFromFloat(py + 31.0)), sec_sz, accent);
-        const mem_w = self.measure.measureTextWithSize(mem_str, sec_sz);
-        const mem_x = @as(i32, @intFromFloat(contentX1())) - @as(i32, @intCast(pct_w)) - 10 - @as(i32, @intCast(mem_w));
-        target.drawTextWithSize(&self.measure, mem_str, mem_x, @as(i32, @intFromFloat(py + 31.0)), sec_sz, text_muted);
+        _ = ui.open(.{
+            .width = .{ .grow = .{} },
+            .height = .{ .fixed = ui.s(24) },
+            .direction = .row,
+            .gap = ui.su(8),
+            .align_y = .center,
+        });
+        ui.text("Memory", .{ .size = self.cfg.typography.title * scale, .color = text_main });
+        ui.spacerSized(.{ .grow = .{} }, .{ .fixed = 0 });
+        ui.text(mem_str, .{ .size = self.cfg.typography.secondary * scale, .color = text_muted });
+        ui.text(pct_str, .{ .size = self.cfg.typography.secondary * scale, .color = accent });
+        ui.close();
 
-        const bar_x = contentX0();
-        const bar_y = py + 46.0;
-        const bar_w = contentX1() - bar_x;
-        const bar_h = 5.0;
-        target.fillRoundedRect(
-            @as(i32, @intFromFloat(bar_x)),
-            @as(i32, @intFromFloat(bar_y)),
-            @as(u32, @intFromFloat(bar_w)),
-            @as(i32, @intFromFloat(bar_h)),
-            @as(u32, @intFromFloat(bar_h / 2.0)),
-            alphaCol(overlay, if (is_light) 0.08 else 0.10),
+        _ = ui.open(.{
+            .width = .{ .grow = .{} },
+            .height = .{ .fixed = ui.s(5) },
+            .bg = alphaCol(overlay, if (is_light) 0.08 else 0.10),
+            .radius = 2.5 * @as(f32, @floatFromInt(scale)),
+        });
+        ui.rect(
+            .{ .percent = std.math.clamp(percent / 100.0, 0.0, 1.0) },
+            .{ .grow = .{} },
+            accent,
+            2.5 * @as(f32, @floatFromInt(scale)),
+            .{},
         );
+        ui.close();
+        ui.close(); // header
 
-        const fraction = std.math.clamp(percent / 100.0, 0.0, 1.0);
-        const fill_w = bar_w * fraction;
-        if (fill_w > 0.0) {
-            target.fillRoundedRect(
-                @as(i32, @intFromFloat(bar_x)),
-                @as(i32, @intFromFloat(bar_y)),
-                @as(u32, @intFromFloat(@max(fill_w, bar_h))),
-                @as(u32, @intFromFloat(bar_h)),
-                @as(u32, @intFromFloat(bar_h / 2.0)),
-                accent,
-            );
+        // Filter field: the whole field is a Clay box with a custom leaf for
+        // text, selection and caret rendering.
+        _ = ui.open(.{
+            .id = "mem-filter",
+            .width = .{ .grow = .{} },
+            .height = .{ .fixed = ui.s(FILTER_H) },
+            .bg = alphaCol(overlay, if (is_light) 0.05 else 0.07),
+            .radius = ui.f(9),
+            .border = ui.su(1),
+            .border_color = alphaCol(overlay, 0.10),
+        });
+        const filter_data = ui.allocator.create(MemFilterDraw) catch return;
+        filter_data.* = .{ .panel = self, .scale = scale };
+        const filter_custom = ui.allocator.create(ui_mod.Custom) catch return;
+        filter_custom.* = .{ .callback = .{ .function = MemFilterDraw.draw, .data = filter_data } };
+        ui.custom(.{ .grow = .{} }, .{ .grow = .{} }, filter_custom, 0);
+        ui.close();
+        ui.close(); // filter
+
+        // Column headings at the same logical offsets used by pointer hit tests.
+        _ = ui.open(.{
+            .width = .{ .grow = .{} },
+            .height = .{ .fixed = ui.s(36) },
+            .direction = .row,
+            .align_y = .center,
+        });
+        _ = ui.open(.{
+            .width = .{ .fixed = ui.s(246) },
+            .height = .{ .grow = .{} },
+            .direction = .row,
+            .padding = .{ .left = ui.su(6) },
+            .align_y = .center,
+        });
+        ui.text("Process", .{ .size = self.cfg.typography.secondary * scale, .color = text_muted });
+        ui.spacerSized(.{ .grow = .{} }, .{ .fixed = 0 });
+        ui.text("PID", .{ .size = self.cfg.typography.secondary * scale, .color = text_muted });
+        ui.close();
+        ui.text("Memory", .{
+            .size = self.cfg.typography.secondary * scale,
+            .color = text_muted,
+            .width = ui.s(86),
+            .text_align = .right,
+        });
+        _ = ui.open(.{
+            .width = .{ .fixed = ui.s(56) },
+            .height = .{ .grow = .{} },
+            .padding = .{ .right = ui.su(2) },
+            .align_x = .right,
+            .align_y = .center,
+        });
+        ui.text("%", .{ .size = self.cfg.typography.secondary * scale, .color = text_muted });
+        ui.close();
+        ui.close(); // columns
+
+        // Process list.
+        _ = ui.open(.{
+            .width = .{ .grow = .{} },
+            .height = .{ .grow = .{} },
+            .direction = .column,
+            .gap = 0,
+            .clip_vertical = true,
+            .align_y = .top,
+        });
+
+        if (self.filtered.items.len == 0) {
+            _ = ui.open(.{
+                .width = .{ .grow = .{} },
+                .height = .{ .grow = .{} },
+                .direction = .column,
+                .align_x = .center,
+                .align_y = .center,
+                .gap = ui.su(6),
+            });
+            ui.text(icons.glyphs.memory, .{ .size = 28 * scale, .color = alphaCol(text_muted, 0.45) });
+            ui.text("No processes match", .{ .size = 13 * scale, .color = text_muted });
+            ui.text("Try a different filter", .{ .size = 11 * scale, .color = alphaCol(text_muted, 0.6) });
+            ui.close();
+        } else {
+            const vis = visibleRows();
+            var i: usize = 0;
+            while (i < vis) : (i += 1) {
+                const fi = self.scroll + i;
+                if (fi >= self.filtered.items.len) break;
+                const proc = self.processes.items[self.filtered.items[fi]];
+                const is_selected = self.selected != null and self.selected.? == fi;
+                const is_hovered = self.hover != null and self.hover.? == fi;
+
+                const row_bg: ?Color = if (is_selected)
+                    alphaCol(accent, 0.16)
+                else if (is_hovered)
+                    alphaCol(overlay, if (is_light) 0.045 else 0.06)
+                else
+                    null;
+
+                _ = ui.open(.{
+                    .width = .{ .grow = .{} },
+                    .height = .{ .fixed = ui.s(ROW_H) },
+                    .direction = .row,
+                    .bg = row_bg,
+                    .radius = ui.f(7),
+                    .align_y = .center,
+                });
+
+                if (is_selected) {
+                    ui.rect(.{ .fixed = ui.s(3) }, .{ .fixed = ui.s(18) }, accent, 1.5 * @as(f32, @floatFromInt(scale)), .{});
+                }
+
+                _ = ui.open(.{
+                    .width = .{ .fixed = ui.s(if (is_selected) 243 else 246) },
+                    .height = .{ .grow = .{} },
+                    .direction = .row,
+                    .padding = .{ .left = ui.su(if (is_selected) 3 else 6) },
+                    .align_y = .center,
+                    .clip_horizontal = true,
+                });
+                var name_buf: [160]u8 = undefined;
+                const name = renderer.truncateText(&self.row_measure, proc.name[0..proc.name_len], @intFromFloat(nameMaxWidth() * @as(f64, @floatFromInt(scale))), self.cfg.typography.secondary * scale, &name_buf);
+                ui.text(name, .{ .size = self.cfg.typography.secondary * scale, .color = text_main });
+                ui.spacerSized(.{ .grow = .{} }, .{ .fixed = 0 });
+                var pid_buf: [16]u8 = undefined;
+                const pid_str = std.fmt.bufPrint(&pid_buf, "{d}", .{proc.pid}) catch "";
+                ui.text(pid_str, .{ .size = self.cfg.typography.secondary * scale, .color = text_muted });
+                ui.close();
+
+                var mem_row_buf: [32]u8 = undefined;
+                const mem_row_str = formatMemory(&mem_row_buf, proc.rss_kb);
+                ui.text(mem_row_str, .{
+                    .size = self.cfg.typography.secondary * scale,
+                    .color = text_main,
+                    .width = ui.s(86),
+                    .text_align = .right,
+                });
+
+                var pct_row_buf: [24]u8 = undefined;
+                const pct_row = if (self.mem.total_kb > 0)
+                    @as(f64, @floatFromInt(proc.rss_kb)) * 100.0 / @as(f64, @floatFromInt(self.mem.total_kb))
+                else
+                    0.0;
+                const pct_row_str = std.fmt.bufPrint(&pct_row_buf, "{d:.1}%", .{pct_row}) catch "";
+                _ = ui.open(.{
+                    .width = .{ .fixed = ui.s(56) },
+                    .height = .{ .grow = .{} },
+                    .padding = .{ .right = ui.su(2) },
+                    .align_x = .right,
+                    .align_y = .center,
+                });
+                ui.text(pct_row_str, .{ .size = self.cfg.typography.secondary * scale, .color = text_muted });
+                ui.close();
+
+                ui.close(); // row
+            }
         }
+        ui.close(); // list
+        ui.close(); // panel
+        ui.close(); // root
+
+        const commands = ui.endLayout();
+        ui.render(target, commands);
+        self.renderScrollbarDraw(target, overlay, scale);
     }
 
-    fn renderFilter(
-        self: *MemoryMonitor,
-        target: renderer.Renderer,
-        text_main: Color,
-        text_muted: Color,
-        accent: Color,
-        overlay: Color,
-        is_light: bool,
-    ) void {
-        const fx = contentX0();
-        const fy = filterTop();
-        const fw = filterWidth();
-        const fh = FILTER_H;
-        const ui_sz = self.cfg.typography.ui;
+    fn drawFilterContent(self: *MemoryMonitor, target: renderer.Renderer, rect: renderer.Rect, scale: u32) void {
+        const text_muted = self.cfg.theme.text_muted;
+        const text_main = self.cfg.theme.text_main;
+        const accent = self.cfg.theme.accent;
+        const ui_sz = self.cfg.typography.ui * scale;
+        const sc: i32 = @intCast(scale);
+        const fx: f64 = @floatFromInt(rect.x);
+        const fy: f64 = @floatFromInt(rect.y);
+        const fw: f64 = @floatFromInt(rect.w);
+        const fh: f64 = @floatFromInt(rect.h);
 
-        target.fillRoundedRect(
-            @as(i32, @intFromFloat(fx)),
-            @as(i32, @intFromFloat(fy)),
-            @as(u32, @intFromFloat(fw)),
-            @as(u32, @intFromFloat(fh)),
-            9,
-            alphaCol(overlay, if (is_light) 0.05 else 0.07),
-        );
-        target.drawRoundedBorder(
-            @as(i32, @intFromFloat(fx)),
-            @as(i32, @intFromFloat(fy)),
-            @as(u32, @intFromFloat(fw - 1)),
-            @as(i32, @intFromFloat(fh - 1)),
-            8,
-            1,
-            alphaCol(overlay, 0.10),
+        icons.drawSvgIcon(
+            target,
+            self.allocator,
+            "search",
+            16 * scale,
+            scale,
+            @intFromFloat(fx + 14.0 * @as(f64, @floatFromInt(scale))),
+            @intFromFloat(fy + fh / 2.0),
+            text_muted,
         );
 
-        const ascent = self.measure.ascender_px;
-        const baseline = fy + (fh + @as(f64, @floatFromInt(ascent))) / 2.0 - 0.5;
+        const ascender: f64 = @floatFromInt(self.measure.ascender_px * sc);
+        const text_height: f64 = @floatFromInt(self.measure.height_px * sc);
+        const baseline = fy + (fh + ascender) / 2.0 - 0.5;
+        const clip_x: i32 = @intFromFloat(fx + (FILTER_TEXT_LEFT - 2.0) * @as(f64, @floatFromInt(scale)));
+        const clip_y: i32 = @intFromFloat(fy + 4.0 * @as(f64, @floatFromInt(scale)));
+        const clip_w: u32 = @intFromFloat((fw - FILTER_TEXT_LEFT - FILTER_INNER_RIGHT + 4.0) * @as(f64, @floatFromInt(scale)));
+        const clip_h: u32 = @intFromFloat((fh - 8.0 * @as(f64, @floatFromInt(scale))));
+        const clipped = target.withClip(renderer.Rect.init(clip_x, clip_y, clip_w, clip_h));
 
-        target.drawTextWithSize(&self.measure, icons.glyphs.search, @as(i32, @intFromFloat(fx + 12.0)), @as(i32, @intFromFloat(baseline)), ui_sz, text_muted);
-
-        const clip_x = @as(i32, @intFromFloat(fx + FILTER_TEXT_LEFT - 2.0));
-        const clip_y = @as(i32, @intFromFloat(fy + 4.0));
-        const clip_w = @as(i32, @intFromFloat(fw - FILTER_TEXT_LEFT - FILTER_INNER_RIGHT + 4.0));
-        const clip_h = @as(i32, @intFromFloat(fh - 8.0));
-        const clipped = target.withClip(renderer.Rect.init(clip_x, clip_y, @intCast(clip_w), @intCast(clip_h)));
-
-        const text_ascent = self.measure.ascender_px;
-        const text_height = self.measure.height_px;
-        const text_baseline = fy + (fh + @as(f64, @floatFromInt(text_ascent))) / 2.0;
         const text = self.filter.getText();
-        const tx = filterTextX() - self.filter_scroll;
+        const tx: f64 = fx + (FILTER_TEXT_LEFT * @as(f64, @floatFromInt(scale))) - self.filter_scroll * @as(f64, @floatFromInt(scale));
 
         if (text.len == 0) {
-            clipped.drawTextWithSize(&self.measure, "Filter processes\u{2026}", @as(i32, @intFromFloat(tx)), @as(i32, @intFromFloat(text_baseline)), ui_sz, alphaCol(text_muted, 0.75));
+            clipped.drawTextWithSize(&self.measure, "Filter processes\u{2026}", @intFromFloat(tx), @intFromFloat(baseline), ui_sz, alphaCol(text_muted, 0.75));
         } else {
             if (self.filter.selection_anchor) |anchor| {
                 if (anchor != self.filter.cursor_idx) {
@@ -660,157 +810,65 @@ pub const MemoryMonitor = struct {
                     const x0 = tx + self.measurePrefixWidth(text, lo, ui_sz);
                     const x1 = tx + self.measurePrefixWidth(text, hi, ui_sz);
                     clipped.fillRoundedRect(
-                        @as(i32, @intFromFloat(x0)),
-                        @as(i32, @intFromFloat(text_baseline - @as(f64, @floatFromInt(text_ascent)) - 1.0)),
-                        @as(u32, @intFromFloat(x1 - x0)),
-                        @as(u32, @intFromFloat(@as(f64, @floatFromInt(text_height)) + 2.0)),
-                        3,
+                        @intFromFloat(x0),
+                        @intFromFloat(baseline - ascender - 1.0),
+                        @intFromFloat(x1 - x0),
+                        @intFromFloat(text_height + 2.0),
+                        3 * scale,
                         alphaCol(accent, 0.30),
                     );
                 }
             }
-            clipped.drawTextWithSize(&self.measure, text, @as(i32, @intFromFloat(tx)), @as(i32, @intFromFloat(text_baseline)), ui_sz, text_main);
+            clipped.drawTextWithSize(&self.measure, text, @intFromFloat(tx), @intFromFloat(baseline), ui_sz, text_main);
         }
 
         if (self.filter.focused) {
             const caret_x = tx + self.measurePrefixWidth(text, @min(self.filter.cursor_idx, text.len), ui_sz);
             clipped.fillRoundedRect(
-                @as(i32, @intFromFloat(caret_x)),
-                @as(i32, @intFromFloat(text_baseline - @as(f64, @floatFromInt(text_ascent)))),
-                @as(u32, @intFromFloat(1.5)),
-                @as(u32, @intFromFloat(@as(f64, @floatFromInt(text_height)))),
-                1,
+                @intFromFloat(caret_x),
+                @intFromFloat(baseline - ascender),
+                @intFromFloat(1.5 * @as(f64, @floatFromInt(scale))),
+                @intFromFloat(text_height),
+                scale,
                 accent,
             );
         }
 
         if (text.len > 0) {
-            const cx = contentX1() - 20.0;
-            const cy = fy + fh / 2.0;
-            icons.drawLine(target, @floatCast(cx - 4.0), @floatCast(cy - 4.0), @floatCast(cx + 4.0), @floatCast(cy + 4.0), @as(f32, 1.4), text_muted);
-            icons.drawLine(target, @floatCast(cx + 4.0), @floatCast(cy - 4.0), @floatCast(cx - 4.0), @floatCast(cy + 4.0), @as(f32, 1.4), text_muted);
+            const cx: f64 = fx + fw - 20.0 * @as(f64, @floatFromInt(scale));
+            const cy: f64 = fy + fh / 2.0;
+            const r: f64 = 4.0 * @as(f64, @floatFromInt(scale));
+            const line_w: f32 = @floatCast(1.4 * @as(f64, @floatFromInt(scale)));
+            icons.drawLine(target, @floatCast(cx - r), @floatCast(cy - r), @floatCast(cx + r), @floatCast(cy + r), line_w, text_muted);
+            icons.drawLine(target, @floatCast(cx + r), @floatCast(cy - r), @floatCast(cx - r), @floatCast(cy + r), line_w, text_muted);
         }
     }
 
-    fn renderColumns(self: *MemoryMonitor, target: renderer.Renderer, text_muted: Color) void {
-        const sec_sz = self.cfg.typography.secondary;
-        const baseline = panelY() + HEADER_BASELINE;
-        target.drawTextWithSize(&self.measure, "Process", @as(i32, @intFromFloat(nameX())), @as(i32, @intFromFloat(baseline)), sec_sz, text_muted);
-        target.drawTextWithSize(&self.measure, "PID", @as(i32, @intFromFloat(pidRight())) - @as(i32, @intCast(self.measure.measureTextWithSize("PID", sec_sz))), @as(i32, @intFromFloat(baseline)), sec_sz, text_muted);
-        target.drawTextWithSize(&self.measure, "Memory", @as(i32, @intFromFloat(memRight())) - @as(i32, @intCast(self.measure.measureTextWithSize("Memory", sec_sz))), @as(i32, @intFromFloat(baseline)), sec_sz, text_muted);
-        target.drawTextWithSize(&self.measure, "%", @as(i32, @intFromFloat(pctRight())) - @as(i32, @intCast(self.measure.measureTextWithSize("%", sec_sz))), @as(i32, @intFromFloat(baseline)), sec_sz, text_muted);
-    }
-
-    fn renderList(
-        self: *MemoryMonitor,
-        target: renderer.Renderer,
-        text_main: Color,
-        text_muted: Color,
-        accent: Color,
-        overlay: Color,
-        is_light: bool,
-    ) void {
-        const top = listTop();
-        const bottom = listBottom();
-        const width = contentX1() - contentX0();
+    fn renderScrollbarDraw(self: *MemoryMonitor, target: renderer.Renderer, overlay: Color, scale: u32) void {
         const vis = visibleRows();
-        const sec_sz = self.cfg.typography.secondary;
-
-        if (self.filtered.items.len == 0) {
-            self.renderEmpty(target, text_muted, top, bottom);
-            return;
-        }
-
-        const clip_x = @as(i32, @intFromFloat(contentX0() - 8.0));
-        const clip_y = @as(i32, @intFromFloat(top));
-        const clip_w = @as(i32, @intFromFloat(width + 16.0));
-        const clip_h = @as(i32, @intFromFloat(bottom - top));
-        const clipped = target.withClip(renderer.Rect.init(clip_x, clip_y, @intCast(clip_w), @intCast(clip_h)));
-
-        var i: usize = 0;
-        while (i < vis) : (i += 1) {
-            const fi = self.scroll + i;
-            if (fi >= self.filtered.items.len) break;
-            const proc = self.processes.items[self.filtered.items[fi]];
-            const row_y = top + @as(f64, @floatFromInt(i)) * ROW_H;
-            const is_selected = self.selected != null and self.selected.? == fi;
-            const is_hovered = self.hover != null and self.hover.? == fi;
-
-            if (is_selected or is_hovered) {
-                const bg = if (is_selected)
-                    alphaCol(accent, 0.16)
-                else
-                    alphaCol(overlay, if (is_light) 0.045 else 0.06);
-                clipped.fillRoundedRect(
-                    @as(i32, @intFromFloat(contentX0() - 6.0)),
-                    @as(i32, @intFromFloat(row_y + 3.0)),
-                    @as(u32, @intFromFloat(width + 12.0)),
-                    @as(u32, @intFromFloat(ROW_H - 6.0)),
-                    7,
-                    bg,
-                );
-                if (is_selected) {
-                    clipped.fillRoundedRect(
-                        @as(i32, @intFromFloat(contentX0() - 6.0)),
-                        @as(i32, @intFromFloat(row_y + 10.0)),
-                        3,
-                        @as(u32, @intFromFloat(ROW_H - 20.0)),
-                        2,
-                        accent,
-                    );
-                }
-            }
-
-            const baseline = row_y + (ROW_H + @as(f64, @floatFromInt(self.measure.ascender_px))) / 2.0 - 1.0;
-
-            var name_buf: [160]u8 = undefined;
-            const name = renderer.truncateText(&self.row_measure, proc.name[0..proc.name_len], @as(u32, @intFromFloat(nameMaxWidth())), sec_sz, &name_buf);
-            clipped.drawTextWithSize(&self.measure, name, @as(i32, @intFromFloat(nameX())), @as(i32, @intFromFloat(baseline)), sec_sz, text_main);
-
-            var pid_buf: [16]u8 = undefined;
-            const pid_str = std.fmt.bufPrint(&pid_buf, "{d}", .{proc.pid}) catch "";
-            const pid_w = self.measure.measureTextWithSize(pid_str, sec_sz);
-            clipped.drawTextWithSize(&self.measure, pid_str, @as(i32, @intFromFloat(pidRight())) - @as(i32, @intCast(pid_w)), @as(i32, @intFromFloat(baseline)), sec_sz, text_muted);
-
-            var mem_buf: [32]u8 = undefined;
-            const mem_str = formatMemory(&mem_buf, proc.rss_kb);
-            const mem_w = self.measure.measureTextWithSize(mem_str, sec_sz);
-            clipped.drawTextWithSize(&self.measure, mem_str, @as(i32, @intFromFloat(memRight())) - @as(i32, @intCast(mem_w)), @as(i32, @intFromFloat(baseline)), sec_sz, text_main);
-
-            var pct_buf: [24]u8 = undefined;
-            const pct = if (self.mem.total_kb > 0)
-                @as(f64, @floatFromInt(proc.rss_kb)) * 100.0 / @as(f64, @floatFromInt(self.mem.total_kb))
-            else
-                0.0;
-            const pct_str = std.fmt.bufPrint(&pct_buf, "{d:.1}%", .{pct}) catch "";
-            const pct_w = self.measure.measureTextWithSize(pct_str, sec_sz);
-            clipped.drawTextWithSize(&self.measure, pct_str, @as(i32, @intFromFloat(pctRight())) - @as(i32, @intCast(pct_w)), @as(i32, @intFromFloat(baseline)), sec_sz, text_muted);
-        }
-
-        self.renderScrollbar(target, overlay, top, bottom, vis);
-    }
-
-    fn renderScrollbar(self: *MemoryMonitor, target: renderer.Renderer, overlay: Color, top: f64, bottom: f64, vis: usize) void {
         const count = self.filtered.items.len;
         if (count <= vis or vis == 0) return;
 
-        const track_x = panelX() + PANEL_W - 9.0;
-        const track_y = top + 2.0;
-        const track_h = bottom - top - 4.0;
+        const s: f64 = @floatFromInt(scale);
+        const top = listTop() * s;
+        const bottom = listBottom() * s;
+        const track_x = (panelX() + PANEL_W - 9.0) * s;
+        const track_y = top + 2.0 * s;
+        const track_h = bottom - top - 4.0 * s;
         if (track_h <= 0.0) return;
 
         target.fillRoundedRect(
-            @as(i32, @intFromFloat(track_x)),
-            @as(i32, @intFromFloat(track_y)),
-            3,
-            @as(u32, @intFromFloat(track_h)),
-            2,
+            @intFromFloat(track_x),
+            @intFromFloat(track_y),
+            @intFromFloat(3.0 * s),
+            @intFromFloat(track_h),
+            @intFromFloat(2.0 * s),
             alphaCol(overlay, 0.07),
         );
 
         const max_scroll = count - vis;
         const ratio = @as(f64, @floatFromInt(vis)) / @as(f64, @floatFromInt(count));
-        const thumb_h = @max(24.0, track_h * ratio);
+        const thumb_h = @max(24.0 * s, track_h * ratio);
         const t = if (max_scroll > 0)
             @as(f64, @floatFromInt(self.scroll)) / @as(f64, @floatFromInt(max_scroll))
         else
@@ -818,31 +876,16 @@ pub const MemoryMonitor = struct {
         const thumb_y = track_y + (track_h - thumb_h) * t;
 
         target.fillRoundedRect(
-            @as(i32, @intFromFloat(track_x)),
-            @as(i32, @intFromFloat(thumb_y)),
-            3,
-            @as(u32, @intFromFloat(thumb_h)),
-            2,
+            @intFromFloat(track_x),
+            @intFromFloat(thumb_y),
+            @intFromFloat(3.0 * s),
+            @intFromFloat(thumb_h),
+            @intFromFloat(2.0 * s),
             alphaCol(overlay, 0.24),
         );
     }
 
-    fn renderEmpty(self: *MemoryMonitor, target: renderer.Renderer, text_muted: Color, top: f64, bottom: f64) void {
-        const cx = panelX() + PANEL_W / 2.0;
-        const cy = (top + bottom) / 2.0;
 
-        const icon = icons.glyphs.memory;
-        const icon_w = self.measure.measureTextWithSize(icon, 28);
-        target.drawTextWithSize(&self.measure, icon, @as(i32, @intFromFloat(cx - @as(f64, @floatFromInt(icon_w)) / 2.0)), @as(i32, @intFromFloat(cy - 4.0)), 28, alphaCol(text_muted, 0.45));
-
-        const msg = "No processes match";
-        const msg_w = self.measure.measureTextWithSize(msg, 13);
-        target.drawTextWithSize(&self.measure, msg, @as(i32, @intFromFloat(cx - @as(f64, @floatFromInt(msg_w)) / 2.0)), @as(i32, @intFromFloat(cy + 28.0)), 13, text_muted);
-
-        const hint = "Try a different filter";
-        const hint_w = self.measure.measureTextWithSize(hint, 11);
-        target.drawTextWithSize(&self.measure, hint, @as(i32, @intFromFloat(cx - @as(f64, @floatFromInt(hint_w)) / 2.0)), @as(i32, @intFromFloat(cy + 48.0)), 11, alphaCol(text_muted, 0.6));
-    }
 };
 
 fn processMatches(proc: proc_mem.ProcessInfo, needle: []const u8) bool {

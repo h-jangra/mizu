@@ -1,10 +1,8 @@
-const renderer = @import("../core/renderer.zig");
 const theme = @import("../core/theme.zig");
 const types = @import("context.zig");
+const ui_mod = @import("../core/ui.zig");
 
-pub fn render(ctx: *types.BarContext, target: renderer.Renderer, start_x: i32) !i32 {
-    var x = start_x;
-
+pub fn render(ctx: *types.BarContext, ui: *ui_mod.Ui) !void {
     for (ctx.ipc.tags) |tag| {
         if (!tag.is_active and !tag.is_urgent and tag.client_count == 0) continue;
 
@@ -17,13 +15,12 @@ pub fn render(ctx: *types.BarContext, target: renderer.Renderer, start_x: i32) !
         else
             10;
 
-        const hovered = ctx.isHovered(x, ctx.chip_y, w, ctx.chip_h);
+        const id = "bar-workspace";
+        const hovered = ui.hovered(id, tag.index);
 
         const pill_h: u32 = if (tag.is_active or tag.is_urgent)
             if (ctx.chip_h > 4) ctx.chip_h - 4 else ctx.chip_h
         else if (ctx.chip_h > 12) ctx.chip_h - 12 else 8;
-        const pill_y: i32 = ctx.chip_y + @as(i32, @intCast((ctx.chip_h - pill_h) / 2));
-        const radius: u32 = pill_h / 2;
 
         const bg = if (tag.is_active)
             ctx.cfg.theme.ws_active_bg
@@ -36,18 +33,32 @@ pub fn render(ctx: *types.BarContext, target: renderer.Renderer, start_x: i32) !
         else
             theme.Color.init(45, 255, 255, 255);
 
-        target.fillRoundedRect(x, pill_y, w, pill_h, radius, bg);
+        const border_col = if (hovered)
+            ctx.cfg.theme.accent
+        else if (tag.is_active)
+            ctx.cfg.theme.border_focused
+        else
+            null;
 
-        if (hovered) {
-            target.drawRoundedBorder(x, pill_y, w, pill_h, radius, 1, ctx.cfg.theme.accent);
-        } else if (tag.is_active) {
-            target.drawRoundedBorder(x, pill_y, w, pill_h, radius, 1, ctx.cfg.theme.border_focused);
-        }
+        _ = ui.open(.{
+            .id = id,
+            .index = tag.index,
+            .width = .{ .fixed = ui.s(w) },
+            .height = .{ .grow = .{} },
+            .align_x = .center,
+            .align_y = .center,
+        });
+        _ = ui.open(.{
+            .width = .{ .fixed = ui.s(w) },
+            .height = .{ .fixed = ui.s(pill_h) },
+            .bg = bg,
+            .radius = ui.f(pill_h / 2),
+            .border = if (border_col != null) ui.su(1) else 0,
+            .border_color = border_col,
+        });
+        ui.close();
+        ui.close();
 
-        try ctx.addClickable(x, ctx.chip_y, w, ctx.chip_h, .{ .workspace = tag.index });
-
-        x += @as(i32, @intCast(w + 6));
+        try ctx.linkClick(ui, id, tag.index, .{ .workspace = tag.index }, null);
     }
-
-    return x;
 }

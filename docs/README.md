@@ -67,4 +67,24 @@ mizu list
     - System Status
 ```
 
+## Rendering & Layout
+
+Every Mizu surface uses one shared layout engine. Clay 0.14
+(`src/c/clay.h`) computes boxes, wrapping, alignment, text measurement,
+clipping, and scroll containers. Mizu owns the rest:
+
+- `src/core/ui.zig` — Zig builder, render-command consumer, clipping/overlay
+  stacks, and the per-frame text arena
+- `src/core/clay.zig` — Clay interop, global context/arena, and text measurement
+- `src/core/renderer.zig` — native rounded-rect, text, image, and SVG
+  rasterization into the `wl_shm` buffer
+- `src/c/clay_impl.c` — the single C translation unit for Clay
+
+Clay dimensions are physical pixels. On HiDPI outputs, use `ui.s()` / `ui.su()`
+for logical tokens and divide resolved hit rectangles by `scale` before
+comparing them with Wayland pointer coordinates. Complex content such as text
+inputs, clipboard previews, tray pixmaps, and memory-filter editing stays in
+Zig behind Clay `CUSTOM` callbacks, so the layout engine never becomes a second
+rendering stack.
+
 All Mizu panels follow a **zero-overhead lifecycle**: they consume 0 MB RAM when closed, instantiate in milliseconds on demand, dismiss cleanly when clicked outside or on pressing `Escape`, and toggle gracefully on repeat invocation.

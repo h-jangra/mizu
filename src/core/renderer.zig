@@ -236,6 +236,24 @@ pub const Font = struct {
         return self.measureTextWithSize(text, self.size_px);
     }
 
+    /// Approximate ascender for an arbitrary pixel size using the metrics of
+    /// the face at its initialized size. Keeps text vertically centered
+    /// without mutating the FreeType face during layout.
+    pub fn ascentForSize(self: *const Font, size_px: u32) i32 {
+        if (self.size_px == 0) return 0;
+        return @divTrunc(self.ascender_px * @as(i32, @intCast(size_px)), @as(i32, @intCast(self.size_px)));
+    }
+
+    pub fn descentForSize(self: *const Font, size_px: u32) i32 {
+        if (self.size_px == 0) return 0;
+        return @divTrunc(self.descender_px * @as(i32, @intCast(size_px)), @as(i32, @intCast(self.size_px)));
+    }
+
+    pub fn heightForSize(self: *const Font, size_px: u32) i32 {
+        if (self.size_px == 0) return 0;
+        return @divTrunc(self.height_px * @as(i32, @intCast(size_px)), @as(i32, @intCast(self.size_px)));
+    }
+
     pub fn measureTextWithSize(self: *Font, text: []const u8, size_px: u32) u32 {
         var total_advance: i32 = 0;
         var utf8_view = std.unicode.Utf8View.init(text) catch return 0;
@@ -1590,6 +1608,10 @@ pub const Renderer = struct {
     }
 
     pub fn drawTextWithSize(self: Renderer, font: *Font, text: []const u8, x: i32, baseline_y: i32, size_px: u32, color: Color) void {
+        self.drawTextWithSpacing(font, text, x, baseline_y, size_px, color, 0);
+    }
+
+    pub fn drawTextWithSpacing(self: Renderer, font: *Font, text: []const u8, x: i32, baseline_y: i32, size_px: u32, color: Color, letter_spacing: u16) void {
         if (text.len == 0 or color.a == 0) return;
 
         var pen_x: i32 = x;
@@ -1618,9 +1640,9 @@ pub const Renderer = struct {
                     }
                 }
 
-                pen_x += cg.advance_x;
+                pen_x += cg.advance_x + letter_spacing;
             } else {
-                pen_x += @as(i32, @intCast(size_px / 2));
+                pen_x += @as(i32, @intCast(size_px / 2)) + letter_spacing;
             }
         }
     }
@@ -1760,6 +1782,58 @@ pub const Renderer = struct {
         dest_h: f64,
     ) void {
         self.drawImage(img_surf, dest_x, dest_y, dest_w, dest_h);
+    }
+
+    /// Draw an image multiplied by a tint color. Used by Clay image commands
+    /// that carry a non-zero backgroundColor.
+    pub fn drawImageTinted(
+        self: Renderer,
+        img: *const Image,
+        dest_x: f64,
+        dest_y: f64,
+        dest_w: f64,
+        dest_h: f64,
+        tint: Color,
+    ) void {
+        if (dest_w <= 0.0 or dest_h <= 0.0 or img.width == 0 or img.height == 0) return;
+        if (tint.a == 0) {
+            self.drawImage(img, dest_x, dest_y, dest_w, dest_h);
+            return;
+        }
+        const x0 = @max(0, @as(i32, @intFromFloat(dest_x)));
+        const y0 = @max(0, @as(i32, @intFromFloat(dest_y)));
+        const x1 = @min(@as(i32, @intCast(self.width)), @as(i32, @intFromFloat(dest_x + dest_w)));
+        const y1 = @min(@as(i32, @intCast(self.height)), @as(i32, @intFromFloat(dest_y + dest_h)));
+        if (x0 >= x1 or y0 >= y1) return;
+        const scale_x = @as(f64, @floatFromInt(img.width)) / dest_w;
+        const scale_y = @as(f64, @floatFromInt(img.height)) / dest_h;
+        const stride_pixels = @as(usize, self.stride) / 4;
+        var dy = y0;
+        while (dy < y1) : (dy += 1) {
+            const src_y = @min(img.height - 1, @as(u32, @intFromFloat(@max(0.0, (@as(f64, @floatFromInt(dy)) - dest_y) * scale_y))));
+            const src_row = @as(usize, src_y) * @as(usize, img.width);
+            const dst_row = @as(usize, @intCast(dy)) * stride_pixels;
+            var dx = x0;
+            while (dx < x1) : (dx += 1) {
+                const src_x = @min(img.width - 1, @as(u32, @intFromFloat(@max(0.0, (@as(f64, @floatFromInt(dx)) - dest_x) * scale_x))));
+                const src_pixel = img.pixels[src_row + src_x];
+                if (!self.active_clip.contains(dx, dy)) continue;
+                const sa = @as(u8, @truncate((src_pixel >> 24) & 0xFF));
+                if (sa == 0) continue;
+                const sr = @as(u8, @truncate((src_pixel >> 16) & 0xFF));
+                const sg = @as(u8, @truncate((src_pixel >> 8) & 0xFF));
+                const sb = @as(u8, @truncate(src_pixel & 0xFF));
+                const mul = @as(u32, tint.a);
+                const out = Color.init(
+                    @intCast((@as(u32, sa) * mul) / 255),
+                    @intCast((@as(u32, sr) * @as(u32, tint.r)) / 255),
+                    @intCast((@as(u32, sg) * @as(u32, tint.g)) / 255),
+                    @intCast((@as(u32, sb) * @as(u32, tint.b)) / 255),
+                );
+                const dst_idx = dst_row + @as(usize, @intCast(dx));
+                self.pixels[dst_idx] = blendOver(self.pixels[dst_idx], out);
+            }
+        }
     }
 
     /// Draw a rasterized alpha (coverage) icon tinted with `color`. The icon's

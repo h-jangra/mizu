@@ -4,6 +4,7 @@ const theme = @import("../core/theme.zig");
 const config = @import("../core/config.zig");
 const sys_status = @import("../services/system_status.zig");
 const mango_ipc = @import("../services/mango_ipc.zig");
+const ui_mod = @import("../core/ui.zig");
 
 pub const ScrollAction = union(enum) {
     volume,
@@ -41,6 +42,13 @@ pub const ClickableArea = struct {
     scroll: ?ScrollAction = null,
 };
 
+pub const PendingClick = struct {
+    name: []const u8,
+    index: u32,
+    action: ClickAction,
+    scroll: ?ScrollAction = null,
+};
+
 pub const BarContext = struct {
     allocator: std.mem.Allocator,
     cfg: *config.Config,
@@ -48,6 +56,7 @@ pub const BarContext = struct {
     sys: *sys_status.SysStatus,
     ipc: *const mango_ipc.MangoIpc,
     clickable_areas: *std.ArrayList(ClickableArea),
+    pending_clicks: *std.ArrayList(PendingClick),
     hover_x: i32,
     hover_y: i32,
     chip_y: i32,
@@ -74,6 +83,31 @@ pub const BarContext = struct {
 
     pub fn addClickable(self: *BarContext, x: i32, y: i32, w: u32, h: u32, action: ClickAction) !void {
         try self.addInteractiveArea(x, y, w, h, action, null);
+    }
+
+    /// Register a click target after Clay has resolved the layout. Modules
+    /// declare stable IDs next to their widgets and the bar converts the
+    /// resolved physical rectangles into logical input hit boxes.
+    pub fn linkClick(
+        self: *BarContext,
+        ui: *ui_mod.Ui,
+        name: []const u8,
+        index: u32,
+        action: ClickAction,
+        scroll: ?ScrollAction,
+    ) !void {
+        try self.pending_clicks.append(self.allocator, .{
+            .name = name,
+            .index = index,
+            .action = action,
+            .scroll = scroll,
+        });
+        _ = ui;
+    }
+
+    pub fn hoveredId(self: *const BarContext, ui: *ui_mod.Ui, name: []const u8, index: u32) bool {
+        _ = self;
+        return ui.hovered(name, index);
     }
 
     pub fn drawChipBase(self: *const BarContext, target: renderer.Renderer, x: i32, y: i32, w: u32, h: u32, bg: theme.Color) void {

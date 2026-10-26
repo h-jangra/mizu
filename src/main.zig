@@ -32,6 +32,7 @@ test {
     _ = @import("panels/calendar.zig");
     _ = @import("panels/clipboard.zig");
     _ = @import("core/text_input.zig");
+    _ = @import("core/ui.zig");
     _ = @import("services/keymap.zig");
     _ = @import("core/config.zig");
     _ = @import("services/system_status.zig");

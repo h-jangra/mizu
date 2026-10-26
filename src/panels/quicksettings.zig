@@ -10,6 +10,7 @@ const text_input = @import("../core/text_input.zig");
 const notification_module = @import("notifications.zig");
 const recorder = @import("../bar/recorder.zig");
 const icons = @import("../graphics/icons.zig");
+const ui_mod = @import("../core/ui.zig");
 
 /// Shared layout tokens for Quick Settings panels (logical pixels, multiplied by scale).
 pub const QsLayout = struct {
@@ -171,6 +172,56 @@ pub const WifiConnectState = enum {
     success,
 };
 
+const QsSliderDraw = struct {
+    panel: *QuickSettings,
+    kind: SliderType,
+    hovered: bool,
+
+    fn draw(target: renderer.Renderer, rect: renderer.Rect, data: *const anyopaque) void {
+        const self: *const QsSliderDraw = @ptrCast(@alignCast(data));
+        const pct: u32 = switch (self.kind) {
+            .volume => if (self.panel.sys.volume_muted) 0 else self.panel.sys.volume_percent,
+            .brightness => self.panel.sys.backlight_percent,
+        };
+        target.drawPillSlider(
+            rect.x,
+            rect.y,
+            rect.w,
+            rect.h,
+            pct,
+            self.panel.cfg.theme.slider_track,
+            self.panel.cfg.theme.accent,
+            self.panel.cfg.theme.slider_thumb,
+            self.panel.cfg.theme.slider_thumb_shadow,
+            self.hovered,
+        );
+    }
+};
+
+const QsInputDraw = struct {
+    panel: *QuickSettings,
+    size: u32,
+
+    fn draw(target: renderer.Renderer, rect: renderer.Rect, data: *const anyopaque) void {
+        const self: *const QsInputDraw = @ptrCast(@alignCast(data));
+        if (self.panel.wifi_input) |*inp| {
+            inp.render(
+                target,
+                &self.panel.font,
+                rect.x,
+                rect.y,
+                rect.w,
+                rect.h,
+                rect.x,
+                self.panel.cfg.theme.text_bright,
+                self.panel.cfg.theme.text_muted,
+                self.panel.cfg.theme.accent,
+                self.size,
+            );
+        }
+    }
+};
+
 pub const QuickSettings = struct {
     allocator: std.mem.Allocator,
     cfg: config.Config,
@@ -235,13 +286,16 @@ pub const QuickSettings = struct {
     notif_store: ?notification_module.NotificationStore = null,
 
     pub fn getDesiredHeight(self: *const QuickSettings) u32 {
-        if (self.view_mode != .main) {
-            return 480;
-        }
-        if (self.sys.mpris_state != .stopped and self.sys.mpris_track_len > 0) {
-            return 430;
-        }
-        return 520;
+        return if (self.view_mode == .main) 520 else 480;
+    }
+
+    fn maxVisibleRows(self: *const QuickSettings) usize {
+        return switch (self.view_mode) {
+            .wifi_menu, .bluetooth_menu => 7,
+            .audio_menu, .notifications_menu => 6,
+            .recording_menu => 3,
+            .main => 0,
+        };
     }
 
     pub fn init(allocator: std.mem.Allocator, cfg: config.Config) !QuickSettings {
@@ -420,7 +474,7 @@ pub const QuickSettings = struct {
             .recording_menu => 3,
             .main => 0,
         };
-        const max_visible: usize = 8;
+        const max_visible = self.maxVisibleRows();
         const max_scroll = if (total > max_visible) total - max_visible else 0;
         if (max_scroll == 0) return false;
 
@@ -2076,53 +2130,97 @@ pub const QuickSettings = struct {
 
         const w = target.width;
         const h = target.height;
-        const pad_u = QsLayout.pad * scale;
-        const pad_i = @as(i32, @intCast(pad_u));
-        const sec_gap_u = QsLayout.section_gap * scale;
-        const row_gap_u = QsLayout.row_gap * scale;
-        const ctrl_h_u = QsLayout.ctrl_h * scale;
-        const radius = self.cfg.theme.radius_panel * scale;
+        const radius: u32 = self.cfg.theme.radius_panel * scale;
+
+        target.clear(theme.Color.transparent);
+        target.drawDropShadow(0, 0, w, h, radius, 8 * scale, self.cfg.theme.shadow_dark);
 
         const ui_sz = self.cfg.typography.ui * scale;
         const sec_sz = self.cfg.typography.secondary * scale;
         const icon_sz = self.cfg.typography.quicksettings_icon * scale;
 
-        // 1. Panel background
-        target.clear(theme.Color.transparent);
-        target.drawDropShadow(0, 0, w, h, radius, 8 * scale, self.cfg.theme.shadow_dark);
-        target.fillRoundedRect(0, 0, w, h, radius, self.cfg.theme.panel_bg);
-        target.drawRoundedBorder(0, 0, w, h, radius, 1 * scale, self.cfg.theme.panel_border);
+        var ui = try ui_mod.Ui.begin(
+            self.allocator,
+            &self.font,
+            w,
+            h,
+            scale,
+            self.pointer_x,
+            self.pointer_y,
+            false,
+            1.0 / 60.0,
+        );
+        defer ui.deinit();
 
-        if (self.view_mode != .main) {
-            try self.renderSubMenu(target, scale);
-            return;
+        if (self.view_mode == .main) {
+            const top_pad: u16 = @intCast(@max(0, @as(i32, @intCast(QsLayout.pad * scale)) + self.panel_slide_y));
+            ui.root(.{
+                .direction = .column,
+                .padding = .{
+                    .left = ui.su(QsLayout.pad),
+                    .right = ui.su(QsLayout.pad),
+                    .top = top_pad,
+                    .bottom = ui.su(QsLayout.pad),
+                },
+                .gap = ui.su(QsLayout.section_gap),
+                .bg = self.cfg.theme.panel_bg,
+                .radius = ui.f(self.cfg.theme.radius_panel),
+                .border = ui.su(1),
+                .border_color = self.cfg.theme.panel_border,
+                .align_y = .top,
+            });
+
+            try self.renderMainBody(&ui, target, scale, ui_sz, sec_sz, icon_sz);
+            ui.close();
+        } else {
+            ui.root(.{
+                .direction = .column,
+                .padding = .all(ui.su(QsLayout.pad)),
+                .gap = ui.su(QsLayout.section_gap),
+                .bg = self.cfg.theme.panel_bg,
+                .radius = ui.f(self.cfg.theme.radius_panel),
+                .border = ui.su(1),
+                .border_color = self.cfg.theme.panel_border,
+                .align_y = .top,
+            });
+
+            try self.renderSubMenu(&ui, target, scale, ui_sz, sec_sz, icon_sz);
+            ui.close();
         }
 
-        const content_w = if (w > 2 * pad_u) w - 2 * pad_u else w;
-        var cur_y: i32 = pad_i + self.panel_slide_y;
+        const commands = ui.endLayout();
+        try self.appendHitAreas(&ui, scale);
+        ui.render(target, commands);
 
-        // ======================== Row 1: Wi-Fi & Bluetooth Cards ========================
-        const card_h: u32 = 44 * scale;
-        const card_gap: u32 = 10 * scale;
-        const col_w = if (content_w > card_gap) (content_w - card_gap) / 2 else content_w;
-        const col0_x = pad_i;
-        const col1_x = pad_i + @as(i32, @intCast(col_w + card_gap));
+        // Fade-in overlay stays a direct draw so it covers every Clay command.
+        if (self.panel_alpha < 1.0) {
+            const fade_a = @as(u8, @intFromFloat((1.0 - self.panel_alpha) * 255.0));
+            if (fade_a > 0) {
+                target.fillRoundedRect(0, 0, w, h, radius, theme.Color.init(fade_a, 0, 0, 0));
+            }
+        }
+    }
+
+    fn renderMainBody(
+        self: *QuickSettings,
+        ui: *ui_mod.Ui,
+        target: renderer.Renderer,
+        scale: u32,
+        ui_sz: u32,
+        sec_sz: u32,
+        icon_sz: u32,
+    ) !void {
+        const content_w: u32 = if (self.width > 2 * QsLayout.pad * scale)
+            self.width - 2 * QsLayout.pad * scale
+        else
+            self.width;
 
         const is_wifi_on = self.sys.wifi_enabled;
-        const wifi_icon_name = if (is_wifi_on) "wifi-high" else "wifi-off";
         const wifi_sub = if (is_wifi_on)
             (if (self.sys.wifi_ssid_len > 0) self.sys.wifi_ssid[0..self.sys.wifi_ssid_len] else "Connected")
         else
             "Off";
-        try self.drawToggleCard(target, col0_x, cur_y, col_w, card_h, wifi_icon_name, "Wi-Fi", wifi_sub, is_wifi_on, .toggle_wifi, .open_wifi_menu, scale);
-
         const is_bt_on = self.sys.bluetooth_enabled;
-        const bt_sub = if (is_bt_on) "On" else "Off";
-        try self.drawToggleCard(target, col1_x, cur_y, col_w, card_h, "bluetooth", "Bluetooth", bt_sub, is_bt_on, .toggle_bluetooth, .open_bluetooth_menu, scale);
-
-        cur_y += @as(i32, @intCast(card_h + card_gap));
-
-        // ======================== Row 2: Audio & Power Mode Cards ========================
         const is_aud_on = !self.sys.volume_muted;
         const aud_icon_name = if (!is_aud_on)
             "volume-muted"
@@ -2139,36 +2237,142 @@ pub const QuickSettings = struct {
             "Muted"
         else
             std.fmt.bufPrint(&aud_sub_buf, "{d}%", .{self.sys.volume_percent}) catch "Sound";
-        try self.drawToggleCard(target, col0_x, cur_y, col_w, card_h, aud_icon_name, "Sound", aud_sub, is_aud_on, .toggle_audio_mute, .open_audio_menu, scale);
-
         const prof_sub = switch (self.sys.power_profile) {
             .power_saver => "Power Saver",
             .balanced => "Balanced",
             .performance => "Performance",
         };
-        try self.drawToggleCard(target, col1_x, cur_y, col_w, card_h, "powermode", "Power Mode", prof_sub, true, .cycle_power_profile, null, scale);
-
-        cur_y += @as(i32, @intCast(card_h + card_gap));
-
-        // ======================== Row 3: Caffeine & Recording Cards ========================
-        const caffeine_sub = if (self.caffeine_enabled) "On" else "Off";
-        try self.drawToggleCard(target, col0_x, cur_y, col_w, card_h, "caffeine", "Caffeine", caffeine_sub, self.caffeine_enabled, .toggle_caffeine, null, scale);
-
         const is_rec_active = recorder.isRecordingActive();
-        const rec_sub = self.record_audio_mode.toShortLabel();
-        try self.drawToggleCard(target, col1_x, cur_y, col_w, card_h, "record", "Record", rec_sub, is_rec_active, .toggle_recording, .open_recording_menu, scale);
 
-        cur_y += @as(i32, @intCast(card_h + sec_gap_u));
+        const cards = [_]struct {
+            icon: []const u8,
+            title: []const u8,
+            subtitle: []const u8,
+            active: bool,
+            action: Action,
+            menu: ?Action,
+        }{
+            .{ .icon = if (is_wifi_on) "wifi-high" else "wifi-off", .title = "Wi-Fi", .subtitle = wifi_sub, .active = is_wifi_on, .action = .toggle_wifi, .menu = .open_wifi_menu },
+            .{ .icon = "bluetooth", .title = "Bluetooth", .subtitle = if (is_bt_on) "On" else "Off", .active = is_bt_on, .action = .toggle_bluetooth, .menu = .open_bluetooth_menu },
+            .{ .icon = aud_icon_name, .title = "Sound", .subtitle = aud_sub, .active = is_aud_on, .action = .toggle_audio_mute, .menu = .open_audio_menu },
+            .{ .icon = "powermode", .title = "Power Mode", .subtitle = prof_sub, .active = true, .action = .cycle_power_profile, .menu = null },
+            .{ .icon = "caffeine", .title = "Caffeine", .subtitle = if (self.caffeine_enabled) "On" else "Off", .active = self.caffeine_enabled, .action = .toggle_caffeine, .menu = null },
+            .{ .icon = "record", .title = "Record", .subtitle = self.record_audio_mode.toShortLabel(), .active = is_rec_active, .action = .toggle_recording, .menu = .open_recording_menu },
+        };
 
-        // ======================== Volume & Brightness Sliders Card ========================
-        const slider_card_h: u32 = 2 * card_h + sec_gap_u;
-        target.fillRoundedRect(pad_i, cur_y, content_w, slider_card_h, self.cfg.theme.radius_card, self.cfg.theme.card_bg);
-        target.drawRoundedBorder(pad_i, cur_y, content_w, slider_card_h, self.cfg.theme.radius_card, 1 * scale, self.cfg.theme.border);
+        // Three rows of toggle cards, two cards per row.
+        var row: usize = 0;
+        while (row < 3) : (row += 1) {
+            _ = ui.open(.{
+                .width = .{ .grow = .{} },
+                .height = .{ .fixed = ui.s(44) },
+                .direction = .row,
+                .gap = ui.su(10),
+            });
+            var col: usize = 0;
+            while (col < 2) : (col += 1) {
+                const idx = row * 2 + col;
+                const card = cards[idx];
+                const main_hov = ui.hovered("qs-main", @intCast(idx));
+                const chev_hov = ui.hovered("qs-chev", @intCast(idx));
+                const any_hov = main_hov or chev_hov;
 
-        // Volume row
-        const vol_y = cur_y + @as(i32, @intCast(sec_gap_u / 2));
-        const slider_y = vol_y;
-        const icon_x = pad_i + @as(i32, @intCast(QsLayout.icon_sz * scale / 2));
+                var bg = if (card.active) self.cfg.theme.accent else self.cfg.theme.card_bg;
+                if (any_hov) {
+                    bg = if (card.active)
+                        theme.Color.init(225, self.cfg.theme.accent.r, self.cfg.theme.accent.g, self.cfg.theme.accent.b)
+                    else
+                        self.cfg.theme.card_hover_bg;
+                }
+
+                _ = ui.open(.{
+                    .width = .{ .grow = .{} },
+                    .height = .{ .grow = .{} },
+                    .direction = .row,
+                    .gap = 0,
+                    .bg = bg,
+                    .radius = ui.f(14),
+                    .border = ui.su(1),
+                    .border_color = if (card.active) self.cfg.theme.accent else if (any_hov) self.cfg.theme.border_focused else self.cfg.theme.border,
+                });
+
+                const fg = if (card.active) self.cfg.theme.accent_fg else self.cfg.theme.text_bright;
+                const sub_fg = if (card.active)
+                    theme.Color.init(220, self.cfg.theme.accent_fg.r, self.cfg.theme.accent_fg.g, self.cfg.theme.accent_fg.b)
+                else
+                    self.cfg.theme.text_muted;
+
+                _ = ui.open(.{
+                    .id = "qs-main",
+                    .index = @intCast(idx),
+                    .width = .{ .grow = .{} },
+                    .height = .{ .grow = .{} },
+                    .direction = .row,
+                    .padding = .{ .left = ui.su(14), .right = ui.su(6) },
+                    .gap = ui.su(10),
+                    .align_y = .center,
+                });
+                _ = ui.open(.{
+                    .width = .{ .fixed = @floatFromInt(icon_sz) },
+                    .height = .{ .fixed = @floatFromInt(icon_sz) },
+                    .align_x = .center,
+                    .align_y = .center,
+                });
+                ui.icon(card.icon, icon_sz, fg, 0);
+                ui.close();
+                _ = ui.open(.{
+                    .width = .{ .grow = .{} },
+                    .height = .{ .grow = .{} },
+                    .direction = .column,
+                    .gap = 0,
+                    .align_y = .center,
+                    .clip_horizontal = true,
+                });
+                ui.text(card.title, .{ .size = ui_sz, .color = fg, .line_height = @intCast(ui_sz + 1) });
+                ui.text(card.subtitle, .{ .size = sec_sz, .color = sub_fg, .line_height = @intCast(sec_sz + 1) });
+                ui.close();
+                ui.close();
+
+                if (card.menu) |menu_action| {
+                    _ = ui.open(.{
+                        .id = "qs-chev",
+                        .index = @intCast(idx),
+                        .width = .{ .fixed = ui.s(42) },
+                        .height = .{ .grow = .{} },
+                        .bg = if (chev_hov)
+                            (if (card.active) theme.Color.init(35, 255, 255, 255) else theme.Color.init(25, 255, 255, 255))
+                        else
+                            null,
+                        .radius = ui.f(12),
+                        .align_x = .center,
+                        .align_y = .center,
+                    });
+                    ui.icon("right", icon_sz, if (card.active) self.cfg.theme.accent_fg else self.cfg.theme.text_muted, 0);
+                    ui.close();
+                    _ = menu_action;
+                } else {
+                    ui.spacerSized(.{ .fixed = ui.s(6) }, .{ .fixed = 0 });
+                }
+
+                ui.close(); // card
+            }
+            ui.close(); // row
+        }
+
+        // Volume / brightness slider card.
+        _ = ui.open(.{
+            .width = .{ .grow = .{} },
+            .height = .{ .fixed = ui.s(100) },
+            .direction = .column,
+            .padding = .{ .left = ui.su(10), .right = ui.su(10), .top = ui.su(4), .bottom = ui.su(4) },
+            .gap = 0,
+            .bg = self.cfg.theme.card_bg,
+            .radius = ui.f(self.cfg.theme.radius_card),
+            .border = ui.su(1),
+            .border_color = self.cfg.theme.border,
+            .align_y = .center,
+        });
+
         const vol_icon_name = if (self.sys.volume_muted)
             "volume-muted"
         else if (self.sys.volume_percent <= 33)
@@ -2177,109 +2381,36 @@ pub const QuickSettings = struct {
             "volume-medium"
         else
             "volume-high";
-        const vol_icon_fg = if (self.sys.volume_muted) self.cfg.theme.error_color else self.cfg.theme.text_main;
-        icons.drawSvgIcon(target, self.allocator, vol_icon_name, icon_sz, scale,
-            icon_x, slider_y + @as(i32, @intCast(icon_sz * 3 / 4)), vol_icon_fg);
-
-        try self.hit_areas.append(self.allocator, .{
-            .x = pad_i - 4, .y = slider_y - 4,
-            .w = icon_sz + 8, .h = ctrl_h_u + 8,
-            .action = .toggle_audio_mute,
-        });
 
         var vol_val_buf: [16]u8 = undefined;
         const vol_val_str = if (self.sys.volume_muted) "0%" else (std.fmt.bufPrint(&vol_val_buf, "{d}%", .{self.sys.volume_percent}) catch "50%");
-        const val_label_w: u32 = 36;
-        const val_text_x = pad_i + @as(i32, @intCast(content_w)) - @as(i32, @intCast(val_label_w)) - @as(i32, @intCast(pad_u / 2));
-        target.drawTextWithSize(&self.font, vol_val_str, val_text_x, slider_y + @as(i32, @intCast(ctrl_h_u / 2)) + 2, sec_sz, self.cfg.theme.text_muted);
+        try self.addSliderRow(ui, target, scale, .volume, vol_icon_name, if (self.sys.volume_muted) self.cfg.theme.error_color else self.cfg.theme.text_main, vol_val_str, ui_sz, sec_sz, icon_sz);
 
-        const slider_x = icon_x + @as(i32, @intCast(icon_sz + QsLayout.icon_sz * scale / 2));
-        const slider_w = content_w - @as(u32, @intCast(slider_x - pad_i)) - val_label_w - @as(u32, @intCast(pad_u / 2));
-        target.drawPillSlider(
-            slider_x, slider_y, slider_w, ctrl_h_u,
-            if (self.sys.volume_muted) 0 else self.sys.volume_percent,
-            self.cfg.theme.slider_track, self.cfg.theme.accent,
-            self.cfg.theme.slider_thumb, self.cfg.theme.slider_thumb_shadow,
-            self.isAreaHovered(slider_x, slider_y, slider_w, ctrl_h_u),
-        );
-        try self.hit_areas.append(self.allocator, .{
-            .x = slider_x, .y = slider_y, .w = slider_w, .h = ctrl_h_u,
-            .action = .slider_volume,
-        });
-
-        // Brightness row
-        const bri_y = vol_y + @as(i32, @intCast(card_h)) + @as(i32, @intCast(row_gap_u));
         const bri_icon_name = if (self.sys.backlight_percent > 50) "sun-filled" else "sun";
-        icons.drawSvgIcon(target, self.allocator, bri_icon_name, icon_sz, scale,
-            icon_x, bri_y + @as(i32, @intCast(icon_sz * 3 / 4)), self.cfg.theme.text_main);
-
         var bri_val_buf: [16]u8 = undefined;
         const bri_val_str = std.fmt.bufPrint(&bri_val_buf, "{d}%", .{self.sys.backlight_percent}) catch "100%";
-        target.drawTextWithSize(&self.font, bri_val_str, val_text_x, bri_y + @as(i32, @intCast(ctrl_h_u / 2)) + 2, sec_sz, self.cfg.theme.text_muted);
+        try self.addSliderRow(ui, target, scale, .brightness, bri_icon_name, self.cfg.theme.text_main, bri_val_str, ui_sz, sec_sz, icon_sz);
+        ui.close(); // slider card
 
-        target.drawPillSlider(
-            slider_x, bri_y, slider_w, ctrl_h_u,
-            self.sys.backlight_percent,
-            self.cfg.theme.slider_track, self.cfg.theme.accent,
-            self.cfg.theme.slider_thumb, self.cfg.theme.slider_thumb_shadow,
-            self.isAreaHovered(slider_x, bri_y, slider_w, ctrl_h_u),
-        );
-        try self.hit_areas.append(self.allocator, .{
-            .x = slider_x, .y = bri_y, .w = slider_w, .h = ctrl_h_u,
-            .action = .slider_brightness,
+        // Battery and uptime chips.
+        _ = ui.open(.{
+            .width = .{ .grow = .{} },
+            .height = .{ .fixed = ui.s(36) },
+            .direction = .row,
+            .gap = ui.su(10),
         });
-
-        cur_y += @as(i32, @intCast(slider_card_h + sec_gap_u));
-
-        // ======================== Battery & Uptime Chips Row ========================
-        const chip_h: u32 = 36 * scale;
-        const chip_gap: u32 = 10 * scale;
-        const uptime_icon_size = 20 * scale;
-
-        var uptime_buf: [32]u8 = undefined;
-        const uptime_raw = self.sys.formatUptime(&uptime_buf);
-        const uptime_str = if (std.mem.startsWith(u8, uptime_raw, "Uptime · ")) uptime_raw[9..] else uptime_raw;
-        const up_text_w = target.measureTextWithSize(&self.font, uptime_str, ui_sz);
-        const uptime_chip_w = uptime_icon_size + 10 * scale + up_text_w + 20 * scale;
-
-        const battery_chip_w = content_w - uptime_chip_w - chip_gap;
-        const uptime_x = pad_i + @as(i32, @intCast(battery_chip_w + chip_gap));
-
-        // Battery chip
-        target.fillRoundedRect(pad_i, cur_y, battery_chip_w, chip_h, self.cfg.theme.radius_pill, self.cfg.theme.card_bg);
-        target.drawRoundedBorder(pad_i, cur_y, battery_chip_w, chip_h, self.cfg.theme.radius_pill, 1 * scale, self.cfg.theme.border);
 
         const bat_pct = if (self.sys.has_battery) self.sys.bat_capacity else 100;
         const plugged = self.sys.ac_online;
         const is_charging = self.sys.bat_status == .charging;
         const is_full = self.sys.bat_status == .full;
-
         const bat_color = if (plugged or is_full)
             self.cfg.theme.success_color
         else if (bat_pct <= 20)
             self.cfg.theme.error_color
         else
             self.cfg.theme.text_bright;
-
-        const bat_icon_size = 20 * scale;
         const svg_name = if (plugged or is_charging) "battery-charging" else if (bat_pct <= 10) "battery-empty" else if (bat_pct >= 90) "battery-full" else if (bat_pct >= 60) "battery-high" else if (bat_pct >= 30) "battery-medium" else "battery-low";
-
-        const bat_icon_x = pad_i + 10 * @as(i32, @intCast(scale));
-        const bat_icon_y = cur_y + @divTrunc(@as(i32, @intCast(chip_h - bat_icon_size)), 2);
-        const svg_icon = icons.getIcon(self.allocator, svg_name, bat_icon_size, scale);
-        const bat_cx = bat_icon_x + @as(i32, @intCast(bat_icon_size / 2));
-        const bat_cy = bat_icon_y + @as(i32, @intCast(bat_icon_size / 2));
-        if (svg_icon) |icon| {
-            icons.drawIconRaster(target, icon, bat_cx, bat_cy, bat_color);
-        } else {
-            const bat_w = bat_icon_size;
-            const bat_h = bat_icon_size * 2 / 3;
-            icons.drawBattery(target, bat_cx - @as(i32, @intCast(bat_w / 2)), bat_cy - @as(i32, @intCast(bat_h / 2)), bat_w, bat_h, @intCast(bat_pct), is_charging, bat_color);
-        }
-
-        const bat_text_x = bat_icon_x + @as(i32, @intCast(bat_icon_size + 10 * scale));
-        const text_reserve = @as(u32, @intCast(bat_text_x - pad_i + 6 * @as(i32, @intCast(scale))));
-        const max_bat_text_w = if (battery_chip_w > text_reserve) battery_chip_w - text_reserve else 30 * scale;
 
         var detail_buf: [48]u8 = undefined;
         const detail_str: []const u8 = if (plugged)
@@ -2302,279 +2433,231 @@ pub const QuickSettings = struct {
                 break :blk "1m left";
             }
         } else "";
-
         var bat_line_buf: [64]u8 = undefined;
         const bat_line = if (detail_str.len > 0)
             std.fmt.bufPrint(&bat_line_buf, "{d}% ({s})", .{ bat_pct, detail_str }) catch "100%"
         else
             std.fmt.bufPrint(&bat_line_buf, "{d}%", .{bat_pct}) catch "100%";
+
+        _ = ui.open(.{
+            .width = .{ .grow = .{} },
+            .height = .{ .grow = .{} },
+            .direction = .row,
+            .padding = .{ .left = ui.su(10), .right = ui.su(10) },
+            .gap = ui.su(8),
+            .bg = self.cfg.theme.card_bg,
+            .radius = ui.f(self.cfg.theme.radius_pill),
+            .border = ui.su(1),
+            .border_color = self.cfg.theme.border,
+            .align_y = .center,
+            .clip_horizontal = true,
+        });
+        ui.icon(svg_name, icon_sz, bat_color, 0);
         var trunc_bat_buf: [96]u8 = undefined;
-        const trunc_bat = truncateText(target, &self.font, bat_line, max_bat_text_w, ui_sz, &trunc_bat_buf);
-        const bat_baseline = cur_y + @divTrunc(@as(i32, @intCast(chip_h)) + @as(i32, @intCast(ui_sz * 3 / 4)), 2) - 1;
-        target.drawTextWithSize(&self.font, trunc_bat, bat_text_x, bat_baseline, ui_sz, self.cfg.theme.text_bright);
+        const trunc_bat = truncateText(target, &self.font, bat_line, content_w / 2, ui_sz, &trunc_bat_buf);
+        ui.text(trunc_bat, .{ .size = ui_sz, .color = self.cfg.theme.text_bright });
+        ui.close();
 
-        // Uptime chip
-        target.fillRoundedRect(uptime_x, cur_y, uptime_chip_w, chip_h, self.cfg.theme.radius_pill, self.cfg.theme.card_bg);
-        target.drawRoundedBorder(uptime_x, cur_y, uptime_chip_w, chip_h, self.cfg.theme.radius_pill, 1 * scale, self.cfg.theme.border);
+        var uptime_buf: [32]u8 = undefined;
+        const uptime_raw = self.sys.formatUptime(&uptime_buf);
+        const uptime_str = if (std.mem.startsWith(u8, uptime_raw, "Uptime · ")) uptime_raw[9..] else uptime_raw;
 
-        const uptime_icon_x = uptime_x + 10 * @as(i32, @intCast(scale));
-        const uptime_icon_y = cur_y + @divTrunc(@as(i32, @intCast(chip_h - uptime_icon_size)), 2);
-        const uptime_icon_cx = uptime_icon_x + @as(i32, @intCast(uptime_icon_size / 2));
-        const uptime_icon_cy = uptime_icon_y + @as(i32, @intCast(uptime_icon_size / 2));
-        icons.drawSvgIcon(target, self.allocator, "uptime", uptime_icon_size, scale, uptime_icon_cx, uptime_icon_cy, self.cfg.theme.text_bright);
+        _ = ui.open(.{
+            .width = .fit,
+            .height = .{ .grow = .{} },
+            .direction = .row,
+            .padding = .{ .left = ui.su(10), .right = ui.su(10) },
+            .gap = ui.su(8),
+            .bg = self.cfg.theme.card_bg,
+            .radius = ui.f(self.cfg.theme.radius_pill),
+            .border = ui.su(1),
+            .border_color = self.cfg.theme.border,
+            .align_y = .center,
+        });
+        ui.icon("uptime", icon_sz, self.cfg.theme.text_bright, 0);
+        ui.text(uptime_str, .{ .size = ui_sz, .color = self.cfg.theme.text_bright });
+        ui.close();
+        ui.close(); // chips row
 
-        const uptime_text_x = uptime_icon_x + @as(i32, @intCast(uptime_icon_size + 10 * scale));
-        const uptime_baseline = cur_y + @divTrunc(@as(i32, @intCast(chip_h)) + @as(i32, @intCast(ui_sz * 3 / 4)), 2) - 1;
-        target.drawTextWithSize(&self.font, uptime_str, uptime_text_x, uptime_baseline, ui_sz, self.cfg.theme.text_bright);
-
-        cur_y += @as(i32, @intCast(chip_h + sec_gap_u));
-
-        // ======================== Session Actions (2x2 Grid) ========================
-        const session_btn_w: u32 = 40 * scale;
-        const session_btn_h: u32 = 40 * scale;
-        const session_btn_gap: u32 = 10 * scale;
-        const session_grid_w: u32 = session_btn_w * 2 + session_btn_gap;
-        const session_grid_h: u32 = session_btn_h * 2 + session_btn_gap;
-        const session_x = pad_i + @as(i32, @intCast((content_w - session_grid_w) / 2));
-        const session_y = cur_y;
-
-        const sessions = [_]struct {
-            act: Action,
-            icon: []const u8,
-        }{
+        // Session actions, centered 2x2.
+        _ = ui.open(.{
+            .width = .{ .grow = .{} },
+            .height = .{ .fixed = ui.s(60) },
+            .direction = .row,
+            .gap = ui.su(10),
+            .align_x = .center,
+            .align_y = .center,
+        });
+        const sessions = [_]struct { act: Action, icon: []const u8 }{
             .{ .act = .request_logout, .icon = "logout" },
             .{ .act = .lock, .icon = "lock" },
             .{ .act = .request_reboot, .icon = "restart" },
             .{ .act = .request_shutdown, .icon = "power" },
         };
-
-        var si: usize = 0;
-        while (si < 4) {
-            const col = si % 2;
-            const row = si / 2;
-            const bx = session_x + @as(i32, @intCast(col * (session_btn_w + session_btn_gap)));
-            const by = session_y + @as(i32, @intCast(row * (session_btn_h + session_btn_gap)));
-            const is_hov = self.isAreaHovered(bx, by, session_btn_w, session_btn_h);
-
-            const btn_bg = if (is_hov) self.cfg.theme.card_hover_bg else self.cfg.theme.card_bg;
-            const btn_border = if (is_hov) self.cfg.theme.border_focused else self.cfg.theme.border;
-            const btn_fg = if (is_hov) self.cfg.theme.accent else self.cfg.theme.text_main;
-
-            const r: f64 = @as(f64, @floatFromInt(session_btn_w)) / 2.0;
-            const cx: f64 = @as(f64, @floatFromInt(bx)) + r;
-            const cy: f64 = @as(f64, @floatFromInt(by)) + r;
-
-            target.drawNeumorphicCircleButton(cx, cy, r, btn_bg, btn_border, is_hov, false);
-            icons.drawSvgIcon(target, self.allocator, sessions[si].icon, icon_sz, scale,
-                @as(i32, @intFromFloat(cx)), @as(i32, @intFromFloat(cy)), btn_fg);
-
-            try self.hit_areas.append(self.allocator, .{
-                .x = bx, .y = by, .w = session_btn_w, .h = session_btn_h,
-                .action = sessions[si].act,
+        for (sessions, 0..) |session, idx| {
+            const hov = ui.hovered("qs-session", @intCast(idx));
+            _ = ui.open(.{
+                .id = "qs-session",
+                .index = @intCast(idx),
+                .width = .{ .fixed = ui.s(44) },
+                .height = .{ .fixed = ui.s(44) },
+                .bg = if (hov) self.cfg.theme.card_hover_bg else self.cfg.theme.card_bg,
+                .radius = ui.f(22),
+                .border = ui.su(1),
+                .border_color = if (hov) self.cfg.theme.border_focused else self.cfg.theme.border,
+                .align_x = .center,
+                .align_y = .center,
             });
-            si += 1;
+            ui.icon(session.icon, icon_sz, if (hov) self.cfg.theme.accent else self.cfg.theme.text_main, 0);
+            ui.close();
         }
+        ui.close();
 
-        cur_y += @as(i32, @intCast(session_grid_h + sec_gap_u));
-
-        // ======================== MPRIS Media Card (if active) ========================
+        // MPRIS media card.
         if (self.sys.mpris_state != .stopped and self.sys.mpris_track_len > 0) {
-            const media_h: u32 = 48 * scale;
-            target.fillRoundedRect(pad_i, cur_y, content_w, media_h, self.cfg.theme.radius_card, self.cfg.theme.card_bg);
-            target.drawRoundedBorder(pad_i, cur_y, content_w, media_h, self.cfg.theme.radius_card, 1 * scale, self.cfg.theme.border);
-
-            icons.drawSvgIcon(target, self.allocator, "music", icon_sz, scale,
-                pad_i + @as(i32, @intCast(icon_sz)), cur_y + @as(i32, @intCast(media_h / 2)),
-                self.cfg.theme.accent);
-
+            _ = ui.open(.{
+                .width = .{ .grow = .{} },
+                .height = .{ .fixed = ui.s(48) },
+                .direction = .row,
+                .padding = .{ .left = ui.su(10), .right = ui.su(10) },
+                .gap = ui.su(10),
+                .bg = self.cfg.theme.card_bg,
+                .radius = ui.f(self.cfg.theme.radius_card),
+                .border = ui.su(1),
+                .border_color = self.cfg.theme.border,
+                .align_y = .center,
+            });
+            ui.icon("music", icon_sz, self.cfg.theme.accent, 0);
+            _ = ui.open(.{
+                .width = .{ .grow = .{} },
+                .height = .{ .grow = .{} },
+                .direction = .column,
+                .gap = 0,
+                .align_y = .center,
+                .clip_horizontal = true,
+            });
             const track_str = self.sys.mpris_track[0..self.sys.mpris_track_len];
             var track_buf: [128]u8 = undefined;
-            const trunc_track = truncateText(target, &self.font, track_str, content_w - 120, ui_sz, &track_buf);
-            target.drawTextWithSize(&self.font, trunc_track, pad_i + @as(i32, @intCast(icon_sz * 2)),
-                cur_y + @as(i32, @intCast(media_h / 3)), ui_sz, self.cfg.theme.text_bright);
+            const trunc_track = truncateText(target, &self.font, track_str, content_w - 180, ui_sz, &track_buf);
+            ui.text(trunc_track, .{ .size = ui_sz, .color = self.cfg.theme.text_bright });
+            ui.text(if (self.sys.mpris_state == .playing) "Playing" else "Paused", .{ .size = sec_sz, .color = self.cfg.theme.text_muted });
+            ui.close();
 
-            const status_label = if (self.sys.mpris_state == .playing) "Playing" else "Paused";
-            target.drawTextWithSize(&self.font, status_label, pad_i + @as(i32, @intCast(icon_sz * 2)),
-                cur_y + @as(i32, @intCast(media_h * 2 / 3)), sec_sz, self.cfg.theme.text_muted);
-
-            const ctrl_size: u32 = 24 * scale;
-            var ctrl_x: i32 = pad_i + @as(i32, @intCast(content_w)) - @as(i32, @intCast(ctrl_size)) - pad_i;
-
-            try self.drawControlBtn(target, ctrl_x, cur_y + @as(i32, @intCast((media_h - ctrl_size) / 2)), ctrl_size, "next", .media_next);
-            ctrl_x -= @as(i32, @intCast(ctrl_size + 8 * scale));
-
-            const pp_icon = if (self.sys.mpris_state == .playing) "pause" else "play";
-            try self.drawControlBtn(target, ctrl_x, cur_y + @as(i32, @intCast((media_h - ctrl_size) / 2)), ctrl_size, pp_icon, .media_play_pause);
-            ctrl_x -= @as(i32, @intCast(ctrl_size + 8 * scale));
-
-            try self.drawControlBtn(target, ctrl_x, cur_y + @as(i32, @intCast((media_h - ctrl_size) / 2)), ctrl_size, "prev", .media_prev);
-
-            cur_y += @as(i32, @intCast(media_h + row_gap_u));
-        }
-
-        // Fade-in overlay: covers the whole panel while the open animation runs.
-        if (self.panel_alpha < 1.0) {
-            const fade_a = @as(u8, @intFromFloat((1.0 - self.panel_alpha) * 255.0));
-            if (fade_a > 0) {
-                target.fillRoundedRect(0, 0, w, h, radius, theme.Color.init(fade_a, 0, 0, 0));
+            const media_actions = [_]struct { icon: []const u8, act: Action }{
+                .{ .icon = "prev", .act = .media_prev },
+                .{ .icon = if (self.sys.mpris_state == .playing) "pause" else "play", .act = .media_play_pause },
+                .{ .icon = "next", .act = .media_next },
+            };
+            for (media_actions, 0..) |ma, mi| {
+                const hov = ui.hovered("qs-media", @intCast(mi));
+                _ = ui.open(.{
+                    .id = "qs-media",
+                    .index = @intCast(mi),
+                    .width = .{ .fixed = ui.s(24) },
+                    .height = .{ .fixed = ui.s(24) },
+                    .bg = if (hov) self.cfg.theme.card_hover_bg else null,
+                    .radius = ui.f(12),
+                    .border = ui.su(1),
+                    .border_color = if (hov) self.cfg.theme.accent else self.cfg.theme.border,
+                    .align_x = .center,
+                    .align_y = .center,
+                });
+                ui.icon(ma.icon, 16 * scale, self.cfg.theme.text_bright, 0);
+                ui.close();
             }
+            ui.close();
         }
     }
 
-    fn drawHeaderButton(
+    fn addSliderRow(
         self: *QuickSettings,
-        target: anytype,
-        x: i32,
-        y: i32,
-        size: u32,
-        icon_name: []const u8,
-        action: Action,
-        hover_color: theme.Color,
+        ui: *ui_mod.Ui,
+        target: renderer.Renderer,
         scale: u32,
-    ) !void {
-        const is_hovered = self.isAreaHovered(x, y, size, size);
-        const bg = if (is_hovered) self.cfg.theme.card_hover_bg else self.cfg.theme.card_bg;
-        const fg = if (is_hovered) hover_color else self.cfg.theme.text_main;
-
-        const r: f64 = @as(f64, @floatFromInt(size)) / 2.0;
-        const cx = @as(f64, @floatFromInt(x)) + r;
-        const cy = @as(f64, @floatFromInt(y)) + r;
-        target.drawNeumorphicCircleButton(cx, cy, r, bg, self.cfg.theme.glass_border, is_hovered, false);
-
-        const icon_font_size = self.cfg.typography.quicksettings_icon * scale;
-        icons.drawSvgIcon(target, self.allocator, icon_name, icon_font_size, scale, @as(i32, @intFromFloat(cx)), @as(i32, @intFromFloat(cy)), fg);
-
-        try self.hit_areas.append(self.allocator, .{
-            .x = x,
-            .y = y,
-            .w = size,
-            .h = size,
-            .action = action,
-        });
-    }
-
-    fn drawToggleCard(
-        self: *QuickSettings,
-        target: anytype,
-        x: i32,
-        y: i32,
-        w: u32,
-        h: u32,
+        kind: SliderType,
         icon_name: []const u8,
-        title: []const u8,
-        subtitle: []const u8,
-        is_active: bool,
-        action: Action,
-        chevron_action: ?Action,
-        scale: u32,
+        icon_color: theme.Color,
+        value_str: []const u8,
+        ui_sz: u32,
+        sec_sz: u32,
+        icon_sz: u32,
     ) !void {
-        const has_chevron = (chevron_action != null);
-        const chevron_w: u32 = if (has_chevron) 44 * scale else 0;
-        const main_w: u32 = w - chevron_w;
+        _ = target;
+        _ = scale;
+        const id_name = if (kind == .volume) "qs-vol-slider" else "qs-bri-slider";
 
-        const is_main_hovered = self.isAreaHovered(x, y, main_w, h);
-        const is_chev_hovered = if (has_chevron)
-            self.isAreaHovered(x + @as(i32, @intCast(main_w)), y, chevron_w, h)
-        else
-            false;
-
-        const radius: u32 = 14 * scale;
-
-        var bg = if (is_active)
-            self.cfg.theme.accent
-        else
-            self.cfg.theme.card_bg;
-
-        if (is_main_hovered) {
-            bg = if (is_active)
-                theme.Color.init(225, self.cfg.theme.accent.r, self.cfg.theme.accent.g, self.cfg.theme.accent.b)
-            else
-                self.cfg.theme.card_hover_bg;
-        }
-
-        const active_fg = self.cfg.theme.accent_fg;
-        const fg = if (is_active) active_fg else self.cfg.theme.text_bright;
-        const sub_fg = if (is_active)
-            theme.Color.init(220, active_fg.r, active_fg.g, active_fg.b)
-        else
-            self.cfg.theme.text_muted;
-
-        target.fillRoundedRect(x, y, w, h, radius, bg);
-        const border_col = if (is_active) self.cfg.theme.accent else (if (is_main_hovered) self.cfg.theme.border_focused else self.cfg.theme.border);
-        target.drawRoundedBorder(x, y, w, h, radius, 1 * scale, border_col);
-
-        const ui_sz = self.cfg.typography.quicksettings_text * scale;
-        const sec_sz = self.cfg.typography.secondary * scale;
-        const icon_size = self.cfg.typography.quicksettings_icon * scale;
-
-        // Icon (SVG asset)
-        const icon_x = x + 14 * @as(i32, @intCast(scale));
-        const icon_cx = icon_x + @as(i32, @intCast(icon_size / 2));
-        const icon_cy = y + @as(i32, @intCast(h / 2));
-        icons.drawSvgIcon(target, self.allocator, icon_name, icon_size, scale, icon_cx, icon_cy, fg);
-
-        // Title and Subtitle
-        const text_x = icon_x + @as(i32, @intCast(icon_size + 10 * scale));
-        target.drawTextWithSize(&self.font, title, text_x, y + 19 * @as(i32, @intCast(scale)), ui_sz, fg);
-
-        var sub_buf: [64]u8 = undefined;
-        const padding: u32 = @as(u32, @intCast(4 * scale));
-        const text_offset = @as(u32, @intCast(text_x - x));
-        const max_sub_w = if (main_w > text_offset + icon_size + 10 * scale + padding) main_w - (text_offset + icon_size + 10 * scale + padding) else 0;
-        const trunc_sub = truncateText(target, &self.font, subtitle, max_sub_w, sec_sz, &sub_buf);
-        target.drawTextWithSize(&self.font, trunc_sub, text_x, y + 35 * @as(i32, @intCast(scale)), sec_sz, sub_fg);
-
-        try self.hit_areas.append(self.allocator, .{
-            .x = x,
-            .y = y,
-            .w = main_w,
-            .h = h,
-            .action = action,
+        _ = ui.open(.{
+            .width = .{ .grow = .{} },
+            .height = .{ .fixed = ui.s(44) },
+            .direction = .row,
+            .gap = ui.su(10),
+            .align_y = .center,
         });
 
-        // Dropdown Chevron on the right side
-        if (has_chevron) {
-            const chev_x = x + @as(i32, @intCast(main_w));
-            const scale_i = @as(i32, @intCast(scale));
-            const scale_u = @as(u32, @intCast(scale));
-
-            // Subtle vertical divider line
-            const div_col = if (is_active) theme.Color.init(50, 255, 255, 255) else self.cfg.theme.border;
-            target.fillRect(chev_x, y + 8 * scale_i, 1 * scale_u, h - 16 * scale_u, div_col);
-
-            if (is_chev_hovered) {
-                const chev_hov_bg = if (is_active) theme.Color.init(35, 255, 255, 255) else theme.Color.init(25, 255, 255, 255);
-                target.fillRect(chev_x + 1 * scale_i, y + 4 * scale_i, chevron_w - 4 * scale_u, h - 8 * scale_u, chev_hov_bg);
-            }
-
-            const chev_fg = if (is_active) active_fg else self.cfg.theme.text_muted;
-            const chev_cx = chev_x + @as(i32, @intCast(chevron_w / 2));
-            const chev_cy = y + @as(i32, @intCast(h / 2));
-            icons.drawSvgIcon(target, self.allocator, "right", icon_size, scale, chev_cx, chev_cy, chev_fg);
-
-            try self.hit_areas.append(self.allocator, .{
-                .x = chev_x,
-                .y = y,
-                .w = chevron_w,
-                .h = h,
-                .action = chevron_action.?,
+        if (kind == .volume) {
+            const mute_hov = ui.hovered("qs-mute", 0);
+            _ = ui.open(.{
+                .id = "qs-mute",
+                .width = .{ .fixed = ui.s(30) },
+                .height = .{ .fixed = ui.s(34) },
+                .align_x = .center,
+                .align_y = .center,
+                .radius = ui.f(8),
+                .bg = if (mute_hov) self.cfg.theme.card_hover_bg else null,
             });
+            ui.icon(icon_name, icon_sz, icon_color, 0);
+            ui.close();
+        } else {
+            _ = ui.open(.{
+                .width = .{ .fixed = ui.s(30) },
+                .height = .{ .fixed = ui.s(34) },
+                .align_x = .center,
+                .align_y = .center,
+            });
+            ui.icon(icon_name, icon_sz, icon_color, 1);
+            ui.close();
         }
+
+        const hov = ui.hovered(id_name, 0);
+        _ = ui.open(.{
+            .id = id_name,
+            .width = .{ .grow = .{} },
+            .height = .{ .fixed = ui.s(36) },
+            .align_y = .center,
+        });
+        const data = try ui.allocator.create(QsSliderDraw);
+        data.* = .{ .panel = self, .kind = kind, .hovered = hov };
+        const custom = try ui.allocator.create(ui_mod.Custom);
+        custom.* = .{ .callback = .{ .function = QsSliderDraw.draw, .data = data } };
+        ui.custom(.{ .grow = .{} }, .{ .grow = .{} }, custom, 0);
+        ui.close(); // custom
+        ui.close(); // slider wrapper
+
+        ui.text(value_str, .{
+            .size = if (kind == .volume) sec_sz else ui_sz,
+            .color = self.cfg.theme.text_muted,
+            .width = ui.s(40),
+            .text_align = .right,
+        });
+        ui.close(); // row
     }
 
-    fn renderSubMenu(self: *QuickSettings, target: anytype, scale: u32) !void {
-        const w = target.width;
+    fn renderSubMenu(
+        self: *QuickSettings,
+        ui: *ui_mod.Ui,
+        target: renderer.Renderer,
+        scale: u32,
+        ui_sz: u32,
+        sec_sz: u32,
+        icon_sz: u32,
+    ) !void {
+        _ = ui_sz;
         const pad_u = QsLayout.pad * scale;
-        const pad_i = @as(i32, @intCast(pad_u));
-        const sec_gap_u = QsLayout.section_gap * scale;
-        const row_gap_u = QsLayout.row_gap * scale;
         const row_h_u = QsLayout.row_h * scale;
-        const icon_sz = self.cfg.typography.quicksettings_icon * scale;
         const sub_sz = self.cfg.typography.submenu_text * scale;
-        const sec_sz = self.cfg.typography.secondary * scale;
         const btn_sz = self.cfg.typography.button_text * scale;
-
-        const content_w = if (w > 2 * pad_u) w - 2 * pad_u else w;
+        const head_sz = self.cfg.typography.heading * scale;
+        const content_w: u32 = if (self.width > 2 * pad_u) self.width - 2 * pad_u else self.width;
 
         const title = switch (self.view_mode) {
             .wifi_menu => "Wi-Fi",
@@ -2585,839 +2668,881 @@ pub const QuickSettings = struct {
             .main => "",
         };
 
-        // Header
-        const head_h: u32 = 44 * scale;
         const btn_size: u32 = 34 * scale;
-        const cur_y: i32 = pad_i;
+        _ = ui.open(.{
+            .width = .{ .grow = .{} },
+            .height = .{ .fixed = ui.s(44) },
+            .direction = .row,
+            .gap = ui.su(8),
+            .align_y = .center,
+        });
 
-        // Back button
-        try self.drawHeaderButton(target, pad_i, cur_y + @as(i32, @intCast((head_h - btn_size) / 2)), btn_size, "left", .back_to_main, self.cfg.theme.text_bright, scale);
+        const back_hov = ui.hovered("qs-back", 0);
+        _ = ui.open(.{
+            .id = "qs-back",
+            .width = .{ .fixed = @floatFromInt(btn_size) },
+            .height = .{ .fixed = @floatFromInt(btn_size) },
+            .bg = if (back_hov) self.cfg.theme.card_hover_bg else self.cfg.theme.card_bg,
+            .radius = ui.f(17),
+            .border = ui.su(1),
+            .border_color = self.cfg.theme.glass_border,
+            .align_x = .center,
+            .align_y = .center,
+        });
+        ui.icon("left", icon_sz, if (back_hov) self.cfg.theme.accent else self.cfg.theme.text_bright, 0);
+        ui.close();
 
-        // Title
-        target.drawTextWithSize(&self.font, title, pad_i + @as(i32, @intCast(btn_size + 12 * scale)),
-            cur_y + @as(i32, @intCast(head_h / 2)) + 2, self.cfg.typography.heading * scale, self.cfg.theme.text_bright);
+        ui.text(title, .{ .size = head_sz, .color = self.cfg.theme.text_bright });
+        ui.spacerSized(.{ .grow = .{} }, .{ .fixed = 0 });
 
-        // Right side: toggle (WiFi/BT) or refresh
-        const right_x = @as(i32, @intCast(w)) - pad_i - @as(i32, @intCast(btn_size));
+        if (self.view_mode == .wifi_menu or self.view_mode == .bluetooth_menu) {
+            const is_on = if (self.view_mode == .wifi_menu) self.sys.wifi_enabled else self.sys.bluetooth_enabled;
+            _ = ui.open(.{
+                .id = "qs-header-toggle",
+                .width = .{ .fixed = ui.s(46) },
+                .height = .{ .fixed = ui.s(20) },
+                .bg = if (is_on) self.cfg.theme.toggle_on else self.cfg.theme.toggle_off,
+                .radius = ui.f(10),
+                .padding = .all(ui.su(2)),
+                .direction = .row,
+                .align_y = .center,
+            });
+            if (is_on) ui.spacerSized(.{ .grow = .{} }, .{ .fixed = 0 });
+            ui.rect(.{ .fixed = ui.s(16) }, .{ .fixed = ui.s(16) }, self.cfg.theme.slider_thumb, ui.f(8), .{});
+            if (!is_on) ui.spacerSized(.{ .grow = .{} }, .{ .fixed = 0 });
+            ui.close();
+        }
+
         if (self.view_mode == .notifications_menu) {
-            try self.drawHeaderButton(target, right_x, cur_y + @as(i32, @intCast((head_h - btn_size) / 2)), btn_size, "close", .clear_notifications, self.cfg.theme.error_color, scale);
+            const hov = ui.hovered("qs-clear-notifs", 0);
+            _ = ui.open(.{
+                .id = "qs-clear-notifs",
+                .width = .{ .fixed = @floatFromInt(btn_size) },
+                .height = .{ .fixed = @floatFromInt(btn_size) },
+                .bg = if (hov) self.cfg.theme.card_hover_bg else self.cfg.theme.card_bg,
+                .radius = ui.f(17),
+                .border = ui.su(1),
+                .border_color = self.cfg.theme.glass_border,
+                .align_x = .center,
+                .align_y = .center,
+            });
+            ui.icon("close", icon_sz, if (hov) self.cfg.theme.error_color else self.cfg.theme.text_bright, 0);
+            ui.close();
         } else {
+            const hov = ui.hovered("qs-refresh", 0);
             const is_scanning_submenu = self.is_scanning and (self.view_mode == .wifi_menu or self.view_mode == .bluetooth_menu or self.view_mode == .audio_menu or self.view_mode == .recording_menu);
             const refresh_icon = if (is_scanning_submenu) "spinner" else "refresh";
-            try self.drawHeaderButton(target, right_x, cur_y + @as(i32, @intCast((head_h - btn_size) / 2)), btn_size, refresh_icon, .refresh_sub_menu, self.cfg.theme.text_bright, scale);
-        }
-
-        // Toggle switch in header for Wi-Fi and Bluetooth
-        if (self.view_mode == .wifi_menu or self.view_mode == .bluetooth_menu) {
-            const toggle_w: u32 = 46 * scale;
-            const toggle_h: u32 = 20 * scale;
-            const toggle_x = right_x - @as(i32, @intCast(toggle_w)) - @as(i32, @intCast(12 * scale));
-            const toggle_y = cur_y + @as(i32, @intCast((head_h - toggle_h) / 2));
-            const is_on = if (self.view_mode == .wifi_menu) self.sys.wifi_enabled else self.sys.bluetooth_enabled;
-            const action: Action = if (self.view_mode == .wifi_menu) .toggle_wifi else .toggle_bluetooth;
-
-            target.drawToggleSwitch(
-                toggle_x, toggle_y, toggle_w, toggle_h,
-                is_on,
-                self.cfg.theme.toggle_on,
-                self.cfg.theme.toggle_off,
-                self.cfg.theme.slider_thumb,
-            );
-            try self.hit_areas.append(self.allocator, .{
-                .x = toggle_x, .y = toggle_y, .w = toggle_w, .h = toggle_h,
-                .action = action,
+            _ = ui.open(.{
+                .id = "qs-refresh",
+                .width = .{ .fixed = @floatFromInt(btn_size) },
+                .height = .{ .fixed = @floatFromInt(btn_size) },
+                .bg = if (hov) self.cfg.theme.card_hover_bg else self.cfg.theme.card_bg,
+                .radius = ui.f(17),
+                .border = ui.su(1),
+                .border_color = self.cfg.theme.glass_border,
+                .align_x = .center,
+                .align_y = .center,
             });
+            ui.icon(refresh_icon, icon_sz, if (hov) self.cfg.theme.accent else self.cfg.theme.text_bright, 0);
+            ui.close();
         }
+        ui.close(); // header
 
-        // Separator
-        const sep_y = cur_y + @as(i32, @intCast(head_h)) + @as(i32, @intCast(row_gap_u));
-        target.fillRect(pad_i, sep_y, content_w, 1 * scale, self.cfg.theme.separator_fg);
+        ui.rect(.{ .grow = .{} }, .{ .fixed = ui.s(1) }, self.cfg.theme.separator_fg, 0, .{});
 
-        var list_y = sep_y + @as(i32, @intCast(sec_gap_u));
-        const item_h = row_h_u;
-        const item_gap = row_gap_u;
-        const max_visible: usize = 8;
+        _ = ui.open(.{
+            .width = .{ .grow = .{} },
+            .height = .{ .grow = .{} },
+            .direction = .column,
+            .gap = ui.su(QsLayout.row_gap),
+            .clip_vertical = true,
+        });
 
+        const max_visible = self.maxVisibleRows();
         switch (self.view_mode) {
             .wifi_menu => {
                 if (self.wifi_items.items.len == 0) {
-                    self.drawEmptySubMenu(target, "wifi-none", "No Wi-Fi networks found", "Click refresh to scan", scale);
-                    return;
-                }
-                const start_idx = self.scroll_offset;
-                const end_idx = @min(self.wifi_items.items.len, start_idx + max_visible);
+                    self.emptyState(ui, "wifi-none", "No Wi-Fi networks found", "Click refresh to scan", scale);
+                } else {
+                    const start_idx = self.scroll_offset;
+                    const end_idx = @min(self.wifi_items.items.len, start_idx + max_visible);
+                    for (self.wifi_items.items[start_idx..end_idx], start_idx..) |item, actual_idx| {
+                        const is_connecting_this = (self.wifi_connect_state == .connecting and self.connecting_ssid_len > 0 and
+                            std.mem.eql(u8, self.connecting_ssid[0..self.connecting_ssid_len], item.ssid[0..item.ssid_len]));
+                        const is_input_active = (self.wifi_input_ssid_len > 0 and
+                            std.mem.eql(u8, self.wifi_input_ssid[0..self.wifi_input_ssid_len], item.ssid[0..item.ssid_len]));
+                        const has_error = (is_input_active and self.wifi_error_len > 0);
+                        const hov = ui.hovered("qs-wifi-card", @intCast(actual_idx));
 
-                for (self.wifi_items.items[start_idx..end_idx], start_idx..) |item, actual_idx| {
-                    const is_connecting_this = (self.wifi_connect_state == .connecting and self.connecting_ssid_len > 0 and
-                        std.mem.eql(u8, self.connecting_ssid[0..self.connecting_ssid_len], item.ssid[0..item.ssid_len]));
-                    const is_input_active = (self.wifi_input_ssid_len > 0 and
-                        std.mem.eql(u8, self.wifi_input_ssid[0..self.wifi_input_ssid_len], item.ssid[0..item.ssid_len]));
-                    const has_error = (is_input_active and self.wifi_error_len > 0);
-
-                    var bg = if (item.is_active or is_input_active or is_connecting_this)
-                        self.cfg.theme.elevated
-                    else
-                        self.cfg.theme.surface;
-                    const is_hovered = self.isAreaHovered(pad_i, list_y, content_w, item_h);
-                    if (is_hovered and !is_input_active) {
-                        bg = self.cfg.theme.btn_raised_hover;
-                    }
-
-                    target.fillRoundedRect(pad_i, list_y, content_w, item_h, self.cfg.theme.radius_button, bg);
-                    target.drawRoundedBorder(pad_i, list_y, content_w, item_h, self.cfg.theme.radius_button, 1 * scale,
-                        if (is_connecting_this or is_input_active or item.is_active) self.cfg.theme.accent else self.cfg.theme.border);
-
-                    // Signal icon
-                    const sig_icon_name = if (item.signal >= 75)
-                        "wifi-high"
-                    else if (item.signal >= 50)
-                        "wifi-medium"
-                    else if (item.signal >= 25)
-                        "wifi-low"
-                    else
-                        "wifi-none";
-
-                    const icon_size: u32 = 24 * scale;
-                    const icon_x = pad_i + 10 * @as(i32, @intCast(scale));
-                    const icon_y = list_y + @as(i32, @intCast((item_h - icon_size) / 2));
-                    const icon_cx = @as(f64, @floatFromInt(icon_x)) + @as(f64, @floatFromInt(icon_size)) / 2.0;
-                    const icon_cy = @as(f64, @floatFromInt(icon_y)) + @as(f64, @floatFromInt(icon_size)) / 2.0;
-
-                    const icon_bg = if (item.is_active) self.cfg.theme.toggle_on else self.cfg.theme.btn_raised_bg;
-                    target.drawNeumorphicCircleButton(icon_cx, icon_cy, @as(f64, @floatFromInt(icon_size)) / 2.0,
-                        icon_bg, self.cfg.theme.glass_border, is_hovered, item.is_active);
-
-                    const icon_color = if (item.is_active) self.cfg.theme.accent_fg else self.cfg.theme.text_bright;
-                    icons.drawSvgIcon(target, self.allocator, sig_icon_name, icon_sz, scale,
-                        @as(i32, @intFromFloat(icon_cx)), @as(i32, @intFromFloat(icon_cy)), icon_color);
-
-                    // SSID name
-                    const ssid_x = icon_x + @as(i32, @intCast(icon_size + 12 * scale));
-                    const ssid_name = item.ssid[0..item.ssid_len];
-                    var name_buf: [64]u8 = undefined;
-                    const name_reserve: u32 = if (item.is_saved) 154 else 110;
-                    const trunc_name = truncateText(target, &self.font, ssid_name, content_w - name_reserve, sub_sz, &name_buf);
-                    target.drawTextWithSize(&self.font, trunc_name, ssid_x, list_y + @as(i32, @intCast(14 * scale)), sub_sz, self.cfg.theme.text_bright);
-
-                    // Subtitle
-                    var sub_buf: [64]u8 = undefined;
-                    const sec_str = if (item.security_len > 0) item.security[0..item.security_len] else "Open";
-                    const sub_str = if (is_connecting_this)
-                        "󱑂 Connecting..."
-                    else if (item.is_active)
-                        std.fmt.bufPrint(&sub_buf, "✓ Connected • {d}%", .{item.signal}) catch "✓ Connected"
-                    else
-                        std.fmt.bufPrint(&sub_buf, "{d}% • {s}", .{ item.signal, sec_str }) catch sec_str;
-
-                    const sub_color = if (is_connecting_this)
-                        self.cfg.theme.warning_color
-                    else if (item.is_active)
-                        self.cfg.theme.accent
-                    else
-                        self.cfg.theme.text_muted;
-                    target.drawTextWithSize(&self.font, sub_str, ssid_x, list_y + @as(i32, @intCast(28 * scale)), sec_sz, sub_color);
-
-                    // Actions
-                    if (!is_input_active) {
-                        const action_size: u32 = 28 * scale;
-                        const action_x = pad_i + @as(i32, @intCast(content_w)) - @as(i32, @intCast(action_size)) - pad_i;
-                        const action_y = list_y + @as(i32, @intCast((item_h - action_size) / 2));
-                        const is_action_hov = self.isAreaHovered(action_x, action_y, action_size, action_size);
-
-                        var action_icon: []const u8 = "";
-                        var action_callback: Action = .toggle_wifi;
-
-                        if (item.is_active) {
-                            action_icon = "plug-disconnected";
-                            action_callback = .{ .disconnect_wifi = actual_idx };
-                        } else if (item.is_saved) {
-                            action_icon = "plug-connected";
-                            action_callback = .{ .select_wifi = actual_idx };
-                        }
-
-                        if (item.is_saved) {
-                            const trash_size: u32 = 20 * scale;
-                            const trash_x = action_x - @as(i32, @intCast(trash_size)) - @as(i32, @intCast(6 * scale));
-                            const trash_y = list_y + @as(i32, @intCast(2 * scale));
-                            const is_trash_hov = self.isAreaHovered(trash_x, trash_y, trash_size, trash_size);
-                            const trash_bg = if (is_trash_hov) self.cfg.theme.error_color else self.cfg.theme.surface;
-                            const trash_fg = if (is_trash_hov) self.cfg.theme.accent_fg else self.cfg.theme.error_color;
-                            target.fillSquircle(trash_x, trash_y, trash_size, trash_size, 6 * scale, trash_bg);
-                            target.drawSquircleBorder(trash_x, trash_y, trash_size, trash_size, 6 * scale, 1 * scale,
-                                if (is_trash_hov) self.cfg.theme.error_color else self.cfg.theme.border);
-                            icons.drawSvgIcon(target, self.allocator, "trash", icon_sz, scale,
-                                trash_x + @as(i32, @intCast(trash_size / 2)), trash_y + @as(i32, @intCast(trash_size / 2)), trash_fg);
-                            try self.hit_areas.append(self.allocator, .{
-                                .x = trash_x, .y = trash_y, .w = trash_size, .h = trash_size,
-                                .action = .{ .forget_wifi = actual_idx },
+                        if (is_input_active) {
+                            _ = ui.open(.{
+                                .id = "qs-wifi-card",
+                                .index = @intCast(actual_idx),
+                                .width = .{ .grow = .{} },
+                                .height = .{ .fixed = ui.s(134) },
+                                .direction = .column,
+                                .padding = .all(ui.su(10)),
+                                .gap = ui.su(6),
+                                .bg = self.cfg.theme.elevated,
+                                .radius = ui.f(self.cfg.theme.radius_button),
+                                .border = ui.su(1),
+                                .border_color = if (has_error) self.cfg.theme.error_color else self.cfg.theme.accent,
                             });
-                        }
 
-                        if (action_icon.len > 0) {
-                            if (is_action_hov) {
-                                target.fillSquircle(action_x, action_y, action_size, action_size, 6 * scale,
-                                    if (item.is_active) self.cfg.theme.error_color else self.cfg.theme.accent);
-                                target.drawSquircleBorder(action_x, action_y, action_size, action_size, 6 * scale, 1 * scale,
-                                    if (item.is_active) self.cfg.theme.error_color else self.cfg.theme.border);
+                            _ = ui.open(.{
+                                .width = .{ .grow = .{} },
+                                .height = .{ .fixed = ui.s(28) },
+                                .direction = .row,
+                                .gap = ui.su(8),
+                                .align_y = .center,
+                            });
+                            ui.text(item.ssid[0..item.ssid_len], .{ .size = sub_sz, .color = self.cfg.theme.text_bright });
+                            ui.spacerSized(.{ .grow = .{} }, .{ .fixed = 0 });
+                            const cancel_hov = ui.hovered("qs-wifi-input-cancel", 0);
+                            _ = ui.open(.{
+                                .id = "qs-wifi-input-cancel",
+                                .width = .{ .fixed = ui.s(26) },
+                                .height = .{ .fixed = ui.s(26) },
+                                .bg = if (cancel_hov) self.cfg.theme.card_hover_bg else null,
+                                .radius = ui.f(6),
+                                .align_x = .center,
+                                .align_y = .center,
+                            });
+                            ui.icon("close", 14 * scale, if (cancel_hov) self.cfg.theme.error_color else self.cfg.theme.text_muted, 0);
+                            ui.close();
+                            ui.close();
+
+                            _ = ui.open(.{
+                                .id = "qs-wifi-input",
+                                .width = .{ .grow = .{} },
+                                .height = .{ .fixed = ui.s(28) },
+                                .padding = .{ .left = ui.su(8), .right = ui.su(8) },
+                                .bg = self.cfg.theme.base,
+                                .radius = ui.f(6),
+                                .border = ui.su(1),
+                                .border_color = if (has_error) self.cfg.theme.error_color else self.cfg.theme.accent,
+                                .align_y = .center,
+                            });
+                            if (self.wifi_input != null) {
+                                const data = try ui.allocator.create(QsInputDraw);
+                                data.* = .{ .panel = self, .size = sub_sz };
+                                const custom = try ui.allocator.create(ui_mod.Custom);
+                                custom.* = .{ .callback = .{ .function = QsInputDraw.draw, .data = data } };
+                                ui.custom(.{ .grow = .{} }, .{ .grow = .{} }, custom, 0);
+                                ui.close();
                             } else {
-                                target.fillSquircle(action_x, action_y, action_size, action_size, 6 * scale, self.cfg.theme.surface);
-                                target.drawSquircleBorder(action_x, action_y, action_size, action_size, 6 * scale, 1 * scale, self.cfg.theme.border);
+                                if (self.wifi_password_len == 0) {
+                                    ui.text("Enter Wi-Fi password...", .{ .size = sub_sz, .color = self.cfg.theme.text_muted });
+                                } else {
+                                    var mask_buf: [130]u8 = undefined;
+                                    const mask_len = @min(self.wifi_password_len, 32);
+                                    @memset(mask_buf[0..mask_len], '*');
+                                    mask_buf[mask_len] = '|';
+                                    ui.text(mask_buf[0 .. mask_len + 1], .{ .size = sub_sz, .color = self.cfg.theme.text_bright });
+                                }
                             }
-                            const action_fg = if (item.is_active) self.cfg.theme.accent_fg else self.cfg.theme.text_bright;
-                            icons.drawSvgIcon(target, self.allocator, action_icon, icon_sz, scale,
-                                action_x + @as(i32, @intCast(action_size / 2)), action_y + @as(i32, @intCast(action_size / 2)), action_fg);
-                            try self.hit_areas.append(self.allocator, .{
-                                .x = action_x, .y = action_y, .w = action_size, .h = action_size,
-                                .action = action_callback,
+                            ui.close();
+
+                            _ = ui.open(.{
+                                .width = .{ .grow = .{} },
+                                .height = .{ .fixed = ui.s(26) },
+                                .direction = .row,
+                                .gap = ui.su(8),
                             });
-                        }
+                            const cancel_btn_hov = ui.hovered("qs-wifi-cancel", 0);
+                            _ = ui.open(.{
+                                .id = "qs-wifi-cancel",
+                                .width = .{ .fixed = ui.s(70) },
+                                .height = .{ .grow = .{} },
+                                .bg = if (cancel_btn_hov) self.cfg.theme.elevated else self.cfg.theme.surface,
+                                .radius = ui.f(6),
+                                .border = ui.su(1),
+                                .border_color = self.cfg.theme.border,
+                                .align_x = .center,
+                                .align_y = .center,
+                            });
+                            ui.text("Cancel", .{ .size = btn_sz, .color = self.cfg.theme.text_bright });
+                            ui.close();
 
-                        // Checkmark if active
-                        const aux_x = if (item.is_saved) action_x - 60 * @as(i32, @intCast(scale)) else action_x - 24 * @as(i32, @intCast(scale));
-                        if (item.is_active) {
-                            icons.drawSvgIcon(target, self.allocator, "check", icon_sz, scale,
-                                aux_x + @as(i32, @intCast(icon_sz / 2)), list_y + @as(i32, @intCast(20 * scale)), self.cfg.theme.accent);
-                        }
+                            const is_connecting = (self.wifi_connect_state == .connecting);
+                            const conn_hov = ui.hovered("qs-wifi-connect", 0);
+                            _ = ui.open(.{
+                                .id = "qs-wifi-connect",
+                                .width = .{ .fixed = if (is_connecting) ui.s(100) else ui.s(82) },
+                                .height = .{ .grow = .{} },
+                                .bg = if (is_connecting) self.cfg.theme.elevated else if (conn_hov) self.cfg.theme.accent else self.cfg.theme.surface,
+                                .radius = ui.f(6),
+                                .border = ui.su(1),
+                                .border_color = if (conn_hov and !is_connecting) self.cfg.theme.accent else self.cfg.theme.border,
+                                .align_x = .center,
+                                .align_y = .center,
+                            });
+                            ui.text(if (is_connecting) "Connecting..." else "Connect", .{
+                                .size = btn_sz,
+                                .color = if (conn_hov and !is_connecting) self.cfg.theme.accent_fg else self.cfg.theme.text_bright,
+                            });
+                            ui.close();
+                            ui.close();
 
-                        // Lock icon
-                        const is_secured = (item.security_len > 0 and !std.mem.eql(u8, item.security[0..item.security_len], "Open"));
-                        if (is_secured and !item.is_active) {
-                            icons.drawSvgIcon(target, self.allocator, "lock", icon_sz, scale,
-                                aux_x + @as(i32, @intCast(icon_sz / 2)), list_y + @as(i32, @intCast(20 * scale)), self.cfg.theme.text_muted);
-                        }
-
-                        // Hit area for selecting wifi
-                        const hit_w = if (item.is_saved or item.is_active) content_w - @as(u32, @intCast(action_size)) - 12 * scale else content_w;
-                        try self.hit_areas.append(self.allocator, .{
-                            .x = pad_i, .y = list_y, .w = hit_w, .h = item_h,
-                            .action = .{ .select_wifi = actual_idx },
-                        });
-                    } else {
-                        // Wi-Fi password input
-                        try self.hit_areas.append(self.allocator, .{
-                            .x = pad_i, .y = list_y, .w = content_w, .h = 44 * scale,
-                            .action = .wifi_cancel,
-                        });
-
-                        const input_x = pad_i + 40 * @as(i32, @intCast(scale));
-                        const input_y = list_y + @as(i32, @intCast(48 * scale));
-                        const input_w = content_w - 56 * scale;
-                        const input_h: u32 = 28 * scale;
-
-                        target.fillSquircle(input_x, input_y, input_w, input_h, 6 * scale, self.cfg.theme.base);
-                        const input_border = if (has_error) self.cfg.theme.error_color else self.cfg.theme.accent;
-                        target.drawSquircleBorder(input_x, input_y, input_w, input_h, 6 * scale, 1 * scale, input_border);
-
-                        if (self.wifi_input) |*inp| {
-                            inp.render(
-                                target,
-                                &self.font,
-                                input_x,
-                                input_y,
-                                input_w,
-                                input_h,
-                                input_x + 8,
-                                self.cfg.theme.text_bright,
-                                self.cfg.theme.text_muted,
-                                self.cfg.theme.accent,
-                                sub_sz,
-                            );
+                            if (has_error) {
+                                ui.text(self.wifi_error_msg[0..self.wifi_error_len], .{
+                                    .size = sec_sz,
+                                    .color = self.cfg.theme.error_color,
+                                });
+                            }
+                            ui.close(); // input card
                         } else {
-                            if (self.wifi_password_len == 0) {
-                                target.drawTextWithSize(&self.font, "Enter Wi-Fi password... |", input_x + 8, input_y + 19, sub_sz, self.cfg.theme.text_muted);
-                            } else {
-                                var mask_buf: [130]u8 = undefined;
-                                const mask_len = @min(self.wifi_password_len, 32);
-                                @memset(mask_buf[0..mask_len], '*');
-                                mask_buf[mask_len] = '|';
-                                target.drawTextWithSize(&self.font, mask_buf[0 .. mask_len + 1], input_x + 8, input_y + 19, sub_sz, self.cfg.theme.text_bright);
+                            var bg = if (item.is_active or is_connecting_this) self.cfg.theme.elevated else self.cfg.theme.surface;
+                            if (hov) bg = self.cfg.theme.btn_raised_hover;
+                            _ = ui.open(.{
+                                .id = "qs-wifi-card",
+                                .index = @intCast(actual_idx),
+                                .width = .{ .grow = .{} },
+                                .height = .{ .fixed = @floatFromInt(row_h_u) },
+                                .direction = .row,
+                                .padding = .{ .left = ui.su(10), .right = ui.su(10) },
+                                .gap = ui.su(10),
+                                .bg = bg,
+                                .radius = ui.f(self.cfg.theme.radius_button),
+                                .border = ui.su(1),
+                                .border_color = if (item.is_active or is_connecting_this) self.cfg.theme.accent else self.cfg.theme.border,
+                                .align_y = .center,
+                            });
+
+                            const sig_icon_name = if (item.signal >= 75)
+                                "wifi-high"
+                            else if (item.signal >= 50)
+                                "wifi-medium"
+                            else if (item.signal >= 25)
+                                "wifi-low"
+                            else
+                                "wifi-none";
+                            _ = ui.open(.{
+                                .width = .{ .fixed = ui.s(24) },
+                                .height = .{ .fixed = ui.s(24) },
+                                .bg = if (item.is_active) self.cfg.theme.toggle_on else self.cfg.theme.btn_raised_bg,
+                                .radius = ui.f(12),
+                                .border = ui.su(1),
+                                .border_color = self.cfg.theme.glass_border,
+                                .align_x = .center,
+                                .align_y = .center,
+                            });
+                            ui.icon(sig_icon_name, 16 * scale, if (item.is_active) self.cfg.theme.accent_fg else self.cfg.theme.text_bright, 0);
+                            ui.close();
+
+                            _ = ui.open(.{
+                                .width = .{ .grow = .{} },
+                                .height = .{ .grow = .{} },
+                                .direction = .column,
+                                .gap = 0,
+                                .align_y = .center,
+                                .clip_horizontal = true,
+                            });
+                            var name_buf: [64]u8 = undefined;
+                            const trunc_name = truncateText(target, &self.font, item.ssid[0..item.ssid_len], content_w -| 150 * scale, sub_sz, &name_buf);
+                            ui.text(trunc_name, .{ .size = sub_sz, .color = self.cfg.theme.text_bright, .line_height = @intCast(sub_sz + 1) });
+                            var sub_buf: [64]u8 = undefined;
+                            const sec_str = if (item.security_len > 0) item.security[0..item.security_len] else "Open";
+                            const sub_str = if (is_connecting_this)
+                                "Connecting..."
+                            else if (item.is_active)
+                                std.fmt.bufPrint(&sub_buf, "Connected • {d}%", .{item.signal}) catch "Connected"
+                            else
+                                std.fmt.bufPrint(&sub_buf, "{d}% • {s}", .{ item.signal, sec_str }) catch sec_str;
+                            ui.text(sub_str, .{
+                                .size = sec_sz,
+                                .color = if (is_connecting_this) self.cfg.theme.warning_color else if (item.is_active) self.cfg.theme.accent else self.cfg.theme.text_muted,
+                                .line_height = @intCast(sec_sz + 1),
+                            });
+                            ui.close();
+
+                            if (item.is_saved) {
+                                const forget_hov = ui.hovered("qs-wifi-forget", @intCast(actual_idx));
+                                _ = ui.open(.{
+                                    .id = "qs-wifi-forget",
+                                    .index = @intCast(actual_idx),
+                                    .width = .{ .fixed = ui.s(20) },
+                                    .height = .{ .fixed = ui.s(20) },
+                                    .bg = if (forget_hov) self.cfg.theme.error_color else self.cfg.theme.surface,
+                                    .radius = ui.f(6),
+                                    .border = ui.su(1),
+                                    .border_color = if (forget_hov) self.cfg.theme.error_color else self.cfg.theme.border,
+                                    .align_x = .center,
+                                    .align_y = .center,
+                                });
+                                ui.icon("trash", 14 * scale, if (forget_hov) self.cfg.theme.accent_fg else self.cfg.theme.error_color, 0);
+                                ui.close();
                             }
-                        }
 
-                        try self.hit_areas.append(self.allocator, .{
-                            .x = input_x, .y = input_y, .w = input_w, .h = input_h,
-                            .action = .wifi_input_click,
-                        });
+                            if (item.is_active or item.is_saved) {
+                                const action_hov = ui.hovered("qs-wifi-action", @intCast(actual_idx));
+                                const action_icon = if (item.is_active) "plug-disconnected" else "plug-connected";
+                                _ = ui.open(.{
+                                    .id = "qs-wifi-action",
+                                    .index = @intCast(actual_idx),
+                                    .width = .{ .fixed = ui.s(28) },
+                                    .height = .{ .fixed = ui.s(28) },
+                                    .bg = if (action_hov) (if (item.is_active) self.cfg.theme.error_color else self.cfg.theme.accent) else self.cfg.theme.surface,
+                                    .radius = ui.f(6),
+                                    .border = ui.su(1),
+                                    .border_color = if (action_hov) (if (item.is_active) self.cfg.theme.error_color else self.cfg.theme.accent) else self.cfg.theme.border,
+                                    .align_x = .center,
+                                    .align_y = .center,
+                                });
+                                ui.icon(action_icon, 16 * scale, if (item.is_active) self.cfg.theme.accent_fg else if (action_hov) self.cfg.theme.accent_fg else self.cfg.theme.text_bright, 0);
+                                ui.close();
+                            }
 
-                        const btn_y = list_y + @as(i32, @intCast(84 * scale));
-                        const cancel_w: u32 = 70 * scale;
-                        const is_connecting = (self.wifi_connect_state == .connecting);
-                        const connect_w: u32 = if (is_connecting) 100 * scale else 82 * scale;
-                        const btn_h: u32 = 26 * scale;
-
-                        const is_cancel_hovered = self.isAreaHovered(input_x, btn_y, cancel_w, btn_h);
-                        const cancel_bg = if (is_cancel_hovered) self.cfg.theme.elevated else self.cfg.theme.surface;
-                        target.fillSquircle(input_x, btn_y, cancel_w, btn_h, 6 * scale, cancel_bg);
-                        target.drawSquircleBorder(input_x, btn_y, cancel_w, btn_h, 6 * scale, 1 * scale, self.cfg.theme.border);
-                        const c_text_w = target.measureTextWithSize(&self.font, "Cancel", btn_sz);
-                        const c_text_x = input_x + @divTrunc(@as(i32, @intCast(cancel_w)) - @as(i32, @intCast(c_text_w)), 2);
-                        target.drawTextWithSize(&self.font, "Cancel", c_text_x, btn_y + 19, btn_sz, self.cfg.theme.text_bright);
-                        try self.hit_areas.append(self.allocator, .{
-                            .x = input_x, .y = btn_y, .w = cancel_w, .h = btn_h,
-                            .action = .wifi_cancel,
-                        });
-
-                        const conn_x = input_x + @as(i32, @intCast(cancel_w + 8 * scale));
-                        const is_conn_hovered = self.isAreaHovered(conn_x, btn_y, connect_w, btn_h);
-                        const conn_bg = if (is_connecting)
-                            self.cfg.theme.elevated
-                        else if (is_conn_hovered)
-                            self.cfg.theme.accent
-                        else
-                            self.cfg.theme.surface;
-                        const conn_fg = if (is_conn_hovered and !is_connecting) self.cfg.theme.accent_fg else self.cfg.theme.text_bright;
-                        target.fillSquircle(conn_x, btn_y, connect_w, btn_h, 6 * scale, conn_bg);
-                        target.drawSquircleBorder(conn_x, btn_y, connect_w, btn_h, 6 * scale, 1 * scale,
-                            if (is_conn_hovered and !is_connecting) self.cfg.theme.accent else self.cfg.theme.border);
-
-                        const conn_label = if (is_connecting) "Connecting..." else "Connect";
-                        const k_text_w = target.measureTextWithSize(&self.font, conn_label, btn_sz);
-                        const k_text_x = conn_x + @divTrunc(@as(i32, @intCast(connect_w)) - @as(i32, @intCast(k_text_w)), 2);
-                        target.drawTextWithSize(&self.font, conn_label, k_text_x, btn_y + 19, btn_sz, conn_fg);
-                        try self.hit_areas.append(self.allocator, .{
-                            .x = conn_x, .y = btn_y, .w = connect_w, .h = btn_h,
-                            .action = .wifi_connect_submit,
-                        });
-
-                        if (has_error) {
-                            target.drawTextWithSize(&self.font, "󰅚", input_x, btn_y + @as(i32, @intCast(38 * scale)), sec_sz, self.cfg.theme.error_color);
-                            target.drawTextWithSize(&self.font, self.wifi_error_msg[0..self.wifi_error_len], input_x + 18, btn_y + @as(i32, @intCast(38 * scale)), sec_sz, self.cfg.theme.error_color);
+                            ui.close(); // wifi card
                         }
                     }
-
-                    list_y += @as(i32, @intCast(item_h + item_gap));
                 }
             },
             .bluetooth_menu => {
                 if (self.bt_items.items.len == 0) {
-                    self.drawEmptySubMenu(target, "bluetooth", "No Bluetooth devices found", "Click refresh to scan", scale);
-                    return;
-                }
-                const start_idx = self.scroll_offset;
-                const end_idx = @min(self.bt_items.items.len, start_idx + max_visible);
+                    self.emptyState(ui, "bluetooth", "No Bluetooth devices found", "Click refresh to scan", scale);
+                } else {
+                    const start_idx = self.scroll_offset;
+                    const end_idx = @min(self.bt_items.items.len, start_idx + max_visible);
+                    for (self.bt_items.items[start_idx..end_idx], start_idx..) |item, actual_idx| {
+                        const hov = ui.hovered("qs-bt-card", @intCast(actual_idx));
+                        var bg = if (item.connected) self.cfg.theme.elevated else self.cfg.theme.surface;
+                        if (hov) bg = self.cfg.theme.btn_raised_hover;
+                        _ = ui.open(.{
+                            .id = "qs-bt-card",
+                            .index = @intCast(actual_idx),
+                            .width = .{ .grow = .{} },
+                            .height = .{ .fixed = @floatFromInt(row_h_u) },
+                            .direction = .row,
+                            .padding = .{ .left = ui.su(10), .right = ui.su(10) },
+                            .gap = ui.su(10),
+                            .bg = bg,
+                            .radius = ui.f(self.cfg.theme.radius_button),
+                            .border = ui.su(1),
+                            .border_color = if (item.connected) self.cfg.theme.accent else self.cfg.theme.border,
+                            .align_y = .center,
+                        });
 
-                for (self.bt_items.items[start_idx..end_idx], start_idx..) |item, actual_idx| {
-                    const is_hovered = self.isAreaHovered(pad_i, list_y, content_w, item_h);
+                        _ = ui.open(.{
+                            .width = .{ .fixed = ui.s(24) },
+                            .height = .{ .fixed = ui.s(24) },
+                            .bg = if (item.connected) self.cfg.theme.toggle_on else self.cfg.theme.btn_raised_bg,
+                            .radius = ui.f(12),
+                            .border = ui.su(1),
+                            .border_color = self.cfg.theme.glass_border,
+                            .align_x = .center,
+                            .align_y = .center,
+                        });
+                        ui.icon("bluetooth", 16 * scale, if (item.connected) self.cfg.theme.accent_fg else self.cfg.theme.text_bright, 0);
+                        ui.close();
 
-                    var bg = if (item.connected)
-                        self.cfg.theme.elevated
-                    else
-                        self.cfg.theme.surface;
-                    if (is_hovered) {
-                        bg = self.cfg.theme.btn_raised_hover;
+                        _ = ui.open(.{
+                            .width = .{ .grow = .{} },
+                            .height = .{ .grow = .{} },
+                            .direction = .column,
+                            .gap = 0,
+                            .align_y = .center,
+                            .clip_horizontal = true,
+                        });
+                        var name_buf: [64]u8 = undefined;
+                        const trunc_name = truncateText(target, &self.font, item.name[0..item.name_len], content_w -| 150 * scale, sub_sz, &name_buf);
+                        ui.text(trunc_name, .{ .size = sub_sz, .color = self.cfg.theme.text_bright, .line_height = @intCast(sub_sz + 1) });
+                        ui.text(if (item.connected) "Connected" else "Paired", .{
+                            .size = sec_sz,
+                            .color = if (item.connected) self.cfg.theme.accent else self.cfg.theme.text_muted,
+                            .line_height = @intCast(sec_sz + 1),
+                        });
+                        ui.close();
+
+                        const forget_hov = ui.hovered("qs-bt-forget", @intCast(actual_idx));
+                        _ = ui.open(.{
+                            .id = "qs-bt-forget",
+                            .index = @intCast(actual_idx),
+                            .width = .{ .fixed = ui.s(20) },
+                            .height = .{ .fixed = ui.s(20) },
+                            .bg = if (forget_hov) self.cfg.theme.error_color else self.cfg.theme.surface,
+                            .radius = ui.f(6),
+                            .border = ui.su(1),
+                            .border_color = if (forget_hov) self.cfg.theme.error_color else self.cfg.theme.border,
+                            .align_x = .center,
+                            .align_y = .center,
+                        });
+                        ui.icon("trash", 14 * scale, if (forget_hov) self.cfg.theme.accent_fg else self.cfg.theme.error_color, 0);
+                        ui.close();
+
+                        const action_hov = ui.hovered("qs-bt-action", @intCast(actual_idx));
+                        _ = ui.open(.{
+                            .id = "qs-bt-action",
+                            .index = @intCast(actual_idx),
+                            .width = .{ .fixed = ui.s(28) },
+                            .height = .{ .fixed = ui.s(28) },
+                            .bg = if (action_hov) (if (item.connected) self.cfg.theme.error_color else self.cfg.theme.accent) else self.cfg.theme.surface,
+                            .radius = ui.f(6),
+                            .border = ui.su(1),
+                            .border_color = if (action_hov) (if (item.connected) self.cfg.theme.error_color else self.cfg.theme.accent) else self.cfg.theme.border,
+                            .align_x = .center,
+                            .align_y = .center,
+                        });
+                        ui.icon(if (item.connected) "plug-disconnected" else "plug-connected", 16 * scale, if (item.connected) self.cfg.theme.accent_fg else if (action_hov) self.cfg.theme.accent_fg else self.cfg.theme.text_bright, 0);
+                        ui.close();
+
+                        ui.close(); // bt card
                     }
-
-                    target.fillRoundedRect(pad_i, list_y, content_w, item_h, self.cfg.theme.radius_button, bg);
-                    target.drawRoundedBorder(pad_i, list_y, content_w, item_h, self.cfg.theme.radius_button, 1 * scale,
-                        if (item.connected) self.cfg.theme.accent else self.cfg.theme.border);
-
-                    // Device icon
-                    const icon_size: u32 = 24 * scale;
-                    const icon_x = pad_i + 10 * @as(i32, @intCast(scale));
-                    const icon_y = list_y + @as(i32, @intCast((item_h - icon_size) / 2));
-                    const icon_cx = @as(f64, @floatFromInt(icon_x)) + @as(f64, @floatFromInt(icon_size)) / 2.0;
-                    const icon_cy = @as(f64, @floatFromInt(icon_y)) + @as(f64, @floatFromInt(icon_size)) / 2.0;
-
-                    const icon_bg = if (item.connected) self.cfg.theme.toggle_on else self.cfg.theme.btn_raised_bg;
-                    target.drawNeumorphicCircleButton(icon_cx, icon_cy, @as(f64, @floatFromInt(icon_size)) / 2.0,
-                        icon_bg, self.cfg.theme.glass_border, is_hovered, item.connected);
-
-                    const icon_color = if (item.connected) self.cfg.theme.accent_fg else self.cfg.theme.text_bright;
-                    icons.drawSvgIcon(target, self.allocator, "bluetooth", icon_sz, scale,
-                        @as(i32, @intFromFloat(icon_cx)), @as(i32, @intFromFloat(icon_cy)), icon_color);
-
-                    // Device name
-                    const dev_name = item.name[0..item.name_len];
-                    var name_buf: [64]u8 = undefined;
-                    const trunc_name = truncateText(target, &self.font, dev_name, content_w - 144, sub_sz, &name_buf);
-                    const dev_x = icon_x + @as(i32, @intCast(icon_size + 12 * scale));
-                    target.drawTextWithSize(&self.font, trunc_name, dev_x, list_y + @as(i32, @intCast(14 * scale)), sub_sz, self.cfg.theme.text_bright);
-
-                    // Subtitle
-                    const sub_str = if (item.connected) "Connected" else "Paired";
-                    const sub_color = if (item.connected) self.cfg.theme.accent else self.cfg.theme.text_muted;
-                    target.drawTextWithSize(&self.font, sub_str, dev_x, list_y + @as(i32, @intCast(28 * scale)), sec_sz, sub_color);
-
-                    // Connect/Disconnect button
-                    const action_size_bt: u32 = 28 * scale;
-                    const action_x = pad_i + @as(i32, @intCast(content_w)) - @as(i32, @intCast(action_size_bt)) - pad_i;
-                    const action_y = list_y + @as(i32, @intCast((item_h - action_size_bt) / 2));
-                    const is_action_hov = self.isAreaHovered(action_x, action_y, action_size_bt, action_size_bt);
-
-                    var action_icon: []const u8 = "";
-                    var action_callback: Action = .toggle_wifi;
-
-                    if (item.connected) {
-                        action_icon = "plug-disconnected";
-                        action_callback = .{ .disconnect_bluetooth = actual_idx };
-                    } else {
-                        action_icon = "plug-connected";
-                        action_callback = .{ .select_bluetooth = actual_idx };
-                    }
-
-                    if (is_action_hov) {
-                        target.fillSquircle(action_x, action_y, action_size_bt, action_size_bt, 6 * scale,
-                            if (item.connected) self.cfg.theme.error_color else self.cfg.theme.accent);
-                        target.drawSquircleBorder(action_x, action_y, action_size_bt, action_size_bt, 6 * scale, 1 * scale,
-                            if (item.connected) self.cfg.theme.error_color else self.cfg.theme.border);
-                    } else {
-                        target.fillSquircle(action_x, action_y, action_size_bt, action_size_bt, 6 * scale, self.cfg.theme.surface);
-                        target.drawSquircleBorder(action_x, action_y, action_size_bt, action_size_bt, 6 * scale, 1 * scale, self.cfg.theme.border);
-                    }
-                    const action_fg = if (item.connected) self.cfg.theme.accent_fg else self.cfg.theme.text_bright;
-                    icons.drawSvgIcon(target, self.allocator, action_icon, icon_sz, scale,
-                        action_x + @as(i32, @intCast(action_size_bt / 2)), action_y + @as(i32, @intCast(action_size_bt / 2)), action_fg);
-                    try self.hit_areas.append(self.allocator, .{
-                        .x = action_x, .y = action_y, .w = action_size_bt, .h = action_size_bt,
-                        .action = action_callback,
-                    });
-
-                    // Trash icon
-                    const trash_size_bt: u32 = 20 * scale;
-                    const trash_x_bt = action_x - @as(i32, @intCast(trash_size_bt)) - @as(i32, @intCast(6 * scale));
-                    const trash_y_bt = list_y + @as(i32, @intCast(2 * scale));
-                    const is_trash_hov_bt = self.isAreaHovered(trash_x_bt, trash_y_bt, trash_size_bt, trash_size_bt);
-                    const trash_bg_bt = if (is_trash_hov_bt) self.cfg.theme.error_color else self.cfg.theme.surface;
-                    const trash_fg_bt = if (is_trash_hov_bt) self.cfg.theme.accent_fg else self.cfg.theme.error_color;
-                    target.fillSquircle(trash_x_bt, trash_y_bt, trash_size_bt, trash_size_bt, 6 * scale, trash_bg_bt);
-                    target.drawSquircleBorder(trash_x_bt, trash_y_bt, trash_size_bt, trash_size_bt, 6 * scale, 1 * scale,
-                        if (is_trash_hov_bt) self.cfg.theme.error_color else self.cfg.theme.border);
-                    icons.drawSvgIcon(target, self.allocator, "trash", icon_sz, scale,
-                        trash_x_bt + @as(i32, @intCast(trash_size_bt / 2)), trash_y_bt + @as(i32, @intCast(trash_size_bt / 2)), trash_fg_bt);
-                    try self.hit_areas.append(self.allocator, .{
-                        .x = trash_x_bt, .y = trash_y_bt, .w = trash_size_bt, .h = trash_size_bt,
-                        .action = .{ .remove_bluetooth = actual_idx },
-                    });
-
-                    // Checkmark if connected
-                    if (item.connected) {
-                        const check_x_bt = action_x - 60 * @as(i32, @intCast(scale));
-                        icons.drawSvgIcon(target, self.allocator, "check", icon_sz, scale,
-                            check_x_bt + @as(i32, @intCast(icon_sz / 2)), list_y + @as(i32, @intCast(20 * scale)), self.cfg.theme.accent);
-                    }
-
-                    try self.hit_areas.append(self.allocator, .{
-                        .x = pad_i, .y = list_y, .w = content_w - @as(u32, @intCast(action_size_bt)) - 12 * scale, .h = item_h,
-                        .action = .{ .select_bluetooth = actual_idx },
-                    });
-
-                    list_y += @as(i32, @intCast(item_h + item_gap));
                 }
             },
             .audio_menu => {
-                // Segmented tab switch
-                const tab_h: u32 = 32 * scale;
-                const tab_w = content_w;
-                const tab_labels = [_][]const u8{ "󰕾 Output Devices", "󰍬 Input Devices (Mics)" };
-                const sel_tab_idx: usize = if (self.audio_tab == .output) 0 else 1;
-                const seg_w = tab_w / 2;
-
-                var hov_tab_idx: ?usize = null;
-                if (self.isAreaHovered(pad_i, list_y, seg_w, tab_h)) hov_tab_idx = 0;
-                if (self.isAreaHovered(pad_i + @as(i32, @intCast(seg_w)), list_y, seg_w, tab_h)) hov_tab_idx = 1;
-
-                target.drawSegmentedControl(
-                    &self.font,
-                    pad_i,
-                    list_y,
-                    tab_w,
-                    tab_h,
-                    &tab_labels,
-                    sel_tab_idx,
-                    hov_tab_idx,
-                    sub_sz,
-                    self.cfg.theme.slider_track,
-                    self.cfg.theme.glass_border,
-                    self.cfg.theme.btn_raised_bg,
-                    self.cfg.theme.text_main,
-                    self.cfg.theme.text_muted,
-                );
-
-                try self.hit_areas.append(self.allocator, .{
-                    .x = pad_i, .y = list_y, .w = seg_w, .h = tab_h,
-                    .action = .set_audio_tab_output,
+                _ = ui.open(.{
+                    .width = .{ .grow = .{} },
+                    .height = .{ .fixed = ui.s(32) },
+                    .direction = .row,
+                    .bg = self.cfg.theme.slider_track,
+                    .radius = ui.f(8),
                 });
-                try self.hit_areas.append(self.allocator, .{
-                    .x = pad_i + @as(i32, @intCast(seg_w)), .y = list_y, .w = seg_w, .h = tab_h,
-                    .action = .set_audio_tab_input,
-                });
-
-                list_y += @as(i32, @intCast(tab_h + row_gap_u));
+                const tab_labels = [_][]const u8{ "Output Devices", "Input Devices" };
+                inline for (0..2) |tab_idx| {
+                    const selected = (@as(usize, tab_idx) == @intFromEnum(self.audio_tab));
+                    const tab_hov = ui.hovered(if (tab_idx == 0) "qs-audio-out" else "qs-audio-in", 0);
+                    _ = ui.open(.{
+                        .id = if (tab_idx == 0) "qs-audio-out" else "qs-audio-in",
+                        .width = .{ .percent = 0.5 },
+                        .height = .{ .grow = .{} },
+                        .bg = if (selected) self.cfg.theme.btn_raised_bg else if (tab_hov) self.cfg.theme.card_hover_bg else null,
+                        .radius = ui.f(8),
+                        .align_x = .center,
+                        .align_y = .center,
+                    });
+                    ui.text(tab_labels[tab_idx], .{
+                        .size = sub_sz,
+                        .color = if (selected) self.cfg.theme.text_main else self.cfg.theme.text_muted,
+                    });
+                    ui.close();
+                }
+                ui.close();
 
                 const items = if (self.audio_tab == .output) self.sink_items.items else self.source_items.items;
                 const is_output = self.audio_tab == .output;
-
                 if (items.len == 0) {
-                    self.drawEmptySubMenu(target, if (is_output) "volume-muted" else "microphone",
+                    self.emptyState(ui, if (is_output) "volume-muted" else "microphone",
                         if (is_output) "No audio outputs found" else "No audio input devices found",
-                        if (is_output) "Click refresh to refresh" else "Connect a mic and click refresh", scale);
-                    return;
-                }
+                        "Click refresh to refresh", scale);
+                } else {
+                    const start_idx = self.scroll_offset;
+                    const end_idx = @min(items.len, start_idx + max_visible);
+                    for (items[start_idx..end_idx], start_idx..) |item, actual_idx| {
+                        const hov = ui.hovered("qs-audio-item", @intCast(actual_idx));
+                        var bg = if (item.is_default) self.cfg.theme.elevated else self.cfg.theme.surface;
+                        if (hov) bg = self.cfg.theme.btn_raised_hover;
+                        _ = ui.open(.{
+                            .id = "qs-audio-item",
+                            .index = @intCast(actual_idx),
+                            .width = .{ .grow = .{} },
+                            .height = .{ .fixed = @floatFromInt(row_h_u) },
+                            .direction = .row,
+                            .padding = .{ .left = ui.su(10), .right = ui.su(10) },
+                            .gap = ui.su(10),
+                            .bg = bg,
+                            .radius = ui.f(self.cfg.theme.radius_button),
+                            .border = ui.su(1),
+                            .border_color = if (item.is_default) self.cfg.theme.accent else self.cfg.theme.border,
+                            .align_y = .center,
+                        });
+                        _ = ui.open(.{
+                            .width = .{ .fixed = ui.s(24) },
+                            .height = .{ .fixed = ui.s(24) },
+                            .bg = if (item.is_default) self.cfg.theme.toggle_on else self.cfg.theme.btn_raised_bg,
+                            .radius = ui.f(12),
+                            .border = ui.su(1),
+                            .border_color = self.cfg.theme.glass_border,
+                            .align_x = .center,
+                            .align_y = .center,
+                        });
+                        ui.icon(if (is_output) "volume" else "microphone", 16 * scale, if (item.is_default) self.cfg.theme.accent_fg else self.cfg.theme.text_bright, 0);
+                        ui.close();
 
-                const start_idx = self.scroll_offset;
-                const end_idx = @min(items.len, start_idx + max_visible);
+                        _ = ui.open(.{
+                            .width = .{ .grow = .{} },
+                            .height = .{ .grow = .{} },
+                            .direction = .column,
+                            .gap = 0,
+                            .align_y = .center,
+                            .clip_horizontal = true,
+                        });
+                        var name_buf: [96]u8 = undefined;
+                        const trunc_name = truncateText(target, &self.font, item.name[0..item.name_len], content_w -| 90 * scale, sub_sz, &name_buf);
+                        ui.text(trunc_name, .{ .size = sub_sz, .color = self.cfg.theme.text_bright, .line_height = @intCast(sub_sz + 1) });
+                        var sub_buf: [64]u8 = undefined;
+                        const sub_str = if (item.is_default)
+                            std.fmt.bufPrint(&sub_buf, "Default • {d}%", .{item.volume_pct}) catch "Default"
+                        else
+                            std.fmt.bufPrint(&sub_buf, "Volume: {d}%", .{item.volume_pct}) catch "Audio";
+                        ui.text(sub_str, .{
+                            .size = sec_sz,
+                            .color = if (item.is_default) self.cfg.theme.accent else self.cfg.theme.text_muted,
+                            .line_height = @intCast(sec_sz + 1),
+                        });
+                        ui.close();
 
-                for (items[start_idx..end_idx], start_idx..) |item, actual_idx| {
-                    const is_hovered = self.isAreaHovered(pad_i, list_y, content_w, item_h);
-
-                    var bg = if (item.is_default)
-                        self.cfg.theme.elevated
-                    else
-                        self.cfg.theme.surface;
-                    if (is_hovered) {
-                        bg = self.cfg.theme.btn_raised_hover;
+                        if (item.is_default) {
+                            ui.icon("check", 16 * scale, self.cfg.theme.accent, 0);
+                        }
+                        ui.close(); // audio item
                     }
-
-                    target.fillRoundedRect(pad_i, list_y, content_w, item_h, self.cfg.theme.radius_button, bg);
-                    target.drawRoundedBorder(pad_i, list_y, content_w, item_h, self.cfg.theme.radius_button, 1 * scale,
-                        if (item.is_default) self.cfg.theme.accent else self.cfg.theme.border);
-
-                    // Device icon
-                    const icon_size: u32 = 24 * scale;
-                    const icon_x = pad_i + 10 * @as(i32, @intCast(scale));
-                    const icon_y = list_y + @as(i32, @intCast((item_h - icon_size) / 2));
-                    const icon_cx = @as(f64, @floatFromInt(icon_x)) + @as(f64, @floatFromInt(icon_size)) / 2.0;
-                    const icon_cy = @as(f64, @floatFromInt(icon_y)) + @as(f64, @floatFromInt(icon_size)) / 2.0;
-
-                    const icon_bg = if (item.is_default) self.cfg.theme.toggle_on else self.cfg.theme.btn_raised_bg;
-                    target.drawNeumorphicCircleButton(icon_cx, icon_cy, @as(f64, @floatFromInt(icon_size)) / 2.0,
-                        icon_bg, self.cfg.theme.glass_border, is_hovered, item.is_default);
-
-                    const icon_name = if (is_output) "volume" else "microphone";
-                    const icon_color = if (item.is_default) self.cfg.theme.accent_fg else self.cfg.theme.text_bright;
-                    icons.drawSvgIcon(target, self.allocator, icon_name, icon_sz, scale,
-                        @as(i32, @intFromFloat(icon_cx)), @as(i32, @intFromFloat(icon_cy)), icon_color);
-
-                    // Device name
-                    const dev_name = item.name[0..item.name_len];
-                    var name_buf: [96]u8 = undefined;
-                    const trunc_name = truncateText(target, &self.font, dev_name, content_w - 90, sub_sz, &name_buf);
-                    const text_x = icon_x + @as(i32, @intCast(icon_size + 12 * scale));
-                    target.drawTextWithSize(&self.font, trunc_name, text_x, list_y + @as(i32, @intCast(14 * scale)), sub_sz, self.cfg.theme.text_bright);
-
-                    // Subtitle
-                    var sub_buf: [64]u8 = undefined;
-                    const sub_str = if (item.is_default)
-                        std.fmt.bufPrint(&sub_buf, "Default • {d}%", .{item.volume_pct}) catch "Default"
-                    else
-                        std.fmt.bufPrint(&sub_buf, "Volume: {d}%", .{item.volume_pct}) catch "Audio";
-
-                    const sub_color = if (item.is_default) self.cfg.theme.accent else self.cfg.theme.text_muted;
-                    target.drawTextWithSize(&self.font, sub_str, text_x, list_y + @as(i32, @intCast(28 * scale)), sec_sz, sub_color);
-
-                    // Checkmark if default
-                    if (item.is_default) {
-                        icons.drawSvgIcon(target, self.allocator, "check", icon_sz, scale,
-                            pad_i + @as(i32, @intCast(content_w)) - @as(i32, @intCast(24 * scale)) + @as(i32, @intCast(icon_sz / 2)),
-                            list_y + @as(i32, @intCast(20 * scale)), self.cfg.theme.accent);
-                    }
-
-                    try self.hit_areas.append(self.allocator, .{
-                        .x = pad_i, .y = list_y, .w = content_w, .h = item_h,
-                        .action = if (is_output) .{ .select_audio_sink = actual_idx } else .{ .select_audio_source = actual_idx },
-                    });
-
-                    list_y += @as(i32, @intCast(item_h + item_gap));
                 }
             },
             .recording_menu => {
-                const opt_h: u32 = 48 * scale;
-                const opt_gap: u32 = 8 * scale;
-                var cur_opt_y = list_y;
-
                 const active_rec = recorder.isRecordingActive();
-
                 const options = [_]struct {
                     mode: recorder.RecordAudioMode,
                     icon_name: []const u8,
                     title: []const u8,
-                    desc: []const u8,
-                    act: Action,
+                    description: []const u8,
+                    action: Action,
                 }{
-                    .{
-                        .mode = .system,
-                        .icon_name = "volume",
-                        .title = "System sounds (default)",
-                        .desc = "Record internal desktop and application sounds",
-                        .act = .set_recording_mode_system,
-                    },
-                    .{
-                        .mode = .mic,
-                        .icon_name = "microphone",
-                        .title = "Microphone",
-                        .desc = "Record voice from configured default microphone",
-                        .act = .set_recording_mode_mic,
-                    },
-                    .{
-                        .mode = .none,
-                        .icon_name = "volume-muted",
-                        .title = "No audio",
-                        .desc = "Record video only without any audio",
-                        .act = .set_recording_mode_none,
-                    },
+                    .{ .mode = .system, .icon_name = "volume", .title = "System sounds (default)", .description = "Record desktop and application sounds", .action = .set_recording_mode_system },
+                    .{ .mode = .mic, .icon_name = "microphone", .title = "Microphone", .description = "Record voice from the default microphone", .action = .set_recording_mode_mic },
+                    .{ .mode = .none, .icon_name = "volume-muted", .title = "No audio", .description = "Record video without audio", .action = .set_recording_mode_none },
                 };
-
-                for (options) |opt| {
-                    const is_selected = (self.record_audio_mode == opt.mode);
-                    const is_hov = self.isAreaHovered(pad_i, cur_opt_y, content_w, opt_h);
-                    var bg = if (is_selected) self.cfg.theme.elevated else self.cfg.theme.surface;
-                    if (is_hov) bg = self.cfg.theme.btn_raised_hover;
-
-                    target.fillRoundedRect(pad_i, cur_opt_y, content_w, opt_h, self.cfg.theme.radius_button, bg);
-                    target.drawRoundedBorder(pad_i, cur_opt_y, content_w, opt_h, self.cfg.theme.radius_button, 1 * scale,
-                        if (is_selected) self.cfg.theme.accent else self.cfg.theme.border);
-
-                    const icon_size: u32 = 24 * scale;
-                    const icon_x = pad_i + 12 * @as(i32, @intCast(scale));
-                    const icon_y = cur_opt_y + @as(i32, @intCast((opt_h - icon_size) / 2));
-                    const icon_cx = @as(f64, @floatFromInt(icon_x)) + @as(f64, @floatFromInt(icon_size)) / 2.0;
-                    const icon_cy = @as(f64, @floatFromInt(icon_y)) + @as(f64, @floatFromInt(icon_size)) / 2.0;
-
-                    const icon_bg = if (is_selected) self.cfg.theme.toggle_on else self.cfg.theme.btn_raised_bg;
-                    target.drawNeumorphicCircleButton(icon_cx, icon_cy, @as(f64, @floatFromInt(icon_size)) / 2.0,
-                        icon_bg, self.cfg.theme.glass_border, is_hov, is_selected);
-
-                    const icon_color = if (is_selected) self.cfg.theme.accent_fg else self.cfg.theme.text_bright;
-                    icons.drawSvgIcon(target, self.allocator, opt.icon_name, icon_sz, scale,
-                        @as(i32, @intFromFloat(icon_cx)), @as(i32, @intFromFloat(icon_cy)), icon_color);
-
-                    const text_x = icon_x + @as(i32, @intCast(icon_size + 14 * scale));
-                    target.drawTextWithSize(&self.font, opt.title, text_x, cur_opt_y + @as(i32, @intCast(16 * scale)), sub_sz, self.cfg.theme.text_bright);
-                    target.drawTextWithSize(&self.font, opt.desc, text_x, cur_opt_y + @as(i32, @intCast(32 * scale)), sec_sz, self.cfg.theme.text_muted);
-
-                    if (is_selected) {
-                        icons.drawSvgIcon(target, self.allocator, "check", icon_sz, scale,
-                            pad_i + @as(i32, @intCast(content_w)) - @as(i32, @intCast(28 * scale)) + @as(i32, @intCast(icon_sz / 2)),
-                            cur_opt_y + @as(i32, @intCast(24 * scale)), self.cfg.theme.accent);
-                    }
-
-                    try self.hit_areas.append(self.allocator, .{
-                        .x = pad_i, .y = cur_opt_y, .w = content_w, .h = opt_h,
-                        .action = opt.act,
+                for (options, 0..) |opt, idx| {
+                    const selected = (self.record_audio_mode == opt.mode);
+                    const hov = ui.hovered("qs-rec-mode", @intCast(idx));
+                    _ = ui.open(.{
+                        .id = "qs-rec-mode",
+                        .index = @intCast(idx),
+                        .width = .{ .grow = .{} },
+                        .height = .{ .fixed = ui.s(48) },
+                        .direction = .row,
+                        .padding = .{ .left = ui.su(10), .right = ui.su(10) },
+                        .gap = ui.su(10),
+                        .bg = if (selected) self.cfg.theme.elevated else if (hov) self.cfg.theme.btn_raised_hover else self.cfg.theme.surface,
+                        .radius = ui.f(self.cfg.theme.radius_button),
+                        .border = ui.su(1),
+                        .border_color = if (selected) self.cfg.theme.accent else self.cfg.theme.border,
+                        .align_y = .center,
                     });
-
-                    cur_opt_y += @as(i32, @intCast(opt_h + opt_gap));
+                    _ = ui.open(.{
+                        .width = .{ .fixed = ui.s(24) },
+                        .height = .{ .fixed = ui.s(24) },
+                        .bg = if (selected) self.cfg.theme.toggle_on else self.cfg.theme.btn_raised_bg,
+                        .radius = ui.f(12),
+                        .border = ui.su(1),
+                        .border_color = self.cfg.theme.glass_border,
+                        .align_x = .center,
+                        .align_y = .center,
+                    });
+                    ui.icon(opt.icon_name, 16 * scale, if (selected) self.cfg.theme.accent_fg else self.cfg.theme.text_bright, 0);
+                    ui.close();
+                    _ = ui.open(.{
+                        .width = .{ .grow = .{} },
+                        .height = .{ .grow = .{} },
+                        .direction = .column,
+                        .gap = 0,
+                        .align_y = .center,
+                        .clip_horizontal = true,
+                    });
+                    ui.text(opt.title, .{ .size = sub_sz, .color = self.cfg.theme.text_bright, .line_height = @intCast(sub_sz + 1) });
+                    ui.text(opt.description, .{ .size = sec_sz, .color = self.cfg.theme.text_muted, .line_height = @intCast(sec_sz + 1) });
+                    ui.close();
+                    if (selected) ui.icon("check", 16 * scale, self.cfg.theme.accent, 0);
+                    ui.close();
                 }
 
-                cur_opt_y += @as(i32, @intCast(10 * scale));
-                const btn_w = if (content_w > 12) (content_w - 12) / 2 else content_w;
-                const btn_h: u32 = 40 * scale;
+                ui.spacerSized(.{ .fixed = 0 }, .{ .fixed = ui.s(10) });
 
                 if (active_rec) {
-                    const is_stop_hov = self.isAreaHovered(pad_i, cur_opt_y, content_w, btn_h);
-                    target.fillSquircle(pad_i, cur_opt_y, content_w, btn_h, 10 * scale,
-                        if (is_stop_hov) self.cfg.theme.error_color else self.cfg.theme.btn_raised_bg);
-                    target.drawSquircleBorder(pad_i, cur_opt_y, content_w, btn_h, 10 * scale, 1 * scale, self.cfg.theme.error_color);
-                    const stop_str = "  Stop Recording";
-                    const stop_w = target.measureTextWithSize(&self.font, stop_str, btn_sz);
-                    const stop_x = pad_i + @divTrunc(@as(i32, @intCast(content_w)) - @as(i32, @intCast(stop_w)), 2);
-                    target.drawTextWithSize(&self.font, stop_str, stop_x, cur_opt_y + @as(i32, @intCast(26 * scale)), btn_sz,
-                        if (is_stop_hov) theme.Color.rgb(255, 255, 255) else self.cfg.theme.error_color);
-
-                    try self.hit_areas.append(self.allocator, .{
-                        .x = pad_i, .y = cur_opt_y, .w = content_w, .h = btn_h,
-                        .action = .toggle_recording,
+                    const hov = ui.hovered("qs-rec-stop", 0);
+                    _ = ui.open(.{
+                        .id = "qs-rec-stop",
+                        .width = .{ .grow = .{} },
+                        .height = .{ .fixed = ui.s(40) },
+                        .bg = if (hov) self.cfg.theme.error_color else self.cfg.theme.btn_raised_bg,
+                        .radius = ui.f(10),
+                        .border = ui.su(1),
+                        .border_color = self.cfg.theme.error_color,
+                        .align_x = .center,
+                        .align_y = .center,
                     });
+                    ui.text("Stop Recording", .{ .size = btn_sz, .color = if (hov) theme.Color.rgb(255, 255, 255) else self.cfg.theme.error_color });
+                    ui.close();
                 } else {
-                    const is_reg_hov = self.isAreaHovered(pad_i, cur_opt_y, btn_w, btn_h);
-                    target.fillSquircle(pad_i, cur_opt_y, btn_w, btn_h, 10 * scale,
-                        if (is_reg_hov) self.cfg.theme.btn_raised_hover else self.cfg.theme.surface);
-                    target.drawSquircleBorder(pad_i, cur_opt_y, btn_w, btn_h, 10 * scale, 1 * scale, self.cfg.theme.glass_border);
-                    const reg_str = "Record Region";
-                    icons.drawSvgIcon(target, self.allocator, "screen-recording", icon_sz, scale,
-                        pad_i + @as(i32, @intCast(icon_sz / 2)) + 10, cur_opt_y + @as(i32, @intCast(btn_h / 2)), self.cfg.theme.text_main);
-                    const reg_tx = pad_i + @as(i32, @intCast(icon_sz + 14 * scale));
-                    target.drawTextWithSize(&self.font, reg_str, reg_tx, cur_opt_y + @as(i32, @intCast(26 * scale)), btn_sz, self.cfg.theme.text_main);
-
-                    try self.hit_areas.append(self.allocator, .{
-                        .x = pad_i, .y = cur_opt_y, .w = btn_w, .h = btn_h,
-                        .action = .start_record_region,
+                    _ = ui.open(.{
+                        .width = .{ .grow = .{} },
+                        .height = .{ .fixed = ui.s(40) },
+                        .direction = .row,
+                        .gap = ui.su(12),
                     });
-
-                    const fs_x = pad_i + @as(i32, @intCast(btn_w + 12 * scale));
-                    const is_fs_hov = self.isAreaHovered(fs_x, cur_opt_y, btn_w, btn_h);
-                    target.fillSquircle(fs_x, cur_opt_y, btn_w, btn_h, 10 * scale,
-                        if (is_fs_hov) self.cfg.theme.btn_raised_hover else self.cfg.theme.surface);
-                    target.drawSquircleBorder(fs_x, cur_opt_y, btn_w, btn_h, 10 * scale, 1 * scale, self.cfg.theme.glass_border);
-                    const fs_str = "Record Screen";
-                    icons.drawSvgIcon(target, self.allocator, "screen-recording", icon_sz, scale,
-                        fs_x + @as(i32, @intCast(icon_sz / 2)) - 2, cur_opt_y + @as(i32, @intCast(btn_h / 2)), self.cfg.theme.text_main);
-                    const fs_tx = fs_x + @as(i32, @intCast(icon_sz + 14 * scale));
-                    target.drawTextWithSize(&self.font, fs_str, fs_tx, cur_opt_y + @as(i32, @intCast(26 * scale)), btn_sz, self.cfg.theme.text_main);
-
-                    try self.hit_areas.append(self.allocator, .{
-                        .x = fs_x, .y = cur_opt_y, .w = btn_w, .h = btn_h,
-                        .action = .start_record_fullscreen,
+                    const region_hov = ui.hovered("qs-rec-region", 0);
+                    _ = ui.open(.{
+                        .id = "qs-rec-region",
+                        .width = .{ .percent = 0.5 },
+                        .height = .{ .grow = .{} },
+                        .bg = if (region_hov) self.cfg.theme.btn_raised_hover else self.cfg.theme.surface,
+                        .radius = ui.f(10),
+                        .border = ui.su(1),
+                        .border_color = self.cfg.theme.glass_border,
+                        .padding = .{ .left = ui.su(10), .right = ui.su(6) },
+                        .gap = ui.su(8),
+                        .align_y = .center,
                     });
+                    ui.icon("screen-recording", 16 * scale, self.cfg.theme.text_main, 0);
+                    ui.text("Record Region", .{ .size = 13 * scale, .color = self.cfg.theme.text_main });
+                    ui.close();
+
+                    const full_hov = ui.hovered("qs-rec-full", 0);
+                    _ = ui.open(.{
+                        .id = "qs-rec-full",
+                        .width = .{ .percent = 0.5 },
+                        .height = .{ .grow = .{} },
+                        .bg = if (full_hov) self.cfg.theme.btn_raised_hover else self.cfg.theme.surface,
+                        .radius = ui.f(10),
+                        .border = ui.su(1),
+                        .border_color = self.cfg.theme.glass_border,
+                        .padding = .{ .left = ui.su(10), .right = ui.su(6) },
+                        .gap = ui.su(8),
+                        .align_y = .center,
+                    });
+                    ui.icon("screen-recording", 16 * scale, self.cfg.theme.text_main, 0);
+                    ui.text("Record Screen", .{ .size = 13 * scale, .color = self.cfg.theme.text_main });
+                    ui.close();
+                    ui.close();
                 }
             },
             .notifications_menu => {
-                const store = &(self.notif_store orelse return);
-                if (store.items.items.len == 0) {
-                    self.drawEmptySubMenu(target, "bell-off", "No new notifications", "All caught up!", scale);
+                const store = &(self.notif_store orelse {
+                    ui.close();
                     return;
+                });
+                if (store.items.items.len == 0) {
+                    self.emptyState(ui, "bell-off", "No new notifications", "All caught up!", scale);
+                } else {
+                    const start_idx = self.scroll_offset;
+                    const end_idx = @min(store.items.items.len, start_idx + max_visible);
+                    for (store.items.items[start_idx..end_idx], start_idx..) |item, actual_idx| {
+                        const hov = ui.hovered("qs-notif-card", @intCast(actual_idx));
+                        _ = ui.open(.{
+                            .id = "qs-notif-card",
+                            .index = @intCast(actual_idx),
+                            .width = .{ .grow = .{} },
+                            .height = .{ .fixed = ui.s(56) },
+                            .direction = .row,
+                            .padding = .{ .left = ui.su(10), .right = ui.su(10), .top = ui.su(4), .bottom = ui.su(4) },
+                            .gap = ui.su(8),
+                            .bg = if (hov) self.cfg.theme.btn_raised_hover else self.cfg.theme.surface,
+                            .radius = ui.f(self.cfg.theme.radius_button),
+                            .border = ui.su(1),
+                            .border_color = self.cfg.theme.border,
+                            .align_y = .center,
+                        });
+                        ui.icon("bell", icon_sz, self.cfg.theme.accent, 0);
+                        _ = ui.open(.{
+                            .width = .{ .grow = .{} },
+                            .height = .{ .grow = .{} },
+                            .direction = .column,
+                            .gap = 0,
+                            .align_y = .center,
+                            .clip_horizontal = true,
+                        });
+                        var time_buf: [16]u8 = undefined;
+                        const time_str = item.formatRelativeTime(&time_buf);
+                        var head_buf: [128]u8 = undefined;
+                        const head_str = std.fmt.bufPrint(&head_buf, "{s} • {s}", .{ item.getAppName(), time_str }) catch item.getAppName();
+                        ui.text(head_str, .{ .size = sec_sz, .color = self.cfg.theme.text_muted, .line_height = @intCast(sec_sz + 2) });
+                        var trunc_sum: [128]u8 = undefined;
+                        const sum = truncateText(target, &self.font, item.getSummary(), content_w -| 90 * scale, sub_sz, &trunc_sum);
+                        ui.text(sum, .{ .size = sub_sz, .color = self.cfg.theme.text_bright, .line_height = @intCast(sub_sz + 3) });
+                        const body = item.getBody();
+                        if (body.len > 0) {
+                            var trunc_bod: [128]u8 = undefined;
+                            const bod = truncateText(target, &self.font, body, content_w -| 90 * scale, sec_sz, &trunc_bod);
+                            ui.text(bod, .{ .size = sec_sz, .color = self.cfg.theme.text_muted, .line_height = @intCast(sec_sz + 2) });
+                        }
+                        ui.close();
+
+                        const dismiss_hov = ui.hovered("qs-notif-dismiss", @intCast(actual_idx));
+                        _ = ui.open(.{
+                            .id = "qs-notif-dismiss",
+                            .index = @intCast(actual_idx),
+                            .width = .{ .fixed = ui.s(24) },
+                            .height = .{ .fixed = ui.s(24) },
+                            .bg = if (dismiss_hov) self.cfg.theme.btn_raised_hover else self.cfg.theme.btn_raised_bg,
+                            .radius = ui.f(12),
+                            .border = ui.su(1),
+                            .border_color = self.cfg.theme.glass_border,
+                            .align_x = .center,
+                            .align_y = .center,
+                        });
+                        ui.icon("close", 14 * scale, if (dismiss_hov) self.cfg.theme.error_color else self.cfg.theme.text_muted, 0);
+                        ui.close();
+                        ui.close(); // notification card
+                    }
                 }
+            },
+            .main => {},
+        }
+
+        ui.close(); // list
+    }
+
+    fn emptyState(self: *QuickSettings, ui: *ui_mod.Ui, icon_name: []const u8, message: []const u8, hint: []const u8, scale: u32) void {
+        _ = self;
+        _ = ui.open(.{
+            .width = .{ .grow = .{} },
+            .height = .{ .grow = .{} },
+            .direction = .column,
+            .align_x = .center,
+            .align_y = .center,
+            .gap = ui.su(8),
+        });
+        ui.icon(icon_name, 40 * scale, theme.Color.rgb(150, 150, 150), 0);
+        ui.text(message, .{ .size = 15 * scale, .color = theme.Color.rgb(230, 230, 230) });
+        ui.text(hint, .{ .size = 12 * scale, .color = theme.Color.rgb(140, 140, 140) });
+        ui.close();
+    }
+
+    fn appendHitAreas(self: *QuickSettings, ui: *ui_mod.Ui, scale: u32) !void {
+        if (self.view_mode == .main) {
+            var i: usize = 0;
+            while (i < 6) : (i += 1) {
+                if (ui.rectOf("qs-main", @intCast(i))) |rect| {
+                    try self.appendRect(rect, scale, mainActionForIndex(i));
+                }
+                if (mainMenuForIndex(i)) |action| {
+                    if (ui.rectOf("qs-chev", @intCast(i))) |rect| {
+                        try self.appendRect(rect, scale, action);
+                    }
+                }
+            }
+            if (ui.rectOf("qs-mute", 0)) |rect| try self.appendRect(rect, scale, .toggle_audio_mute);
+            if (ui.rectOf("qs-vol-slider", 0)) |rect| try self.appendRect(rect, scale, .slider_volume);
+            if (ui.rectOf("qs-bri-slider", 0)) |rect| try self.appendRect(rect, scale, .slider_brightness);
+
+            const sessions = [_]Action{ .request_logout, .lock, .request_reboot, .request_shutdown };
+            for (sessions, 0..) |action, idx| {
+                if (ui.rectOf("qs-session", @intCast(idx))) |rect| try self.appendRect(rect, scale, action);
+            }
+            const media = [_]Action{ .media_prev, .media_play_pause, .media_next };
+            for (media, 0..) |action, idx| {
+                if (ui.rectOf("qs-media", @intCast(idx))) |rect| try self.appendRect(rect, scale, action);
+            }
+            return;
+        }
+
+        if (ui.rectOf("qs-back", 0)) |rect| try self.appendRect(rect, scale, .back_to_main);
+        if (self.view_mode == .notifications_menu) {
+            if (ui.rectOf("qs-clear-notifs", 0)) |rect| try self.appendRect(rect, scale, .clear_notifications);
+        } else {
+            if (ui.rectOf("qs-refresh", 0)) |rect| try self.appendRect(rect, scale, .refresh_sub_menu);
+        }
+        if (ui.rectOf("qs-header-toggle", 0)) |rect| {
+            try self.appendRect(rect, scale, if (self.view_mode == .wifi_menu) .toggle_wifi else .toggle_bluetooth);
+        }
+
+        const max_visible = self.maxVisibleRows();
+        switch (self.view_mode) {
+            .wifi_menu => {
+                const start_idx = self.scroll_offset;
+                const end_idx = @min(self.wifi_items.items.len, start_idx + max_visible);
+                for (self.wifi_items.items[start_idx..end_idx], start_idx..) |item, actual_idx| {
+                    const is_input_active = (self.wifi_input_ssid_len > 0 and
+                        std.mem.eql(u8, self.wifi_input_ssid[0..self.wifi_input_ssid_len], item.ssid[0..item.ssid_len]));
+                    if (is_input_active) {
+                        if (ui.rectOf("qs-wifi-input", 0)) |rect| try self.appendRect(rect, scale, .wifi_input_click);
+                        if (ui.rectOf("qs-wifi-input-cancel", 0)) |rect| try self.appendRect(rect, scale, .wifi_cancel);
+                        if (ui.rectOf("qs-wifi-cancel", 0)) |rect| try self.appendRect(rect, scale, .wifi_cancel);
+                        if (ui.rectOf("qs-wifi-connect", 0)) |rect| try self.appendRect(rect, scale, .wifi_connect_submit);
+                    } else {
+                        if (item.is_saved) {
+                            if (ui.rectOf("qs-wifi-forget", @intCast(actual_idx))) |rect| try self.appendRect(rect, scale, .{ .forget_wifi = actual_idx });
+                        }
+                        if (item.is_active) {
+                            if (ui.rectOf("qs-wifi-action", @intCast(actual_idx))) |rect| try self.appendRect(rect, scale, .{ .disconnect_wifi = actual_idx });
+                        } else if (item.is_saved) {
+                            if (ui.rectOf("qs-wifi-action", @intCast(actual_idx))) |rect| try self.appendRect(rect, scale, .{ .select_wifi = actual_idx });
+                        }
+                        if (ui.rectOf("qs-wifi-card", @intCast(actual_idx))) |rect| try self.appendRect(rect, scale, .{ .select_wifi = actual_idx });
+                    }
+                }
+            },
+            .bluetooth_menu => {
+                const start_idx = self.scroll_offset;
+                const end_idx = @min(self.bt_items.items.len, start_idx + max_visible);
+                for (self.bt_items.items[start_idx..end_idx], start_idx..) |item, actual_idx| {
+                    if (ui.rectOf("qs-bt-forget", @intCast(actual_idx))) |rect| try self.appendRect(rect, scale, .{ .remove_bluetooth = actual_idx });
+                    if (ui.rectOf("qs-bt-action", @intCast(actual_idx))) |rect| {
+                        try self.appendRect(rect, scale, if (item.connected) .{ .disconnect_bluetooth = actual_idx } else .{ .select_bluetooth = actual_idx });
+                    }
+                    if (ui.rectOf("qs-bt-card", @intCast(actual_idx))) |rect| try self.appendRect(rect, scale, .{ .select_bluetooth = actual_idx });
+                }
+            },
+            .audio_menu => {
+                if (ui.rectOf("qs-audio-out", 0)) |rect| try self.appendRect(rect, scale, .set_audio_tab_output);
+                if (ui.rectOf("qs-audio-in", 0)) |rect| try self.appendRect(rect, scale, .set_audio_tab_input);
+                const items = if (self.audio_tab == .output) self.sink_items.items else self.source_items.items;
+                const is_output = self.audio_tab == .output;
+                const start_idx = self.scroll_offset;
+                const end_idx = @min(items.len, start_idx + max_visible);
+                var actual_idx = start_idx;
+                while (actual_idx < end_idx) : (actual_idx += 1) {
+                    if (ui.rectOf("qs-audio-item", @intCast(actual_idx))) |rect| {
+                        try self.appendRect(rect, scale, if (is_output) .{ .select_audio_sink = actual_idx } else .{ .select_audio_source = actual_idx });
+                    }
+                }
+            },
+            .recording_menu => {
+                if (ui.rectOf("qs-rec-mode", 0)) |rect| try self.appendRect(rect, scale, .set_recording_mode_system);
+                if (ui.rectOf("qs-rec-mode", 1)) |rect| try self.appendRect(rect, scale, .set_recording_mode_mic);
+                if (ui.rectOf("qs-rec-mode", 2)) |rect| try self.appendRect(rect, scale, .set_recording_mode_none);
+                if (ui.rectOf("qs-rec-stop", 0)) |rect| try self.appendRect(rect, scale, .toggle_recording);
+                if (ui.rectOf("qs-rec-region", 0)) |rect| try self.appendRect(rect, scale, .start_record_region);
+                if (ui.rectOf("qs-rec-full", 0)) |rect| try self.appendRect(rect, scale, .start_record_fullscreen);
+            },
+            .notifications_menu => {
+                const store = &(self.notif_store orelse return);
                 const start_idx = self.scroll_offset;
                 const end_idx = @min(store.items.items.len, start_idx + max_visible);
-
-                for (store.items.items[start_idx..end_idx], start_idx..) |item, actual_idx| {
-                    const is_hovered = self.isAreaHovered(pad_i, list_y, content_w, item_h);
-                    const bg = if (is_hovered) self.cfg.theme.btn_raised_hover else self.cfg.theme.surface;
-
-                    target.fillRoundedRect(pad_i, list_y, content_w, item_h, self.cfg.theme.radius_button, bg);
-                    target.drawRoundedBorder(pad_i, list_y, content_w, item_h, self.cfg.theme.radius_button, 1 * scale, self.cfg.theme.border);
-
-                    const icon_x = pad_i + 14 * @as(i32, @intCast(scale));
-                    icons.drawSvgIcon(target, self.allocator, "bell", icon_sz, scale,
-                        icon_x + @as(i32, @intCast(icon_sz / 2)), list_y + @as(i32, @intCast(22 * scale)), self.cfg.theme.accent);
-
-                    const text_x = icon_x + 28 * @as(i32, @intCast(scale));
-                    var time_buf: [16]u8 = undefined;
-                    const time_str = item.formatRelativeTime(&time_buf);
-
-                    var head_buf: [128]u8 = undefined;
-                    const head_str = std.fmt.bufPrint(&head_buf, "{s} • {s}", .{ item.getAppName(), time_str }) catch item.getAppName();
-                    target.drawTextWithSize(&self.font, head_str, text_x, list_y + @as(i32, @intCast(14 * scale)), sec_sz, self.cfg.theme.text_muted);
-
-                    var trunc_sum: [128]u8 = undefined;
-                    const sum = truncateText(target, &self.font, item.getSummary(), content_w - 90, sub_sz, &trunc_sum);
-                    target.drawTextWithSize(&self.font, sum, text_x, list_y + @as(i32, @intCast(28 * scale)), sub_sz, self.cfg.theme.text_bright);
-
-                    const body = item.getBody();
-                    if (body.len > 0) {
-                        var trunc_bod: [128]u8 = undefined;
-                        const bod = truncateText(target, &self.font, body, content_w - 90, sec_sz, &trunc_bod);
-                        target.drawTextWithSize(&self.font, bod, text_x, list_y + @as(i32, @intCast(44 * scale)), sec_sz, self.cfg.theme.text_muted);
+                var actual_idx = start_idx;
+                while (actual_idx < end_idx) : (actual_idx += 1) {
+                    if (ui.rectOf("qs-notif-dismiss", @intCast(actual_idx))) |rect| {
+                        try self.appendRect(rect, scale, .{ .dismiss_notification = actual_idx });
                     }
-
-                    const btn_w: u32 = 24 * scale;
-                    const btn_h: u32 = 24 * scale;
-                    const dismiss_x = pad_i + @as(i32, @intCast(content_w)) - @as(i32, @intCast(btn_w)) - pad_i;
-                    const dismiss_y = list_y + @as(i32, @intCast(@divTrunc(item_h - btn_h, 2)));
-
-                    try self.hit_areas.append(self.allocator, .{
-                        .x = dismiss_x, .y = dismiss_y, .w = btn_w, .h = btn_h,
-                        .action = .{ .dismiss_notification = actual_idx },
-                    });
-
-                    const is_btn_hover = self.isAreaHovered(dismiss_x, dismiss_y, btn_w, btn_h);
-                    const dismiss_r: f64 = @as(f64, @floatFromInt(btn_w)) / 2.0;
-                    target.drawNeumorphicCircleButton(
-                        @as(f64, @floatFromInt(dismiss_x)) + dismiss_r,
-                        @as(f64, @floatFromInt(dismiss_y)) + dismiss_r,
-                        dismiss_r,
-                        if (is_btn_hover) self.cfg.theme.btn_raised_hover else self.cfg.theme.btn_raised_bg,
-                        self.cfg.theme.glass_border,
-                        is_btn_hover,
-                        false,
-                    );
-                    target.drawTextWithSize(&self.font, "✕", dismiss_x + 7, dismiss_y + 16, sec_sz,
-                        if (is_btn_hover) self.cfg.theme.error_color else self.cfg.theme.text_muted);
-
-                    list_y += @as(i32, @intCast(item_h + item_gap));
                 }
             },
             .main => {},
         }
     }
-    fn drawEmptySubMenu(self: *QuickSettings, target: anytype, icon_name: []const u8, message: []const u8, hint: []const u8, scale: u32) void {
-        const w = target.width;
-        const pad_u = QsLayout.pad * scale;
-        const icon_size = self.cfg.typography.title * scale;
-        const center_x = @divTrunc(@as(i32, @intCast(w)), 2);
-        const icon_y = @as(i32, @intCast(pad_u * 4));
 
-        icons.drawSvgIcon(target, self.allocator, icon_name, icon_size, scale, center_x, icon_y, self.cfg.theme.text_muted);
-
-        const ui_sz = self.cfg.typography.ui * scale;
-        const sec_sz = self.cfg.typography.secondary * scale;
-        const msg_w = target.measureTextWithSize(&self.font, message, ui_sz);
-        const msg_x = @divTrunc(@as(i32, @intCast(w)) - @as(i32, @intCast(msg_w)), 2);
-        const msg_y = icon_y + @as(i32, @intCast(icon_size + 20 * scale));
-        target.drawTextWithSize(&self.font, message, msg_x, msg_y, ui_sz, self.cfg.theme.text_bright);
-
-        const hint_w = target.measureTextWithSize(&self.font, hint, sec_sz);
-        const hint_x = @divTrunc(@as(i32, @intCast(w)) - @as(i32, @intCast(hint_w)), 2);
-        const hint_y = msg_y + @as(i32, @intCast(ui_sz + 8 * scale));
-        target.drawTextWithSize(&self.font, hint, hint_x, hint_y, sec_sz, self.cfg.theme.text_muted);
-    }
-
-    fn drawSlider(
-        self: *QuickSettings,
-        target: anytype,
-        x: i32,
-        y: i32,
-        w: u32,
-        h: u32,
-        percent: u32,
-        filled_color: theme.Color,
-        action: Action,
-    ) !void {
-        const is_hovered = self.isAreaHovered(x, y, w, h);
-        target.drawPillSlider(
-            x,
-            y,
-            w,
-            h,
-            percent,
-            self.cfg.theme.slider_track,
-            filled_color,
-            self.cfg.theme.slider_thumb,
-            self.cfg.theme.slider_thumb_shadow,
-            is_hovered,
-        );
-
+    fn appendRect(self: *QuickSettings, rect: renderer.Rect, scale: u32, action: Action) !void {
+        const iscale: i32 = @intCast(scale);
+        const lw: u32 = @intCast(@divTrunc(@as(i32, @intCast(rect.w)) + iscale - 1, iscale));
+        const lh: u32 = @intCast(@divTrunc(@as(i32, @intCast(rect.h)) + iscale - 1, iscale));
+        if (lw == 0 or lh == 0) return;
         try self.hit_areas.append(self.allocator, .{
-            .x = x,
-            .y = y,
-            .w = w,
-            .h = h,
+            .x = @divTrunc(rect.x, iscale),
+            .y = @divTrunc(rect.y, iscale),
+            .w = lw,
+            .h = lh,
             .action = action,
         });
     }
 
-    fn drawControlBtn(
-        self: *QuickSettings,
-        target: anytype,
-        x: i32,
-        y: i32,
-        size: u32,
-        icon_name: []const u8,
-        action: Action,
-    ) !void {
-        const is_hovered = self.isAreaHovered(x, y, size, size);
-        const bg = if (is_hovered)
-            self.cfg.theme.card_hover_bg
-        else
-            self.cfg.theme.card_bg;
-
-        target.fillGlassSquircle(x, y, size, size, size / 2, bg);
-        target.drawSquircleBorder(x, y, size, size, size / 2, 1 * 1, if (is_hovered) self.cfg.theme.accent else self.cfg.theme.border);
-        const icon_size = self.cfg.typography.quicksettings_icon * 1;
-        icons.drawSvgIcon(
-            target,
-            self.allocator,
-            icon_name,
-            icon_size,
-            1,
-            x + @divTrunc(@as(i32, @intCast(size)), 2),
-            y + @divTrunc(@as(i32, @intCast(size)), 2),
-            self.cfg.theme.text_bright,
-        );
-
-        try self.hit_areas.append(self.allocator, .{
-            .x = x,
-            .y = y,
-            .w = size,
-            .h = size,
-            .action = action,
-        });
+    fn mainActionForIndex(idx: usize) Action {
+        return switch (idx) {
+            0 => .toggle_wifi,
+            1 => .toggle_bluetooth,
+            2 => .toggle_audio_mute,
+            3 => .cycle_power_profile,
+            4 => .toggle_caffeine,
+            else => .toggle_recording,
+        };
     }
 
-    fn isAreaHovered(self: *const QuickSettings, x: i32, y: i32, w: u32, h: u32) bool {
-        if (self.pointer_x < 0 or self.pointer_y < 0) return false;
-        return (self.pointer_x >= x and self.pointer_x < x + @as(i32, @intCast(w)) and
-            self.pointer_y >= y and self.pointer_y < y + @as(i32, @intCast(h)));
+    fn mainMenuForIndex(idx: usize) ?Action {
+        return switch (idx) {
+            0 => .open_wifi_menu,
+            1 => .open_bluetooth_menu,
+            2 => .open_audio_menu,
+            5 => .open_recording_menu,
+            else => null,
+        };
     }
 
     fn truncateText(target: anytype, font: *renderer.Font, text: []const u8, max_w: u32, size: u32, buf: []u8) []const u8 {
@@ -3545,6 +3670,7 @@ test "QuickSettings handlePointerAxis scrolling" {
 
     // Switch to wifi_menu with 10 items (more than max visible 7)
     qs.view_mode = .wifi_menu;
+    qs.scroll_offset = 0;
     var i: usize = 0;
     while (i < 10) : (i += 1) {
         try qs.wifi_items.append(allocator, .{
@@ -3554,17 +3680,23 @@ test "QuickSettings handlePointerAxis scrolling" {
         });
     }
 
-    // Scrolling down increases offset up to max_scroll (10 - 8 = 2)
+    // Scrolling down increases offset up to max_scroll (10 - 7 = 3)
     try std.testing.expect(qs.handlePointerAxis(0, 0, 1));
     try std.testing.expectEqual(@as(usize, 1), qs.scroll_offset);
     try std.testing.expect(qs.handlePointerAxis(0, 0, 1));
     try std.testing.expectEqual(@as(usize, 2), qs.scroll_offset);
+    try std.testing.expect(qs.handlePointerAxis(0, 0, 1));
+    try std.testing.expectEqual(@as(usize, 3), qs.scroll_offset);
     // Beyond max_scroll should return false
     try std.testing.expect(!qs.handlePointerAxis(0, 0, 1));
 
     // Scrolling up decreases offset back to 0
     try std.testing.expect(qs.handlePointerAxis(0, 0, -1));
+    try std.testing.expectEqual(@as(usize, 2), qs.scroll_offset);
+    try std.testing.expect(qs.handlePointerAxis(0, 0, -1));
     try std.testing.expectEqual(@as(usize, 1), qs.scroll_offset);
+    try std.testing.expect(qs.handlePointerAxis(0, 0, -1));
+    try std.testing.expectEqual(@as(usize, 0), qs.scroll_offset);
 }
 
 test "QuickSettings wifi password keyboard input" {

@@ -19,6 +19,7 @@ Full detailed documentation is available in the [`docs/`](docs/README.md) direct
 ## Features
 
 ### Stage 1: Top Bar (Modular Architecture & Squircle UI)
+- **Unified Clay Layout Engine**: Clay 0.14 (`src/c/clay.h`) is the single layout core for the bar and every shell surface. Clay computes boxes, flex-like spacing, text measurement, clipping, and scroll containers; Mizu consumes its render commands and paints them with its own Zig rasterizer into native `wl_shm` buffers.
 - **Modular Bar Architecture (`src/bar/*`)**: Each bar component is an independent, reusable module:
   - `src/bar/types.zig`: `BarContext`, `ClickAction`, `ClickableArea`
   - `src/bar/workspaces.zig`: Roman numerals (`Ⅰ`, `Ⅱ`, `Ⅲ`, `Ⅳ`, `Ⅴ`, `Ⅵ`, `Ⅶ`, `Ⅷ`, `Ⅸ`) with active, urgent, and occupied states
@@ -32,7 +33,7 @@ Full detailed documentation is available in the [`docs/`](docs/README.md) direct
   - `src/bar/theme_switch.zig`: Interactive theme switcher module with live cycling
   - `src/bar/separator.zig`: Vertical dividers with opacity blending
   - `src/bar/bar.zig`: Modular coordinator orchestrating layout, tick, and input handling
-- **Continuous-Curvature Squircle Rendering**: Built-in superellipse squircle geometry ($n \approx 4$, G2-continuous curvature) for all pills, chips, capsules, and containers using symmetric cubic Bézier curves, providing smooth corners without sharp arc transitions.
+- **Continuous-Curvature Squircle Rendering**: Built-in superellipse squircle geometry ($n \approx 4$, G2-continuous curvature) for glass surfaces and custom vector accents (key overlay, clipboard preview). Clay panels use native rounded-rect primitives for predictable layout and clipping.
 - **Dynamic Theme Switcher**:
   - Live on-bar module displaying active theme icon + name (`󰔎 Nord`, `󰔎 Catppuccin`, `󰔎 Tokyo Night`, `󰔎 Gruvbox`, `󰔎 Rosé Pine`).
   - Left-click or scroll up cycles to the next theme; Right-click or scroll down cycles to the previous theme.
@@ -108,6 +109,7 @@ Verified on **Void Linux** (Linux kernel 6.18, x86_64):
 | **Keyboard Library** | `1.13.2` | `libxkbcommon`, `libxkbcommon-devel` | Keyboard map translation and keycodes |
 | **FreeType** | `2.14.3` | `freetype`, `freetype-devel` | Font rasterization & glyph rendering |
 | **NanoSVG** | vendored | `src/core/nanosvg.{h,c}` | SVG icon parsing (zlib licensed, bundled source) |
+| **Clay** | `0.14` | vendored `src/c/clay.h` | Shared box, text, clipping, and scroll layout engine |
 | **NanoSVG Rasterizer** | vendored | `src/core/nanosvg_rasterizer.{h,c}` | SVG alpha rasterization for crisp icons (zlib licensed, bundled source) |
 | **Fontconfig** | `2.17.1` | `fontconfig`, `fontconfig-devel` | Font discovery and matching |
 | **Protocol Generator** | `1.26.0` | `wayland-devel` (`wayland-scanner`) | C code/header generation from protocol XML |

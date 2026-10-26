@@ -6,6 +6,7 @@ const Color = theme.Color;
 const renderer = @import("../core/renderer.zig");
 const Font = renderer.Font;
 const Image = renderer.Image;
+const ui_mod = @import("../core/ui.zig");
 
 pub const AuthState = enum { idle, authenticating, failed, success };
 
@@ -134,18 +135,9 @@ pub const LockApp = struct {
         // Decorative glyphs (subtle, animated)
         self.drawDecorativeGlyphs(target);
 
-        // Large elegant clock (center)
-        self.drawClock(target);
-
-        // Password input indicator (only when typing)
-        if (self.show_input) {
-            self.drawPasswordIndicator(target);
-        }
-
-        // Failed auth feedback
-        if (self.auth_state == .failed) {
-            self.drawAuthFailed(target);
-        }
+        // Foreground HUD (clock, date, password dots, error) is laid out by
+        // Clay. The wallpaper and decorative glyph field remain direct draws.
+        self.drawClayHud(target);
 
         // Create SHM buffer and attach
         self.presentFrame(wl_surface, pixel_buf.ptr, stride);
@@ -230,89 +222,109 @@ pub const LockApp = struct {
         }
     }
 
-    fn drawClock(self: *LockApp, target: renderer.Renderer) void {
-        var clock_font = self.clock_font orelse return;
+    fn drawClayHud(self: *LockApp, target: renderer.Renderer) void {
+        const font = if (self.font) |*f| f else return;
+        const scale = if (self.scale == 0) 1 else self.scale;
+
         const now = c.time(null);
         var tm: c.struct_tm = undefined;
         _ = c.localtime_r(&now, &tm);
 
-        const hours = tm.tm_hour;
-        const mins = tm.tm_min;
-
         var time_buf: [16]u8 = undefined;
-        const time_str = std.fmt.bufPrint(&time_buf, "{:02}:{:02}", .{ hours, mins }) catch "00:00";
+        const time_str = std.fmt.bufPrint(&time_buf, "{:02}:{:02}", .{ tm.tm_hour, tm.tm_min }) catch "00:00";
 
-        const extents = (&clock_font).measureInk(time_str, 120);
-        const text_w = extents.width;
-        const y = @divTrunc(@as(i32, @intCast(self.height)), 2) + @divTrunc(@as(i32, @intCast(clock_font.ascender_px)), 2) - 30;
-
-        // Shadow
-        const shadow_color = Color.init(100, 0, 0, 0);
-        const clock_x = @divTrunc(@as(i32, @intCast(self.width)) - @as(i32, @intCast(text_w)), 2) - extents.left;
-        self.drawTextWithFont(target, &clock_font, time_str, clock_x + 2, y + 2, 120, shadow_color);
-
-        // Main text
-        const main_color = Color.init(255, 255, 255, 255);
-        self.drawTextWithFont(target, &clock_font, time_str, clock_x, y, 120, main_color);
-
-        // Date below clock
-        var date_font = self.font orelse return;
         const month_names = [_][]const u8{
             "Jan", "Feb", "Mar", "Apr", "May", "Jun",
             "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
         };
-        const mon_idx = @as(usize, @intCast(tm.tm_mon));
-        const mon = if (tm.tm_mon >= 0 and tm.tm_mon < 12) month_names[mon_idx] else "??";
+        const mon_idx: usize = if (tm.tm_mon >= 0 and tm.tm_mon < 12) @intCast(tm.tm_mon) else 0;
+        const mon = month_names[mon_idx];
         var date_buf: [32]u8 = undefined;
         const date_full = std.fmt.bufPrint(&date_buf, "{s} {}, {}", .{ mon, tm.tm_mday, tm.tm_year + 1900 }) catch "";
-        const date_w = (&date_font).measureTextWithSize(date_full, 16);
-        const date_x = @divTrunc(@as(i32, @intCast(self.width)) - @as(i32, @intCast(date_w)), 2);
-        const date_y = y + @as(i32, @intCast(clock_font.ascender_px)) + 10;
-        self.drawTextWithFont(target, &date_font, date_full, date_x, date_y, 16, main_color);
-    }
 
-    fn drawPasswordIndicator(self: *LockApp, target: renderer.Renderer) void {
-        _ = self.font;
-        const center_x = @as(i32, @intCast(self.width / 2));
-        const y = @divTrunc(@as(i32, @intCast(self.height)), 2) + 80;
+        var ui = ui_mod.Ui.begin(
+            self.allocator,
+            font,
+            self.width,
+            self.height,
+            scale,
+            -1,
+            -1,
+            false,
+            1.0 / 60.0,
+        ) catch return;
+        defer ui.deinit();
 
-        // Show dots for each character typed
-        const dot_count = self.password_len;
-        if (dot_count == 0) return;
+        ui.root(.{
+            .direction = .column,
+            .align_x = .center,
+            .align_y = .center,
+            .gap = ui.su(6),
+        });
+        ui.spacerSized(.{ .fixed = 0 }, .{ .grow = .{} });
 
-        const dot_size = 12 * self.scale;
-        const dot_gap = 8 * self.scale;
-        const total_w = dot_count * dot_size + (dot_count - 1) * dot_gap;
-        var dot_x = center_x - @as(i32, @intCast(total_w / 2));
+        ui.text(time_str, .{
+            .size = 120 * scale,
+            .color = Color.rgb(255, 255, 255),
+            .line_height = @intCast(120 * scale),
+        });
+        ui.text(date_full, .{
+            .size = 16 * scale,
+            .color = Color.init(220, 255, 255, 255),
+        });
 
-        const dot_color = Color.init(200, 255, 255, 255);
-        var i: usize = 0;
-        while (i < dot_count) : (i += 1) {
-            target.fillCircle(
-                @as(f64, @floatFromInt(dot_x + @as(i32, @intCast(dot_size / 2)))),
-                @as(f64, @floatFromInt(y)),
-                @as(f64, @floatFromInt(dot_size / 2)),
-                dot_color,
-            );
-            dot_x += @as(i32, @intCast(dot_size + dot_gap));
+        ui.spacerSized(.{ .fixed = 0 }, .{ .fixed = ui.s(30) });
+
+        if (self.show_input) {
+            _ = ui.open(.{
+                .width = .{ .fixed = ui.s(1) },
+                .height = .{ .fixed = @floatFromInt(14 * scale) },
+                .clip_horizontal = true,
+                .direction = .row,
+                .align_x = .center,
+                .align_y = .center,
+                .gap = ui.su(8),
+            });
+            const dot_size = 12 * scale;
+            const dot_gap = 8 * scale;
+            var i: usize = 0;
+            while (i < self.password_len) : (i += 1) {
+                ui.rect(
+                    .{ .fixed = @floatFromInt(dot_size) },
+                    .{ .fixed = @floatFromInt(dot_size) },
+                    Color.init(220, 255, 255, 255),
+                    @floatFromInt(dot_size / 2),
+                    .{},
+                );
+                if (i + 1 < self.password_len) {
+                    ui.spacerSized(.{ .fixed = @floatFromInt(dot_gap) }, .{ .fixed = @floatFromInt(dot_size) });
+                }
+            }
+            if (self.caret_blink) {
+                ui.rect(
+                    .{ .fixed = @floatFromInt(2 * scale) },
+                    .{ .fixed = @floatFromInt(dot_size) },
+                    Color.init(220, 255, 255, 255),
+                    0,
+                    .{},
+                );
+            }
+            ui.close();
         }
 
-        // Blinking caret
-        if (self.caret_blink) {
-            const caret_x = dot_x + 4;
-            target.fillRect(caret_x, y - @as(i32, @intCast(dot_size / 2)), 2, dot_size, dot_color);
+        if (self.auth_state == .failed) {
+            ui.spacerSized(.{ .fixed = 0 }, .{ .fixed = ui.s(12) });
+            ui.text("Wrong password", .{
+                .size = 16 * scale,
+                .color = Color.init(255, 255, 80, 80),
+            });
         }
-    }
 
-    fn drawAuthFailed(self: *LockApp, target: renderer.Renderer) void {
-        var font = self.font orelse return;
-        const text = "Wrong password";
-        const text_w = (&font).measureTextWithSize(text, 16);
-        const x = @divTrunc(@as(i32, @intCast(self.width)) - @as(i32, @intCast(text_w)), 2);
-        const y = @divTrunc(@as(i32, @intCast(self.height)), 2) + 140;
+        ui.spacerSized(.{ .fixed = 0 }, .{ .grow = .{} });
+        ui.close();
 
-        const color = Color.init(255, 255, 80, 80);
-        self.drawTextWithFont(target, &font, text, x, y, 16, color);
+        const commands = ui.endLayout();
+        ui.render(target, commands);
     }
 
     fn drawTextWithFont(self: *LockApp, target: renderer.Renderer, font: *Font, text: []const u8, x: i32, y: i32, size: u32, color: Color) void {

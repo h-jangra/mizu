@@ -1,38 +1,41 @@
 const std = @import("std");
-const renderer = @import("../core/renderer.zig");
 const types = @import("context.zig");
 const c = @import("../c.zig").c;
+const ui_mod = @import("../core/ui.zig");
 
 var tz_initialized: bool = false;
 
-pub fn renderCenter(ctx: *types.BarContext, target: renderer.Renderer, total_w: u32) !struct { x: i32, w: u32 } {
+pub fn render(ctx: *types.BarContext, ui: *ui_mod.Ui) !void {
     var buf: [64]u8 = undefined;
     const label = formatClockTime(ctx.cfg.clock_format, &buf);
-    const width = target.measureTextWithSize(ctx.font, label, ctx.textFontSize()) + 18 * ctx.scale;
-    const x = @divTrunc(@as(i32, @intCast(total_w)) - @as(i32, @intCast(width)), 2);
+    const id = "bar-clock";
+    const hovered = ui.hovered(id, 0);
+    const bg = if (hovered) ctx.cfg.theme.pill_hover else ctx.cfg.theme.clock_bg;
+    const border_col = if (hovered) ctx.cfg.theme.accent else null;
 
-    try drawClock(ctx, target, x, width, label);
-    return .{ .x = x, .w = width };
-}
+    _ = ui.open(.{
+        .id = id,
+        .width = .fit,
+        .height = .{ .grow = .{} },
+        .padding = .{ .left = ui.su(9), .right = ui.su(9) },
+        .bg = bg,
+        .radius = ui.f(ctx.cfg.pill_radius),
+        .border = if (border_col != null) ui.su(1) else 0,
+        .border_color = border_col,
+        .align_y = .center,
+    });
+    ui.text(label, .{
+        .size = ctx.textFontSize(),
+        .color = ctx.cfg.theme.clock_fg,
+    });
+    ui.close();
 
-pub fn render(ctx: *types.BarContext, target: renderer.Renderer, right_x: i32) !i32 {
-    var buf: [64]u8 = undefined;
-    const label = formatClockTime(ctx.cfg.clock_format, &buf);
-    const width = target.measureTextWithSize(ctx.font, label, ctx.textFontSize()) + 18 * ctx.scale;
-    const x = right_x - @as(i32, @intCast(width));
-
-    try drawClock(ctx, target, x, width, label);
-    return x;
-}
-
-fn drawClock(ctx: *types.BarContext, target: renderer.Renderer, x: i32, width: u32, label: []const u8) !void {
-    ctx.drawChip(target, x, ctx.chip_y, width, ctx.chip_h, label, ctx.cfg.theme.clock_bg, ctx.cfg.theme.clock_fg);
-    try ctx.addClickable(x, ctx.chip_y, width, ctx.chip_h, .{
+    try ctx.linkClick(ui, id, 0, .{
         .dual_command = .{
             .left = "mizu calendar",
             .right = "mizu quicksettings",
         },
-    });
+    }, null);
 }
 
 pub fn formatNow(fmt: []const u8, buf: []u8) []const u8 {

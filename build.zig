@@ -58,6 +58,10 @@ pub fn build(b: *std.Build) void {
         .file = b.path("src/c/tray_dbus.c"),
     });
     exe.root_module.addCSourceFile(.{
+        .file = b.path("src/c/clay_impl.c"),
+        .flags = &.{ "-O2", "-std=c99" },
+    });
+    exe.root_module.addCSourceFile(.{
         .file = b.path("src/core/nanosvg.c"),
         .flags = &.{"-O2"},
     });

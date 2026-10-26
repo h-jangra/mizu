@@ -4,6 +4,7 @@ const config = @import("../core/config.zig");
 const icons = @import("../graphics/icons.zig");
 const renderer = @import("../core/renderer.zig");
 const theme = @import("../core/theme.zig");
+const ui_mod = @import("../core/ui.zig");
 
 pub const Mods = struct {
     shift: bool = false,
@@ -226,16 +227,36 @@ pub const KeyOverlay = struct {
         return n;
     }
 
+    fn iconAsset(name: []const u8) []const u8 {
+        const map = [_][2][]const u8{
+            .{ "escape", "keys/esc" },
+            .{ "backspace", "keys/backspace" },
+            .{ "enter", "keys/enter" },
+            .{ "ctrl", "keys/ctrl" },
+            .{ "shift", "keys/shift" },
+            .{ "alt", "keys/alt" },
+            .{ "caps-lock", "keys/caps-lock" },
+            .{ "up", "keys/up" },
+            .{ "left", "keys/left" },
+            .{ "right", "keys/right" },
+            .{ "down", "keys/down" },
+            .{ "super", "keys/super" },
+        };
+        for (map) |pair| {
+            if (std.mem.eql(u8, name, pair[0])) return pair[1];
+        }
+        return name;
+    }
+
     pub fn render(self: *KeyOverlay, target: renderer.Renderer, scale: u32) !void {
         target.clear(theme.Color.transparent);
         if (!self.has_active_keys or self.history.items.len == 0) return;
 
         const s: i32 = @intCast(scale);
         const font_size: u32 = self.font_size * scale;
-        const font_px: i32 = @intCast(font_size);
         const icon_size: u32 = if (font_size > 2 * scale) font_size - 2 * scale else @max(10, font_size);
         const cap_pad_x: i32 = 7 * s;
-        const cap_h: i32 = font_px + 10 * s;
+        const cap_h: i32 = @as(i32, @intCast(font_size)) + 10 * s;
         const seg_gap: i32 = 5 * s;
         const item_gap: i32 = 12 * s;
         const box_pad: i32 = 12 * s;
@@ -282,39 +303,81 @@ pub const KeyOverlay = struct {
         const box_x = @divTrunc(phys_w - box_w, 2);
         const box_y: i32 = 4 * s;
 
+        // The glass panel and its border are direct draws so the backdrop blur
+        // and squircle silhouette stay intact; the keycaps themselves are Clay.
         target.fillGlassSquircle(box_x, box_y, @intCast(@max(1, box_w)), @intCast(@max(1, box_h)), 12 * scale, self.cfg.theme.panel_bg);
         target.drawSquircleBorder(box_x, box_y, @intCast(@max(1, box_w)), @intCast(@max(1, box_h)), 12 * scale, @max(1, scale), self.cfg.theme.panel_border);
 
-        const cap_y = box_y + @divTrunc(box_h - cap_h, 2);
-        const baseline = cap_y + @divTrunc(cap_h + self.font.ascender_px * s, 2) - 1;
+        var ui = try ui_mod.Ui.begin(
+            self.allocator,
+            &self.font,
+            target.width,
+            target.height,
+            scale,
+            -1,
+            -1,
+            false,
+            1.0 / 60.0,
+        );
+        defer ui.deinit();
 
-        var cur_x = box_x + box_pad;
+        ui.root(.{
+            .direction = .row,
+            .align_x = .center,
+            .align_y = .center,
+        });
+
+        _ = ui.open(.{
+            .width = .{ .fixed = @floatFromInt(@max(1, box_w)) },
+            .height = .{ .fixed = @floatFromInt(@max(1, box_h)) },
+            .direction = .row,
+            .padding = .all(ui.su(@intCast(box_pad))),
+            .gap = ui.su(@intCast(item_gap)),
+            .align_x = .left,
+            .align_y = .center,
+        });
+
         for (first..count) |i| {
+            _ = ui.open(.{
+                .width = .fit,
+                .height = .{ .fixed = @floatFromInt(@max(1, cap_h)) },
+                .direction = .row,
+                .gap = ui.su(@intCast(seg_gap)),
+                .align_y = .center,
+            });
             for (0..seg_counts[i]) |j| {
                 const seg = segs[i][j];
                 const w = width_sets[i][j];
-                target.fillSquircle(cur_x, cap_y, @intCast(@max(1, w)), @intCast(@max(1, cap_h)), 6 * scale, self.cfg.theme.elevated);
-                target.drawSquircleBorder(cur_x, cap_y, @intCast(@max(1, w)), @intCast(@max(1, cap_h)), 6 * scale, @max(1, scale), self.cfg.theme.border_focused);
-
+                _ = ui.open(.{
+                    .width = .{ .fixed = @floatFromInt(@max(1, w)) },
+                    .height = .{ .fixed = @floatFromInt(@max(1, cap_h)) },
+                    .bg = self.cfg.theme.elevated,
+                    .radius = ui.f(6),
+                    .border = ui.su(@max(1, scale)),
+                    .border_color = self.cfg.theme.border_focused,
+                    .align_x = .center,
+                    .align_y = .center,
+                });
                 switch (seg.kind) {
-                    .icon => {
-                        const cx = cur_x + @divTrunc(w, 2);
-                        const cy = cap_y + @divTrunc(cap_h, 2);
-                        icons.drawSvgIcon(target, self.allocator, seg.icon, icon_size, scale, cx, cy, self.cfg.theme.text_bright);
-                    },
-                    .text => {
-                        const text_w = target.measureTextWithSize(&self.font, seg.text, font_size);
-                        const tx = cur_x + @divTrunc(w - @as(i32, @intCast(text_w)), 2);
-                        target.drawTextWithSize(&self.font, seg.text, tx, baseline, font_size, self.cfg.theme.text_bright);
-                    },
+                    .icon => ui.icon(iconAsset(seg.icon), icon_size, self.cfg.theme.text_bright, 0),
+                    .text => ui.text(seg.text, .{
+                        .size = font_size,
+                        .color = self.cfg.theme.text_bright,
+                        .line_height = @intCast(cap_h),
+                    }),
                 }
-
-                cur_x += w;
-                if (j + 1 < seg_counts[i]) cur_x += seg_gap;
+                ui.close();
             }
-            cur_x += item_gap;
+            ui.close();
         }
+
+        ui.close(); // panel
+        ui.close(); // root
+
+        const commands = ui.endLayout();
+        ui.render(target, commands);
     }
+
 };
 
 fn isCharacterKey(code: u16) bool {

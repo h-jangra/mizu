@@ -36,5 +36,6 @@ pub const c = @cImport({
     @cInclude("notify_dbus.h");
     @cInclude("nanosvg.h");
     @cInclude("nanosvg_rasterizer.h");
+    @cInclude("clay.h");
     @cInclude("math.h");
 });

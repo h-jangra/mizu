@@ -1,14 +1,13 @@
 const std = @import("std");
-const renderer = @import("../core/renderer.zig");
 const theme = @import("../core/theme.zig");
 const types = @import("context.zig");
 const c = @import("../c.zig").c;
-const icons = @import("../graphics/icons.zig");
+const ui_mod = @import("../core/ui.zig");
 
 pub const RecordAudioMode = enum {
-    system, // System sounds (default)
-    mic, // Microphone
-    none, // No audio
+    system,
+    mic,
+    none,
 
     pub fn toLabel(self: RecordAudioMode) []const u8 {
         return switch (self) {
@@ -157,35 +156,38 @@ pub fn getFullscreenCommand(mode: RecordAudioMode) []const u8 {
     };
 }
 
-pub fn render(ctx: *types.BarContext, target: renderer.Renderer, right_x: i32) !i32 {
+pub fn render(ctx: *types.BarContext, ui: *ui_mod.Ui) !void {
     const active = isRecordingActive();
-    if (!active and ctx.cfg.recorder_hide_when_idle) {
-        return right_x;
-    }
+    if (!active and ctx.cfg.recorder_hide_when_idle) return;
 
     const icon_size = ctx.iconFontSize();
     const icon_name = if (active) "record" else "screen-recording";
     const icon_color = if (active) theme.Color.rgb(255, 255, 255) else ctx.cfg.theme.accent;
     const bg_color = if (active) theme.Color.rgb(204, 36, 29) else ctx.cfg.theme.pill_bg;
+    const id = "bar-recorder";
+    const hovered = ui.hovered(id, 0);
 
-    const width = icon_size + 16 * ctx.scale;
-    const x = right_x - @as(i32, @intCast(width));
-
-    ctx.drawChipBase(target, x, ctx.chip_y, width, ctx.chip_h, bg_color);
-    const cx = x + @divTrunc(@as(i32, @intCast(width)), 2);
-    const cy = ctx.chip_y + @divTrunc(@as(i32, @intCast(ctx.chip_h)), 2);
-    icons.drawSvgIcon(target, ctx.allocator, icon_name, icon_size, ctx.scale, cx, cy, icon_color);
+    _ = ui.open(.{
+        .id = id,
+        .width = .{ .fixed = @as(f32, @floatFromInt(icon_size)) + ui.s(16) },
+        .height = .{ .grow = .{} },
+        .bg = if (hovered) ctx.cfg.theme.pill_hover else bg_color,
+        .radius = ui.f(ctx.cfg.pill_radius),
+        .border = if (hovered) ui.su(1) else 0,
+        .border_color = if (hovered) ctx.cfg.theme.accent else null,
+        .align_x = .center,
+        .align_y = .center,
+    });
+    ui.icon(icon_name, icon_size, icon_color, 0);
+    ui.close();
 
     const mode = getRecordAudioMode();
     const region_cmd = getRegionCommand(mode);
     const fullscreen_cmd = getFullscreenCommand(mode);
-
-    try ctx.addClickable(x, ctx.chip_y, width, ctx.chip_h, .{
+    try ctx.linkClick(ui, id, 0, .{
         .dual_command = .{
             .left = if (active) stop_cmd else region_cmd,
             .right = if (active) stop_cmd else fullscreen_cmd,
         },
-    });
-
-    return x;
+    }, null);
 }

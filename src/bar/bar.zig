@@ -3,7 +3,7 @@ const c = @import("../c.zig").c;
 const theme = @import("../core/theme.zig");
 const config = @import("../core/config.zig");
 const renderer = @import("../core/renderer.zig");
-const draw = @import("../draw.zig");
+const ui_mod = @import("../core/ui.zig");
 const mango_ipc = @import("../services/mango_ipc.zig");
 const sys_status = @import("../services/system_status.zig");
 const exec = @import("../core/exec.zig");
@@ -29,6 +29,7 @@ pub const network = @import("network.zig");
 pub const volume = @import("volume.zig");
 pub const quicksettings = @import("quicksettings_pill.zig");
 pub const theme_switch = @import("theme_switch.zig");
+pub const separator = @import("separator.zig");
 
 pub const Bar = struct {
     allocator: std.mem.Allocator,
@@ -36,6 +37,7 @@ pub const Bar = struct {
     font: renderer.Font,
     sys_status: sys_status.SysStatus,
     clickable_areas: std.ArrayList(ClickableArea),
+    pending_clicks: std.ArrayList(types.PendingClick),
     hover_x: i32 = -1,
     hover_y: i32 = -1,
     current_theme_kind: theme.ThemeKind = .nord,
@@ -51,12 +53,14 @@ pub const Bar = struct {
             .font = font,
             .sys_status = sys,
             .clickable_areas = std.ArrayList(ClickableArea).empty,
+            .pending_clicks = std.ArrayList(types.PendingClick).empty,
             .current_theme_kind = cfg.theme.kind,
         };
     }
 
     pub fn deinit(self: *Bar) void {
         self.clickable_areas.deinit(self.allocator);
+        self.pending_clicks.deinit(self.allocator);
         self.font.deinit();
         self.sys_status.deinit();
     }
@@ -266,17 +270,14 @@ pub const Bar = struct {
         theme.saveCurrentTheme(self.current_theme_kind);
     }
 
-    fn renderLeftModule(self: *Bar, mod: config.ModuleKind, ctx: *types.BarContext, ui: *draw.DrawContext, target_renderer: renderer.Renderer, cur_x: i32) !i32 {
+    fn renderLeftModule(self: *Bar, mod: config.ModuleKind, ctx: *types.BarContext, ui: *ui_mod.Ui) !void {
         _ = self;
-        return switch (mod) {
-            .launcher => try launcher.render(ctx, ui, cur_x),
-            .buttons => blk: {
-                if (ctx.cfg.buttons.items.len > 0) {
-                    break :blk try custom_buttons.render(ctx, target_renderer, cur_x);
-                }
-                break :blk cur_x;
+        switch (mod) {
+            .launcher => try launcher.render(ctx, ui),
+            .buttons => {
+                if (ctx.cfg.buttons.items.len > 0) try custom_buttons.render(ctx, ui);
             },
-            .workspaces => blk: {
+            .workspaces => {
                 var has_workspaces = false;
                 for (ctx.ipc.tags) |tag| {
                     if (tag.is_active or tag.is_urgent or tag.client_count > 0) {
@@ -284,53 +285,31 @@ pub const Bar = struct {
                         break;
                     }
                 }
-                if (has_workspaces) {
-                    break :blk try workspaces.render(ctx, target_renderer, cur_x);
-                }
-                break :blk cur_x;
+                if (has_workspaces) try workspaces.render(ctx, ui);
             },
-            .keymaps => try keymaps.render(ctx, target_renderer, cur_x),
-            .separator => cur_x,
-            else => cur_x,
-        };
+            .keymaps => try keymaps.render(ctx, ui),
+            .separator => try separator.render(ctx, ui),
+            else => {},
+        }
     }
 
-    fn renderRightModule(self: *Bar, mod: config.ModuleKind, ctx: *types.BarContext, ui: *draw.DrawContext, target_renderer: renderer.Renderer, right_x: i32) !i32 {
+    fn renderRightModule(self: *Bar, mod: config.ModuleKind, ctx: *types.BarContext, ui: *ui_mod.Ui) !void {
         _ = self;
-        return switch (mod) {
-            .theme_switch => try theme_switch.render(ctx, target_renderer, right_x),
-            .volume => try volume.render(ctx, target_renderer, right_x),
-            .quicksettings => try quicksettings.render(ctx, target_renderer, right_x),
-            .recorder => blk: {
-                const rx = try recorder.render(ctx, target_renderer, right_x);
-                if (rx != right_x) {
-                    break :blk rx - 4;
-                }
-                break :blk rx;
+        switch (mod) {
+            .theme_switch => try theme_switch.render(ctx, ui),
+            .volume => try volume.render(ctx, ui),
+            .quicksettings => try quicksettings.render(ctx, ui),
+            .recorder => try recorder.render(ctx, ui),
+            .tray => try tray.render(ctx, ui),
+            .network => try network.render(ctx, ui),
+            .memory => try memory.render(ctx, ui),
+            .battery => {
+                if (ctx.sys.has_battery) try battery.render(ctx, ui);
             },
-            .tray => blk: {
-                const rx = try tray.render(ctx, target_renderer, right_x);
-                if (rx != right_x) {
-                    break :blk rx - 4;
-                }
-                break :blk rx;
-            },
-            .network => blk: {
-                const rx = try network.render(ctx, target_renderer, right_x);
-                break :blk rx - 4;
-            },
-            .memory => blk: {
-                const rx = try memory.render(ctx, target_renderer, right_x);
-                break :blk rx - 4;
-            },
-            .battery => if (ctx.sys.has_battery)
-                try battery.render(ctx, ui, right_x)
-            else
-                right_x,
-            .keymaps => try keymaps.renderRight(ctx, target_renderer, right_x),
-            .separator => right_x,
-            else => right_x,
-        };
+            .keymaps => try keymaps.render(ctx, ui),
+            .separator => try separator.render(ctx, ui),
+            else => {},
+        }
     }
 
     pub fn render(
@@ -340,21 +319,15 @@ pub const Bar = struct {
         scale: u32,
     ) !void {
         self.clickable_areas.clearRetainingCapacity();
+        self.pending_clicks.clearRetainingCapacity();
 
         const w = target_renderer.width;
         const h = target_renderer.height;
 
-        // Transparent base layer
         target_renderer.clear(theme.Color.transparent);
 
-        // Floating Bar Box
-        const bw = if (self.cfg.border_width > 0) self.cfg.border_width else 1;
-        target_renderer.fillRoundedRect(0, 0, w, h, self.cfg.bar_radius, self.cfg.theme.bar_bg);
-        target_renderer.drawRoundedBorder(0, 0, w, h, self.cfg.bar_radius, bw, self.cfg.theme.bar_border);
-
-        const chip_h = if (h > 8) h - 8 else h;
-        const chip_y: i32 = 4;
-        // Scale baseline calculation for HiDPI
+        const chip_y: i32 = @intCast(4 * @as(u32, scale));
+        const chip_h: u32 = if (h > 8 * scale) h - 8 * scale else h;
         const scaled_ascender = self.font.ascender_px * @as(i32, @intCast(scale));
         const baseline_y = chip_y + @divTrunc(@as(i32, @intCast(chip_h)) + scaled_ascender, 2) - 1;
 
@@ -365,6 +338,7 @@ pub const Bar = struct {
             .sys = &self.sys_status,
             .ipc = ipc,
             .clickable_areas = &self.clickable_areas,
+            .pending_clicks = &self.pending_clicks,
             .hover_x = self.hover_x,
             .hover_y = self.hover_y,
             .chip_y = chip_y,
@@ -374,55 +348,119 @@ pub const Bar = struct {
             .scale = scale,
         };
 
-        // Create a Raylib-inspired drawing context wrapping the renderer.
-        var ui = try draw.DrawContext.init(
+        var ui = try ui_mod.Ui.begin(
             self.allocator,
-            target_renderer.pixels,
-            target_renderer.width,
-            target_renderer.height,
-            target_renderer.stride,
-            &self.clickable_areas,
-            self.cfg.theme,
+            &self.font,
+            w,
+            h,
             scale,
             self.hover_x,
             self.hover_y,
+            false,
+            1.0 / 60.0,
         );
+        defer ui.deinit();
 
-        //  Left Section
-        var cur_x: i32 = 4;
+        const border_w: u16 = if (self.cfg.border_width > 0)
+            @intCast(self.cfg.border_width * scale)
+        else
+            @intCast(@max(1, scale));
+        ui.root(.{
+            .direction = .row,
+            .align_y = .center,
+            .padding = .{
+                .left = ui.su(4),
+                .right = ui.su(6),
+                .top = ui.su(4),
+                .bottom = ui.su(4),
+            },
+            .gap = ui.su(4),
+            .bg = self.cfg.theme.bar_bg,
+            .radius = ui.f(self.cfg.bar_radius),
+            .border = border_w,
+            .border_color = self.cfg.theme.bar_border,
+        });
+
+        // Left half: modules followed by an elastic gap and (optionally) MPRIS.
+        _ = ui.open(.{
+            .width = .{ .grow = .{} },
+            .height = .{ .grow = .{} },
+            .direction = .row,
+            .align_x = .left,
+            .align_y = .center,
+            .gap = ui.su(4),
+        });
         if (self.cfg.modules_left.items.len > 0) {
             for (self.cfg.modules_left.items) |mod| {
-                cur_x = try self.renderLeftModule(mod, &ctx, &ui, target_renderer, cur_x);
+                try self.renderLeftModule(mod, &ctx, &ui);
             }
         } else {
-            // Default Left Modules: Launcher -> App Buttons -> Workspaces -> Keymaps
-            cur_x = try self.renderLeftModule(.launcher, &ctx, &ui, target_renderer, cur_x);
-            cur_x = try self.renderLeftModule(.keymaps, &ctx, &ui, target_renderer, cur_x);
-            cur_x = try self.renderLeftModule(.buttons, &ctx, &ui, target_renderer, cur_x);
-            cur_x = try self.renderLeftModule(.workspaces, &ctx, &ui, target_renderer, cur_x);
+            try self.renderLeftModule(.launcher, &ctx, &ui);
+            try self.renderLeftModule(.keymaps, &ctx, &ui);
+            try self.renderLeftModule(.buttons, &ctx, &ui);
+            try self.renderLeftModule(.workspaces, &ctx, &ui);
         }
+        ui.spacerSized(.{ .grow = .{} }, .{ .fixed = 0 });
+        try mpris.render(&ctx, &ui);
+        ui.close();
 
-        //  Center Section
-        // Clock centered in the middle of the bar
-        const clock_info = try clock.renderCenter(&ctx, target_renderer, w);
+        // Exact horizontal centre: the two half containers grow equally.
+        _ = ui.open(.{
+            .width = .fit,
+            .height = .{ .grow = .{} },
+            .align_x = .center,
+            .align_y = .center,
+        });
+        try clock.render(&ctx, &ui);
+        ui.close();
 
-        // MPRIS (if playing/paused, placed to the left of the centered clock)
-        try mpris.render(&ctx, target_renderer, clock_info.x, cur_x);
-
-        //  Right Section
-        // Modules build right-to-left:
-        // theme_switch (far right) <- volume <- recorder (immediately to left of audio) <- bluetooth <- network <- memory <- battery
-        var right_x: i32 = @as(i32, @intCast(w)) - 6;
+        // Right half, rendered in reverse so the first configured module ends
+        // up furthest to the right (matching the previous right-to-left API).
+        _ = ui.open(.{
+            .width = .{ .grow = .{} },
+            .height = .{ .grow = .{} },
+            .direction = .row,
+            .align_x = .right,
+            .align_y = .center,
+            .gap = ui.su(4),
+        });
         if (self.cfg.modules_right.items.len > 0) {
-            for (self.cfg.modules_right.items) |mod| {
-                right_x = try self.renderRightModule(mod, &ctx, &ui, target_renderer, right_x);
+            var i = self.cfg.modules_right.items.len;
+            while (i > 0) {
+                i -= 1;
+                try self.renderRightModule(self.cfg.modules_right.items[i], &ctx, &ui);
             }
         } else {
-            right_x = try self.renderRightModule(.tray, &ctx, &ui, target_renderer, right_x);
-            right_x = try self.renderRightModule(.quicksettings, &ctx, &ui, target_renderer, right_x);
-            right_x = try self.renderRightModule(.memory, &ctx, &ui, target_renderer, right_x);
-            right_x = try self.renderRightModule(.recorder, &ctx, &ui, target_renderer, right_x);
-            right_x = try self.renderRightModule(.theme_switch, &ctx, &ui, target_renderer, right_x);
+            try self.renderRightModule(.theme_switch, &ctx, &ui);
+            try self.renderRightModule(.recorder, &ctx, &ui);
+            try self.renderRightModule(.memory, &ctx, &ui);
+            try self.renderRightModule(.quicksettings, &ctx, &ui);
+            try self.renderRightModule(.tray, &ctx, &ui);
         }
+        ui.close();
+
+        ui.close(); // root
+
+        const commands = ui.endLayout();
+
+        const iscale: i32 = @intCast(scale);
+        for (self.pending_clicks.items) |pending| {
+            const rect = ui.rectOf(pending.name, pending.index) orelse continue;
+            const lx = @divTrunc(rect.x, iscale);
+            const ly = @divTrunc(rect.y, iscale);
+            const lw: u32 = @intCast(@divTrunc(@as(i32, @intCast(rect.w)) + iscale - 1, iscale));
+            const lh: u32 = @intCast(@divTrunc(@as(i32, @intCast(rect.h)) + iscale - 1, iscale));
+            if (lw == 0 or lh == 0) continue;
+            try self.clickable_areas.append(self.allocator, .{
+                .x = lx,
+                .y = ly,
+                .w = lw,
+                .h = lh,
+                .action = pending.action,
+                .scroll = pending.scroll,
+            });
+        }
+
+        ui.render(target_renderer, commands);
     }
 };

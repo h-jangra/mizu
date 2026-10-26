@@ -1,8 +1,7 @@
 const std = @import("std");
-const renderer = @import("../core/renderer.zig");
 const types = @import("context.zig");
-const icons = @import("../graphics/icons.zig");
 const c = @import("../c.zig").c;
+const ui_mod = @import("../core/ui.zig");
 
 pub fn isKeymapsActive() bool {
     const pid_path = "/tmp/mizu-keyoverlay.pid";
@@ -22,52 +21,40 @@ pub fn isKeymapsActive() bool {
     return false;
 }
 
-fn renderChip(
-    ctx: *types.BarContext,
-    target: renderer.Renderer,
-    x: i32,
-    is_active: bool,
-) !u32 {
+pub fn render(ctx: *types.BarContext, ui: *ui_mod.Ui) !void {
+    const is_active = isKeymapsActive();
     const icon_size = ctx.iconFontSize();
-    const chip_w = icon_size + 22 * ctx.scale;
+    const id = "bar-keymaps";
+    const chip_w = @as(f32, @floatFromInt(icon_size)) + ui.s(22);
+    const hovered = ui.hovered(id, 0);
 
     const icon_fg = if (is_active) ctx.cfg.theme.accent else ctx.cfg.theme.text_muted;
-    const bg = if (is_active) ctx.cfg.theme.pill_hover else ctx.cfg.theme.pill_bg;
+    const bg = if (is_active or hovered) ctx.cfg.theme.pill_hover else ctx.cfg.theme.pill_bg;
+    const border_col = if (hovered)
+        ctx.cfg.theme.accent
+    else if (ctx.cfg.theme.pill_border.a > 0)
+        ctx.cfg.theme.pill_border
+    else
+        null;
 
-    ctx.drawChipBase(target, x, ctx.chip_y, chip_w, ctx.chip_h, bg);
-    icons.drawSvgIcon(
-        target,
-        ctx.allocator,
-        "keyboard",
-        icon_size,
-        ctx.scale,
-        x + @divTrunc(@as(i32, @intCast(chip_w)), 2),
-        ctx.chip_y + @divTrunc(@as(i32, @intCast(ctx.chip_h)), 2),
-        icon_fg,
-    );
+    _ = ui.open(.{
+        .id = id,
+        .width = .{ .fixed = chip_w },
+        .height = .{ .grow = .{} },
+        .bg = bg,
+        .radius = ui.f(ctx.cfg.pill_radius),
+        .border = if (border_col != null) ui.su(1) else 0,
+        .border_color = border_col,
+        .align_x = .center,
+        .align_y = .center,
+    });
+    ui.icon("keyboard", icon_size, icon_fg, 0);
+    ui.close();
 
-    try ctx.addClickable(x, ctx.chip_y, chip_w, ctx.chip_h, .{
+    try ctx.linkClick(ui, id, 0, .{
         .dual_command = .{
             .left = "mizu keyoverlay 2>/dev/null || true",
             .right = "mizu keyoverlay 2>/dev/null || true",
         },
-    });
-
-    return chip_w;
-}
-
-pub fn render(ctx: *types.BarContext, target: renderer.Renderer, cur_x: i32) !i32 {
-    const is_active = isKeymapsActive();
-    const chip_w = try renderChip(ctx, target, cur_x, is_active);
-    return cur_x + @as(i32, @intCast(chip_w + 4 * ctx.scale));
-}
-
-pub fn renderRight(ctx: *types.BarContext, target: renderer.Renderer, right_x: i32) !i32 {
-    const is_active = isKeymapsActive();
-    const icon_size = ctx.iconFontSize();
-    const chip_w = icon_size + 22 * ctx.scale;
-    const rx = right_x - @as(i32, @intCast(chip_w));
-
-    _ = try renderChip(ctx, target, rx, is_active);
-    return rx;
+    }, null);
 }

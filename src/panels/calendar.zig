@@ -6,6 +6,7 @@ const config = @import("../core/config.zig");
 const animation = @import("../core/animation.zig");
 const icons = @import("../graphics/icons.zig");
 const sys_status = @import("../services/system_status.zig");
+const ui_mod = @import("../core/ui.zig");
 
 /// Shared layout tokens used by Calendar and Quick Settings panels.
 /// All values are logical pixels; callers multiply by `scale`.
@@ -30,6 +31,11 @@ pub const CalendarAction = union(enum) {
     jump_today,
     toggle_dnd,
     close,
+    select_date: struct {
+        year: u32,
+        month: u32,
+        day: u32,
+    },
 };
 
 pub const CalendarHitArea = struct {
@@ -37,6 +43,12 @@ pub const CalendarHitArea = struct {
     y: i32,
     w: u32,
     h: u32,
+    action: CalendarAction,
+};
+
+const PendingHit = struct {
+    name: []const u8,
+    index: u32,
     action: CalendarAction,
 };
 
@@ -247,60 +259,18 @@ pub const Calendar = struct {
                     .jump_today => self.jumpToday(),
                     .toggle_dnd => self.toggleDnd(),
                     .close => self.running = false,
+                    .select_date => |date| {
+                        self.selected_year = date.year;
+                        self.selected_month = date.month;
+                        self.selected_day = date.day;
+                        self.view_year = date.year;
+                        self.view_month = date.month;
+                    },
                 }
                 return true;
             }
         }
 
-        // Calendar cell selection via direct coordinate mapping
-        const cal_x: i32 = @as(i32, @intCast(Layout.pad)) + self.panel_slide_y;
-        const grid_y: i32 = self.headerBottomY() + @as(i32, @intCast(Layout.section_gap));
-        const grid_w: u32 = self.width - 2 * Layout.pad;
-        const cell_w: u32 = grid_w / 7;
-        const cell_h: u32 = 40 * self.cfg.typography.calendar_text / 16; // scale-aware
-        const grid_h: u32 = cell_h * 6;
-
-        if (x >= cal_x and x < cal_x + @as(i32, @intCast(grid_w)) and
-            y >= grid_y and y < grid_y + @as(i32, @intCast(grid_h)))
-        {
-            const col = @divTrunc(x - cal_x, @as(i32, @intCast(cell_w)));
-            const row = @divTrunc(y - grid_y, @as(i32, @intCast(cell_h)));
-            if (col >= 0 and col < 7 and row >= 0 and row < 6) {
-                const cell_idx = @as(u32, @intCast(row)) * 7 + @as(u32, @intCast(col));
-                const start_dow = firstDayOfWeek(self.view_year, self.view_month);
-                const total_days = daysInMonth(self.view_year, self.view_month);
-
-                if (cell_idx < start_dow) {
-                    // Previous month date
-                    const prev_m = if (self.view_month == 1) 12 else self.view_month - 1;
-                    const prev_y = if (self.view_month == 1) self.view_year - 1 else self.view_year;
-                    const prev_total_days = daysInMonth(prev_y, prev_m);
-                    const p_day = prev_total_days - start_dow + 1 + cell_idx;
-                    self.selected_day = p_day;
-                    self.selected_month = prev_m;
-                    self.selected_year = prev_y;
-                } else if (cell_idx >= start_dow + total_days) {
-                    // Next month date
-                    const next_d = cell_idx - start_dow - total_days + 1;
-                    self.selected_day = next_d;
-                    if (self.view_month == 12) {
-                        self.selected_month = 1;
-                        self.selected_year += 1;
-                    } else {
-                        self.selected_month += 1;
-                    }
-                    self.selected_year = self.view_year;
-                } else {
-                    // Current month date
-                    self.selected_day = (cell_idx - start_dow + 1);
-                    self.selected_month = self.view_month;
-                    self.selected_year = self.view_year;
-                }
-                self.view_year = self.selected_year;
-                self.view_month = self.selected_month;
-                return true;
-            }
-        }
         return false;
     }
 
@@ -424,172 +394,227 @@ pub const Calendar = struct {
 
         const w = target.width;
         const h = target.height;
-        const pad = @as(i32, @intCast(Layout.pad * scale));
-        const pad_u = Layout.pad * scale;
+        const nav_size: u16 = @intCast(28 * scale);
+        const head_sz = self.cfg.typography.calendar_heading * scale;
+        const sec_sz = self.cfg.typography.secondary * scale;
+        const day_sz = self.cfg.typography.calendar_text * scale;
         const radius = self.cfg.theme.radius_panel * scale;
 
-        const sec_sz = self.cfg.typography.secondary * scale;
-        const head_sz = self.cfg.typography.calendar_heading * scale;
-        const day_sz = self.cfg.typography.calendar_text * scale;
-
-        // 1. Panel background
         target.clear(theme.Color.transparent);
         target.drawDropShadow(0, 0, w, h, radius, 8 * scale, self.cfg.theme.shadow_dark);
-        target.fillRoundedRect(0, 0, w, h, radius, self.cfg.theme.panel_bg);
-        target.drawRoundedBorder(0, 0, w, h, radius, 1 * scale, self.cfg.theme.panel_border);
 
-        // 2. Header: prev | Month Year | next
-        const head_y: i32 = pad;
-        const nav_size: u32 = 28 * scale;
+        var ui = try ui_mod.Ui.begin(
+            self.allocator,
+            &self.font,
+            w,
+            h,
+            scale,
+            self.pointer_x,
+            self.pointer_y,
+            false,
+            1.0 / 60.0,
+        );
+        defer ui.deinit();
 
-        const prev_hov = self.isAreaHovered(pad, head_y, nav_size, nav_size);
-        target.fillSquircle(pad, head_y, nav_size, nav_size, 6 * scale,
-            if (prev_hov) self.cfg.theme.card_hover_bg else self.cfg.theme.surface);
-        icons.drawSvgIcon(target, self.allocator, "left", head_sz, scale,
-            pad + @as(i32, @intCast(nav_size / 2)),
-            head_y + @as(i32, @intCast(nav_size / 2)),
-            if (prev_hov) self.cfg.theme.accent else self.cfg.theme.text_main);
-        try self.hit_areas.append(self.allocator, .{
-            .x = pad, .y = head_y, .w = nav_size, .h = nav_size, .action = .prev_month,
+        var pending: [64]PendingHit = undefined;
+        var pending_len: usize = 0;
+
+        ui.root(.{
+            .direction = .column,
+            .padding = .all(ui.su(Layout.pad)),
+            .gap = ui.su(Layout.section_gap),
+            .bg = self.cfg.theme.panel_bg,
+            .radius = ui.f(self.cfg.theme.radius_panel),
+            .border = ui.su(Layout.border_w),
+            .border_color = self.cfg.theme.panel_border,
         });
 
-        const next_btn_x = pad + @as(i32, @intCast(w - 2 * pad_u - nav_size));
-        const next_hov = self.isAreaHovered(next_btn_x, head_y, nav_size, nav_size);
-        target.fillSquircle(next_btn_x, head_y, nav_size, nav_size, 6 * scale,
-            if (next_hov) self.cfg.theme.card_hover_bg else self.cfg.theme.surface);
-        icons.drawSvgIcon(target, self.allocator, "right", head_sz, scale,
-            next_btn_x + @as(i32, @intCast(nav_size / 2)),
-            head_y + @as(i32, @intCast(nav_size / 2)),
-            if (next_hov) self.cfg.theme.accent else self.cfg.theme.text_main);
-        try self.hit_areas.append(self.allocator, .{
-            .x = next_btn_x, .y = head_y, .w = nav_size, .h = nav_size, .action = .next_month,
+        // Header: previous, month/year title, next.
+        _ = ui.open(.{
+            .width = .{ .grow = .{} },
+            .height = .{ .fixed = @floatFromInt(nav_size) },
+            .align_y = .center,
+            .gap = ui.su(4),
         });
+        {
+            const prev_hov = ui.hovered("cal-prev", 0);
+            _ = ui.open(.{
+                .id = "cal-prev",
+                .width = .{ .fixed = @floatFromInt(nav_size) },
+                .height = .{ .fixed = @floatFromInt(nav_size) },
+                .bg = if (prev_hov) self.cfg.theme.card_hover_bg else self.cfg.theme.surface,
+                .radius = ui.f(6),
+                .align_x = .center,
+                .align_y = .center,
+            });
+            ui.icon("left", head_sz, if (prev_hov) self.cfg.theme.accent else self.cfg.theme.text_main, 0);
+            ui.close();
+            pending[pending_len] = .{ .name = "cal-prev", .index = 0, .action = .prev_month };
+            pending_len += 1;
 
-        // Month & Year title (centered, clickable -> jump to today)
-        var title_buf: [48]u8 = undefined;
-        const title_str = std.fmt.bufPrint(&title_buf, "{s} {d}", .{ monthName(self.view_month), self.view_year }) catch "Calendar";
-        const title_w = target.measureTextWithSize(&self.font, title_str, head_sz);
-        const title_x = pad + @divTrunc(@as(i32, @intCast(w - 2 * pad_u)) - @as(i32, @intCast(title_w)), 2);
-        const title_hov = self.isAreaHovered(title_x - 10, head_y - 4, title_w + 20, nav_size + 8);
-        target.drawTextWithSize(&self.font, title_str, title_x, head_y + @as(i32, @intCast(head_sz * 3 / 4)) + 1,
-            head_sz, if (title_hov) self.cfg.theme.accent else self.cfg.theme.text_bright);
-        try self.hit_areas.append(self.allocator, .{
-            .x = title_x - 10, .y = head_y - 4, .w = title_w + 20, .h = nav_size + 8, .action = .jump_today,
-        });
+            const title_hov = ui.hovered("cal-title", 0);
+            var title_buf: [48]u8 = undefined;
+            const title_str = std.fmt.bufPrint(&title_buf, "{s} {d}", .{ monthName(self.view_month), self.view_year }) catch "Calendar";
+            _ = ui.open(.{
+                .id = "cal-title",
+                .width = .{ .grow = .{} },
+                .height = .{ .fixed = @floatFromInt(nav_size) },
+                .align_x = .center,
+                .align_y = .center,
+            });
+            ui.text(title_str, .{
+                .size = head_sz,
+                .color = if (title_hov) self.cfg.theme.accent else self.cfg.theme.text_bright,
+            });
+            ui.close();
+            pending[pending_len] = .{ .name = "cal-title", .index = 0, .action = .jump_today };
+            pending_len += 1;
 
-        // 3. Weekday labels
-        const weekdays = [_][]const u8{ "Mo", "Tu", "We", "Th", "Fr", "Sa", "Su" };
-        const grid_w: u32 = w - 2 * pad_u;
-        const cell_w: u32 = grid_w / 7;
-        const weekday_y: i32 = head_y + @as(i32, @intCast(nav_size)) + @as(i32, @intCast(Layout.section_gap * scale));
-
-        for (weekdays, 0..) |day_name, col| {
-            const cx = pad + @as(i32, @intCast(col * cell_w));
-            const dw = target.measureTextWithSize(&self.font, day_name, sec_sz);
-            const dx = cx + @divTrunc(@as(i32, @intCast(cell_w)) - @as(i32, @intCast(dw)), 2);
-            target.drawTextWithSize(&self.font, day_name, dx, weekday_y + @as(i32, @intCast(sec_sz * 3 / 4)),
-                sec_sz, self.cfg.theme.text_muted);
+            const next_hov = ui.hovered("cal-next", 0);
+            _ = ui.open(.{
+                .id = "cal-next",
+                .width = .{ .fixed = @floatFromInt(nav_size) },
+                .height = .{ .fixed = @floatFromInt(nav_size) },
+                .bg = if (next_hov) self.cfg.theme.card_hover_bg else self.cfg.theme.surface,
+                .radius = ui.f(6),
+                .align_x = .center,
+                .align_y = .center,
+            });
+            ui.icon("right", head_sz, if (next_hov) self.cfg.theme.accent else self.cfg.theme.text_main, 1);
+            ui.close();
+            pending[pending_len] = .{ .name = "cal-next", .index = 0, .action = .next_month };
+            pending_len += 1;
         }
+        ui.close();
 
-        // 4. Date grid
+        // Weekday header.
+        const weekdays = [_][]const u8{ "Mo", "Tu", "We", "Th", "Fr", "Sa", "Su" };
+        _ = ui.open(.{
+            .width = .{ .grow = .{} },
+            .height = .{ .fixed = ui.s(22) },
+            .direction = .row,
+            .gap = 0,
+        });
+        for (weekdays) |day_name| {
+            _ = ui.open(.{
+                .width = .{ .percent = 1.0 / 7.0 },
+                .height = .{ .grow = .{} },
+                .align_x = .center,
+                .align_y = .center,
+            });
+            ui.text(day_name, .{
+                .size = sec_sz,
+                .color = self.cfg.theme.text_muted,
+            });
+            ui.close();
+        }
+        ui.close();
+
+        // Six-week date grid. Geometry comes entirely from Clay; hit rectangles
+        // are read back after layout so calendar actions cannot drift from the
+        // painted cells.
         const start_dow = firstDayOfWeek(self.view_year, self.view_month);
         const total_days = daysInMonth(self.view_year, self.view_month);
-        const grid_start_y: i32 = weekday_y + @as(i32, @intCast(sec_sz)) + @as(i32, @intCast(Layout.row_gap * scale));
-        const cell_h: u32 = 40 * scale;
+        const prev_m: u32 = if (self.view_month == 1) 12 else self.view_month - 1;
+        const prev_y: u32 = if (self.view_month == 1) self.view_year - 1 else self.view_year;
+        const next_m: u32 = if (self.view_month == 12) 1 else self.view_month + 1;
+        const next_y: u32 = if (self.view_month == 12) self.view_year + 1 else self.view_year;
+        const prev_days = daysInMonth(prev_y, prev_m);
+
+        _ = ui.open(.{
+            .width = .{ .grow = .{} },
+            .height = .{ .grow = .{} },
+            .direction = .column,
+            .gap = 0,
+        });
 
         var cell_idx: u32 = 0;
+        var row_i: u32 = 0;
+        while (row_i < 6) : (row_i += 1) {
+            _ = ui.open(.{
+                .width = .{ .grow = .{} },
+                .height = .{ .grow = .{} },
+                .direction = .row,
+                .gap = 0,
+            });
 
-        // Leading days from previous month
-        var p_day = if (start_dow == 0) 0 else daysInMonth(if (self.view_month == 1) self.view_year - 1 else self.view_year,
-            if (self.view_month == 1) 12 else self.view_month - 1) - start_dow + 1;
-        while (cell_idx < start_dow) : (cell_idx += 1) {
-            const col = cell_idx % 7;
-            const row = cell_idx / 7;
-            const cx = pad + @as(i32, @intCast(col * cell_w));
-            const cy = grid_start_y + @as(i32, @intCast(row * cell_h));
+            var col_i: u32 = 0;
+            while (col_i < 7) : (col_i += 1) {
+                const date = cellDate(cell_idx, start_dow, total_days, prev_y, prev_m, prev_days, self.view_year, self.view_month, next_y, next_m);
+                const in_current = date.year == self.view_year and date.month == self.view_month;
+                const is_today = date.year == self.today_year and date.month == self.today_month and date.day == self.today_day;
+                const is_selected = date.year == self.selected_year and date.month == self.selected_month and date.day == self.selected_day;
+                const is_hover = ui.hovered("cal-cell", cell_idx);
 
-            var num_buf: [8]u8 = undefined;
-            const num_str = std.fmt.bufPrint(&num_buf, "{d}", .{p_day}) catch "";
-            const nw = target.measureTextWithSize(&self.font, num_str, day_sz);
-            const nx = cx + @divTrunc(@as(i32, @intCast(cell_w)) - @as(i32, @intCast(nw)), 2);
-            target.drawTextWithSize(&self.font, num_str, nx, cy + @divTrunc(@as(i32, @intCast(cell_h)) + @as(i32, @intCast(day_sz * 3 / 4)), 2),
-                day_sz, self.cfg.theme.text_muted);
-            p_day += 1;
-        }
+                const cell_bg = if (is_today)
+                    self.cfg.theme.accent
+                else if (is_hover)
+                    self.cfg.theme.card_hover_bg
+                else
+                    null;
 
-        // Days of current month
-        var cur_d: u32 = 1;
-        while (cur_d <= total_days) : (cur_d += 1) {
-            const col = cell_idx % 7;
-            const row = cell_idx / 7;
-            const cx = pad + @as(i32, @intCast(col * cell_w));
-            const cy = grid_start_y + @as(i32, @intCast(row * cell_h));
+                _ = ui.open(.{
+                    .id = "cal-cell",
+                    .index = cell_idx,
+                    .width = .{ .percent = 1.0 / 7.0 },
+                    .height = .{ .grow = .{} },
+                    .bg = cell_bg,
+                    .radius = ui.f(8),
+                    .border = if (is_selected) ui.su(2) else 0,
+                    .border_color = if (is_selected) self.cfg.theme.accent else null,
+                    .align_x = .center,
+                    .align_y = .center,
+                });
 
-            const is_today = (self.view_year == self.today_year and self.view_month == self.today_month and cur_d == self.today_day);
-            const is_selected = (self.selected_year == self.view_year and self.selected_month == self.view_month and self.selected_day == cur_d);
-            const is_hover = self.isAreaHovered(cx + 2, cy + 2, cell_w - 4, cell_h - 4);
+                var num_buf: [8]u8 = undefined;
+                const num_str = std.fmt.bufPrint(&num_buf, "{d}", .{date.day}) catch "";
+                const num_color = if (is_today)
+                    self.cfg.theme.accent_fg
+                else if (is_selected)
+                    self.cfg.theme.accent
+                else if (!in_current)
+                    self.cfg.theme.text_muted
+                else if (is_hover)
+                    self.cfg.theme.accent
+                else
+                    self.cfg.theme.text_main;
+                ui.text(num_str, .{
+                    .size = day_sz,
+                    .color = num_color,
+                });
+                ui.close();
 
-            if (is_selected) {
-                // Selected: accent outline ring
-                target.drawRoundedBorder(cx + 2, cy + 2, cell_w - 4, cell_h - 4, 8 * scale, 2 * scale, self.cfg.theme.accent);
-            } else if (is_today) {
-                // Today: filled accent circle
-                const dot_r: u32 = 10 * scale;
-                const today_cx = @as(f64, @floatFromInt(cx + @as(i32, @intCast(cell_w / 2))));
-                const today_cy = @as(f64, @floatFromInt(cy + @as(i32, @intCast(cell_h / 2))));
-                target.fillCircle(today_cx, today_cy, @as(f64, @floatFromInt(dot_r)), self.cfg.theme.accent);
-            } else if (is_hover) {
-                target.fillRoundedRect(cx + 2, cy + 2, cell_w - 4, cell_h - 4, 6 * scale, self.cfg.theme.card_hover_bg);
+                pending[pending_len] = .{
+                    .name = "cal-cell",
+                    .index = cell_idx,
+                    .action = .{ .select_date = .{ .year = date.year, .month = date.month, .day = date.day } },
+                };
+                pending_len += 1;
+                cell_idx += 1;
             }
+            ui.close();
+        }
+        ui.close(); // grid
+        ui.close(); // root
 
-            // Event indicator (holiday)
-            const has_event = false;
-            if (has_event and !is_today and !is_selected) {
-                const dot_r: u32 = 3 * scale;
-                const dot_offset = @as(i32, @intCast(dot_r + 3 * scale));
-                const dot_cx = @as(f64, @floatFromInt(@as(i32, @intCast(cell_w)) + cx - dot_offset));
-                const dot_cy = @as(f64, @floatFromInt(@as(i32, @intCast(cell_h)) + cy - dot_offset));
-                target.fillCircle(dot_cx, dot_cy, @as(f64, @floatFromInt(dot_r)), self.cfg.theme.accent);
-            }
-
-            var num_buf: [8]u8 = undefined;
-            const num_str = std.fmt.bufPrint(&num_buf, "{d}", .{cur_d}) catch "";
-            const nw = target.measureTextWithSize(&self.font, num_str, day_sz);
-            const nx = cx + @divTrunc(@as(i32, @intCast(cell_w)) - @as(i32, @intCast(nw)), 2);
-
-            const num_color = if (is_today)
-                self.cfg.theme.accent_fg
-            else if (is_selected)
-                self.cfg.theme.accent_fg
-            else if (is_hover)
-                self.cfg.theme.accent
-            else
-                self.cfg.theme.text_main;
-
-            target.drawTextWithSize(&self.font, num_str, nx, cy + @divTrunc(@as(i32, @intCast(cell_h)) + @as(i32, @intCast(day_sz * 3 / 4)), 2),
-                day_sz, num_color);
-
-            cell_idx += 1;
+        const commands = ui.endLayout();
+        const iscale: i32 = @intCast(scale);
+        for (pending[0..pending_len]) |hit| {
+            const rect = ui.rectOf(hit.name, hit.index) orelse continue;
+            const lw: u32 = @intCast(@divTrunc(@as(i32, @intCast(rect.w)) + iscale - 1, iscale));
+            const lh: u32 = @intCast(@divTrunc(@as(i32, @intCast(rect.h)) + iscale - 1, iscale));
+            if (lw == 0 or lh == 0) continue;
+            try self.hit_areas.append(self.allocator, .{
+                .x = @divTrunc(rect.x, iscale),
+                .y = @divTrunc(rect.y, iscale),
+                .w = lw,
+                .h = lh,
+                .action = hit.action,
+            });
         }
 
-        // Trailing days from next month
-        var next_d: u32 = 1;
-        while (cell_idx < 42) : (cell_idx += 1) {
-            const col = cell_idx % 7;
-            const row = cell_idx / 7;
-            const cx = pad + @as(i32, @intCast(col * cell_w));
-            const cy = grid_start_y + @as(i32, @intCast(row * cell_h));
+        ui.render(target, commands);
 
-            var num_buf: [8]u8 = undefined;
-            const num_str = std.fmt.bufPrint(&num_buf, "{d}", .{next_d}) catch "";
-            const nw = target.measureTextWithSize(&self.font, num_str, day_sz);
-            const nx = cx + @divTrunc(@as(i32, @intCast(cell_w)) - @as(i32, @intCast(nw)), 2);
-            target.drawTextWithSize(&self.font, num_str, nx, cy + @divTrunc(@as(i32, @intCast(cell_h)) + @as(i32, @intCast(day_sz * 3 / 4)), 2),
-                day_sz, self.cfg.theme.text_muted);
-            next_d += 1;
-        }
-
-        // 5. Fade-in overlay for open animation
         if (self.panel_alpha < 1.0) {
             const fade_a = @as(u8, @intFromFloat((1.0 - self.panel_alpha) * 255.0));
             if (fade_a > 0) {
@@ -622,6 +647,33 @@ pub const Calendar = struct {
         return buf[0 .. best_len + ellipsis.len];
     }
 };
+
+const CellDate = struct {
+    year: u32,
+    month: u32,
+    day: u32,
+};
+
+fn cellDate(
+    idx: u32,
+    start_dow: u32,
+    total_days: u32,
+    prev_y: u32,
+    prev_m: u32,
+    prev_days: u32,
+    cur_y: u32,
+    cur_m: u32,
+    next_y: u32,
+    next_m: u32,
+) CellDate {
+    if (idx < start_dow) {
+        return .{ .year = prev_y, .month = prev_m, .day = prev_days - start_dow + 1 + idx };
+    }
+    if (idx >= start_dow + total_days) {
+        return .{ .year = next_y, .month = next_m, .day = idx - start_dow - total_days + 1 };
+    }
+    return .{ .year = cur_y, .month = cur_m, .day = idx - start_dow + 1 };
+}
 
 test "Calendar date calculations" {
     try std.testing.expect(!Calendar.isLeapYear(2026));

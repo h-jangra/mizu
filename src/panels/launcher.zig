@@ -4,6 +4,7 @@ const theme = @import("../core/theme.zig");
 const config = @import("../core/config.zig");
 const renderer = @import("../core/renderer.zig");
 const text_input = @import("../core/text_input.zig");
+const ui_mod = @import("../core/ui.zig");
 const desktop_entry = @import("../services/desktop_entries.zig");
 const calc = @import("launcher_calculator.zig");
 const file_search = @import("launcher_file_search.zig");
@@ -481,6 +482,46 @@ fn builtinSvgIcon(icon: []const u8) ?[]const u8 {
     if (std.mem.eql(u8, glyph, "\u{f018d}")) return "terminal";
     if (std.mem.eql(u8, glyph, "\u{f0a9a}")) return "calculator";
     return null;
+}
+
+const InputDraw = struct {
+    input: *text_input.TextInput,
+    font: *renderer.Font,
+    text_color: theme.Color,
+    placeholder_color: theme.Color,
+    accent_color: theme.Color,
+    size: u32,
+
+    fn draw(target: renderer.Renderer, rect: renderer.Rect, data: *const anyopaque) void {
+        const self: *const InputDraw = @ptrCast(@alignCast(data));
+        self.input.render(
+            target,
+            self.font,
+            rect.x,
+            rect.y,
+            rect.w,
+            rect.h,
+            rect.x,
+            self.text_color,
+            self.placeholder_color,
+            self.accent_color,
+            self.size,
+        );
+    }
+};
+
+var initial_buf: [1]u8 = undefined;
+
+fn initialFor(title: []const u8) []const u8 {
+    var view = std.unicode.Utf8View.init(title) catch return "?";
+    var it = view.iterator();
+    while (it.nextCodepoint()) |cp| {
+        if (cp > 32) {
+            initial_buf[0] = std.ascii.toUpper(@as(u8, @truncate(cp)));
+            return initial_buf[0..1];
+        }
+    }
+    return "?";
 }
 
 pub const Launcher = struct {
@@ -1300,199 +1341,251 @@ pub const Launcher = struct {
 
         const w = target.width;
         const h = target.height;
-
-        target.drawDropShadow(0, 0, w, h, self.cfg.theme.radius_panel, 10, self.cfg.theme.shadow_dark);
-        target.fillRoundedRect(0, 0, w, h, self.cfg.theme.radius_panel, self.cfg.theme.panel_bg);
-        target.drawRoundedBorder(0, 0, w, h, self.cfg.theme.radius_panel, 1, self.cfg.theme.panel_border);
-
-        const in_rect = self.getInputRect();
-        const input_x = in_rect.x;
-        const input_y = in_rect.y;
-        const input_w = in_rect.w;
-        const input_h = in_rect.h;
-
-        target.fillRoundedRect(input_x, input_y, input_w, input_h, self.cfg.theme.radius_pill, self.cfg.theme.pill_bg);
-        const search_border = if (self.input.focused or self.input.getText().len > 0) self.cfg.theme.accent else self.cfg.theme.pill_border;
-        target.drawRoundedBorder(input_x, input_y, input_w, input_h, self.cfg.theme.radius_pill, 1, search_border);
-
         const panel_font_size = self.cfg.typography.ui * scale;
         const icon_font_size = self.cfg.typography.bar_icon * scale;
         const cur_mode = self.effectiveMode();
-        icons.drawSvgIcon(
-            target,
+
+        target.drawDropShadow(0, 0, w, h, self.cfg.theme.radius_panel, 10, self.cfg.theme.shadow_dark);
+
+        var ui = try ui_mod.Ui.begin(
             self.allocator,
-            cur_mode.svgIcon(),
-            icon_font_size,
-            scale,
-            input_x + 16 * @as(i32, @intCast(scale)) + @divTrunc(@as(i32, @intCast(icon_font_size)), 2),
-            input_y + @divTrunc(@as(i32, @intCast(input_h)), 2),
-            self.cfg.theme.accent,
-        );
-        const text_x = input_x + 16 * @as(i32, @intCast(scale)) + @as(i32, @intCast(icon_font_size)) + 8 * @as(i32, @intCast(scale));
-
-        self.input.render(
-            target,
             &self.font,
-            input_x,
-            input_y,
-            input_w,
-            input_h,
-            text_x,
-            self.cfg.theme.text_bright,
-            self.cfg.theme.text_muted,
-            self.cfg.theme.accent,
-            panel_font_size,
+            w,
+            h,
+            1,
+            -1,
+            -1,
+            false,
+            1.0 / 60.0,
         );
+        defer ui.deinit();
 
-        try self.renderResultList(target, w, h, scale);
-    }
+        ui.root(.{
+            .direction = .column,
+            .padding = .all(Launcher.OUTER_PAD),
+            .gap = Launcher.INPUT_GAP,
+            .bg = self.cfg.theme.panel_bg,
+            .radius = @floatFromInt(self.cfg.theme.radius_panel),
+            .border = 1,
+            .border_color = self.cfg.theme.panel_border,
+        });
 
-    fn renderResultList(self: *Launcher, target: renderer.Renderer, w: u32, _: u32, scale: u32) !void {
+        // Search field.
+        const search_border = if (self.input.focused or self.input.getText().len > 0)
+            self.cfg.theme.accent
+        else
+            self.cfg.theme.pill_border;
+        _ = ui.open(.{
+            .width = .{ .grow = .{} },
+            .height = .{ .fixed = @floatFromInt(Launcher.INPUT_H) },
+            .direction = .row,
+            .padding = .{ .left = 16, .right = 16 },
+            .gap = 8,
+            .bg = self.cfg.theme.pill_bg,
+            .radius = @floatFromInt(self.cfg.theme.radius_pill),
+            .border = 1,
+            .border_color = search_border,
+            .align_y = .center,
+        });
+        _ = ui.open(.{
+            .width = .{ .fixed = @floatFromInt(icon_font_size) },
+            .height = .{ .fixed = @floatFromInt(icon_font_size) },
+            .align_x = .center,
+            .align_y = .center,
+        });
+        ui.icon(cur_mode.svgIcon(), icon_font_size, self.cfg.theme.accent, 0);
+        ui.close();
+
+        const draw_data = try ui.allocator.create(InputDraw);
+        draw_data.* = .{
+            .input = &self.input,
+            .font = &self.font,
+            .text_color = self.cfg.theme.text_bright,
+            .placeholder_color = self.cfg.theme.text_muted,
+            .accent_color = self.cfg.theme.accent,
+            .size = panel_font_size,
+        };
+        const draw_custom = try ui.allocator.create(ui_mod.Custom);
+        draw_custom.* = .{ .callback = .{ .function = InputDraw.draw, .data = draw_data } };
+        ui.custom(.{ .grow = .{} }, .{ .grow = .{} }, draw_custom, 0);
+        ui.close(); // custom
+        ui.close(); // search
+
+        // Results.
         const total = self.items.items.len;
-        const panel_font_size = self.cfg.typography.ui * scale;
-        const badge_font_size = self.cfg.typography.secondary * scale;
-        const icon_font_size = self.cfg.typography.bar_icon * scale;
-        const no_match_font_size = self.cfg.typography.title * scale;
         if (total == 0) {
-            const no_match_str = if (self.effectiveMode() == .app)
+            _ = ui.open(.{
+                .width = .{ .grow = .{} },
+                .height = .{ .grow = .{} },
+                .direction = .column,
+                .align_x = .center,
+                .align_y = .center,
+                .gap = 4,
+            });
+            const no_match_str = if (cur_mode == .app)
                 "No applications found"
             else
                 "No matching items found";
-            const no_match_w = target.measureTextWithSize(&self.font, no_match_str, panel_font_size);
-            const center_x = @divTrunc(@as(i32, @intCast(w)) - @as(i32, @intCast(no_match_w)), 2);
-            target.drawTextWithSize(&self.font, "󰋽", center_x + @divTrunc(@as(i32, @intCast(no_match_w)), 2) - 14 * @as(i32, @intCast(scale)), 230 * @as(i32, @intCast(scale)), no_match_font_size, self.cfg.theme.text_muted);
-            target.drawTextWithSize(&self.font, no_match_str, center_x, 265 * @as(i32, @intCast(scale)), panel_font_size, self.cfg.theme.text_muted);
-            return;
-        }
-
-        const page_offset = self.getPageOffset();
-        const page_size = self.list_rows;
-
-        var r: usize = 0;
-        while (r < page_size) : (r += 1) {
-            const item_idx = page_offset + r;
-            if (item_idx >= total) break;
-
-            const item = self.items.items[item_idx];
-            const rect = self.getListCardRect(r);
-
-            const is_selected = (item_idx == self.selected_index);
-            const is_hovered = (self.hover_index != null and item_idx == self.hover_index.?);
-
-            if (is_selected) {
-                target.fillRoundedRect(rect.x, rect.y, rect.w, rect.h, self.cfg.theme.radius_button, self.cfg.theme.card_selected_bg);
-                target.drawRoundedBorder(rect.x, rect.y, rect.w, rect.h, self.cfg.theme.radius_button, 1, self.cfg.theme.accent);
-            } else if (is_hovered) {
-                target.fillRoundedRect(rect.x, rect.y, rect.w, rect.h, self.cfg.theme.radius_button, self.cfg.theme.card_hover_bg);
-                target.drawRoundedBorder(rect.x, rect.y, rect.w, rect.h, self.cfg.theme.radius_button, 1, self.cfg.theme.border);
-            }
-
-            const icon_s: u32 = 32 * scale;
-            const icon_x = rect.x + 10 * @as(i32, @intCast(scale));
-            const icon_y = rect.y + @divTrunc(@as(i32, @intCast(rect.h)) - @as(i32, @intCast(icon_s)), 2);
-
-            if (item.action_type == .launch_app and item.icon != null) {
-                const icon_surf = self.icon_cache.getCachedOnly(item.icon);
-                if (icon_surf) |surf| {
-                    target.drawImage(
-                        surf,
-                        @as(f64, @floatFromInt(icon_x)),
-                        @as(f64, @floatFromInt(icon_y)),
-                        @as(f64, @floatFromInt(icon_s)),
-                        @as(f64, @floatFromInt(icon_s)),
-                    );
-                } else {
-                    const tone_color = getAppToneColor(self.cfg.theme, item.title);
-                    target.fillGlassSquircle(icon_x, icon_y, icon_s, icon_s, 8 * scale, tone_color);
-                    target.drawSquircleBorder(icon_x, icon_y, icon_s, icon_s, 8 * scale, 1 * scale, self.cfg.theme.border);
-
-                    var letter_buf: [4]u8 = undefined;
-                    var letter_str: []const u8 = "?";
-                    var it = (std.unicode.Utf8View.init(item.title) catch null);
-                    if (it) |*utf8_view| {
-                        var cp_it = utf8_view.iterator();
-                        while (cp_it.nextCodepoint()) |cp| {
-                            if (cp > 32) {
-                                const upper = std.ascii.toUpper(@as(u8, @truncate(cp)));
-                                letter_buf[0] = upper;
-                                letter_str = letter_buf[0..1];
-                                break;
-                            }
-                        }
-                    }
-
-                    const letter_font_size = self.cfg.typography.ui * scale;
-                    const letter_w = target.measureTextWithSize(&self.font, letter_str, letter_font_size);
-                    const letter_x = icon_x + @divTrunc(@as(i32, @intCast(icon_s)) - @as(i32, @intCast(letter_w)), 2);
-                    const letter_y = icon_y + @divTrunc(@as(i32, @intCast(icon_s)) + @as(i32, @intCast(letter_font_size)), 2) - 2 * @as(i32, @intCast(scale));
-                    target.drawTextWithSize(&self.font, letter_str, letter_x, letter_y, letter_font_size, self.cfg.theme.text_bright);
-                }
-            } else {
-                target.fillGlassSquircle(icon_x, icon_y, icon_s, icon_s, 8 * scale, self.cfg.theme.elevated);
-                target.drawSquircleBorder(icon_x, icon_y, icon_s, icon_s, 8 * scale, 1 * scale, self.cfg.theme.border);
-
-                const icon_str = item.icon orelse "•";
-                if (builtinSvgIcon(icon_str)) |svg_name| {
-                    icons.drawSvgIcon(
-                        target,
-                        self.allocator,
-                        svg_name,
-                        icon_font_size,
-                        scale,
-                        icon_x + @divTrunc(@as(i32, @intCast(icon_s)), 2),
-                        icon_y + @divTrunc(@as(i32, @intCast(icon_s)), 2),
-                        self.cfg.theme.accent,
-                    );
-                } else {
-                    const icon_w = target.measureTextWithSize(&self.font, icon_str, icon_font_size);
-                    const icon_tx = icon_x + @divTrunc(@as(i32, @intCast(icon_s)) - @as(i32, @intCast(icon_w)), 2);
-                    target.drawTextWithSize(&self.font, icon_str, icon_tx, icon_y + 22 * @as(i32, @intCast(scale)), icon_font_size, self.cfg.theme.accent);
-                }
-            }
-
-            var badge_w_reserved: u32 = 0;
-            const is_confirming = (self.confirm_index != null and self.confirm_index.? == item_idx);
-            const badge_str = if (is_confirming) "CONFIRM ENTER" else item.badge;
-
-            if (badge_str) |b_str| {
-                const bw = target.measureTextWithSize(&self.font, b_str, badge_font_size) + 16 * scale;
-                badge_w_reserved = bw + 14 * scale;
-                const bx = rect.x + @as(i32, @intCast(rect.w)) - @as(i32, @intCast(bw)) - 12 * @as(i32, @intCast(scale));
-                const by = rect.y + 15 * @as(i32, @intCast(scale));
-                const badge_color = if (is_confirming) self.cfg.theme.accent else if (is_selected) self.cfg.theme.elevated else self.cfg.theme.surface;
-                const badge_text_color = if (is_confirming) self.cfg.theme.card_selected_fg else if (is_selected) self.cfg.theme.accent else self.cfg.theme.text_muted;
-                target.fillSquircle(bx, by, bw, 22 * scale, 5 * scale, badge_color);
-                target.drawSquircleBorder(bx, by, bw, 22 * scale, 5 * scale, 1 * scale, self.cfg.theme.border);
-                target.drawTextWithSize(&self.font, b_str, bx + 8 * @as(i32, @intCast(scale)), by + 15 * @as(i32, @intCast(scale)), badge_font_size, badge_text_color);
-            }
-
-            const max_text_w = if (rect.w > 54 * scale + badge_w_reserved + 16 * scale) rect.w - 54 * scale - badge_w_reserved - 16 * scale else rect.w;
-
-            var title_trunc: [128]u8 = undefined;
-            const title_label = truncateText(target, &self.font, item.title, max_text_w, panel_font_size, &title_trunc);
-            const title_color = if (is_selected) self.cfg.theme.card_selected_fg else self.cfg.theme.text_bright;
-            target.drawTextWithSize(&self.font, title_label, rect.x + 52 * @as(i32, @intCast(scale)), rect.y + 22 * @as(i32, @intCast(scale)), panel_font_size, title_color);
-
-            var desc_trunc: [160]u8 = undefined;
+            ui.text("󰋽", .{
+                .size = self.cfg.typography.title * scale,
+                .color = self.cfg.theme.text_muted,
+            });
+            ui.text(no_match_str, .{
+                .size = panel_font_size,
+                .color = self.cfg.theme.text_muted,
+            });
+            ui.close();
+        } else {
+            const page_offset = self.getPageOffset();
+            const badge_font_size = self.cfg.typography.secondary * scale;
             const desc_font_size = self.cfg.typography.secondary * scale;
-            const desc_label = truncateText(target, &self.font, item.description, max_text_w, desc_font_size, &desc_trunc);
-            const desc_color = if (is_selected) self.cfg.theme.card_selected_fg else self.cfg.theme.text_muted;
-            target.drawTextWithSize(&self.font, desc_label, rect.x + 52 * @as(i32, @intCast(scale)), rect.y + 40 * @as(i32, @intCast(scale)), desc_font_size, desc_color);
+
+            var r: usize = 0;
+            while (r < self.list_rows) : (r += 1) {
+                const item_idx = page_offset + r;
+                if (item_idx >= total) break;
+
+                const item = self.items.items[item_idx];
+                const rect = self.getListCardRect(r);
+                const is_selected = (item_idx == self.selected_index);
+                const is_hovered = (self.hover_index != null and item_idx == self.hover_index.?);
+                const is_confirming = (self.confirm_index != null and self.confirm_index.? == item_idx);
+                const badge_str = if (is_confirming) "CONFIRM ENTER" else item.badge;
+
+                var badge_w: u32 = 0;
+                if (badge_str) |b_str| {
+                    badge_w = target.measureTextWithSize(&self.font, b_str, badge_font_size) + 16 * scale + 14 * scale;
+                }
+                const max_text_w = if (rect.w > 54 * scale + badge_w + 16 * scale)
+                    rect.w - 54 * scale - badge_w - 16 * scale
+                else
+                    rect.w;
+
+                _ = ui.open(.{
+                    .width = .{ .grow = .{} },
+                    .height = .{ .fixed = @floatFromInt(Launcher.ROW_H) },
+                    .direction = .row,
+                    .padding = .{ .left = 10, .right = 12 },
+                    .gap = 10,
+                    .bg = if (is_selected)
+                        self.cfg.theme.card_selected_bg
+                    else if (is_hovered)
+                        self.cfg.theme.card_hover_bg
+                    else
+                        null,
+                    .radius = @floatFromInt(self.cfg.theme.radius_button),
+                    .border = if (is_selected or is_hovered) 1 else 0,
+                    .border_color = if (is_selected) self.cfg.theme.accent else if (is_hovered) self.cfg.theme.border else null,
+                    .align_y = .center,
+                });
+
+                const icon_s: u32 = 32 * scale;
+                if (item.action_type == .launch_app and item.icon != null) {
+                    if (self.icon_cache.getCachedOnly(item.icon)) |surf| {
+                        ui.image(surf, .{ .fixed = @floatFromInt(icon_s) }, .{ .fixed = @floatFromInt(icon_s) }, null, 0);
+                    } else {
+                        _ = ui.open(.{
+                            .width = .{ .fixed = @floatFromInt(icon_s) },
+                            .height = .{ .fixed = @floatFromInt(icon_s) },
+                            .bg = getAppToneColor(self.cfg.theme, item.title),
+                            .radius = @floatFromInt(8 * scale),
+                            .border = 1,
+                            .border_color = self.cfg.theme.border,
+                            .align_x = .center,
+                            .align_y = .center,
+                        });
+                        ui.text(initialFor(item.title), .{
+                            .size = self.cfg.typography.ui * scale,
+                            .color = self.cfg.theme.text_bright,
+                        });
+                        ui.close();
+                    }
+                } else {
+                    _ = ui.open(.{
+                        .width = .{ .fixed = @floatFromInt(icon_s) },
+                        .height = .{ .fixed = @floatFromInt(icon_s) },
+                        .bg = self.cfg.theme.elevated,
+                        .radius = @floatFromInt(8 * scale),
+                        .border = 1,
+                        .border_color = self.cfg.theme.border,
+                        .align_x = .center,
+                        .align_y = .center,
+                    });
+                    const icon_str = item.icon orelse "•";
+                    if (builtinSvgIcon(icon_str)) |svg_name| {
+                        ui.icon(svg_name, icon_font_size, self.cfg.theme.accent, 0);
+                    } else {
+                        ui.text(icon_str, .{
+                            .size = icon_font_size,
+                            .color = self.cfg.theme.accent,
+                        });
+                    }
+                    ui.close();
+                }
+
+                _ = ui.open(.{
+                    .width = .{ .grow = .{} },
+                    .height = .{ .grow = .{} },
+                    .direction = .column,
+                    .gap = 2,
+                    .align_y = .center,
+                });
+
+                var title_trunc: [128]u8 = undefined;
+                const title_label = truncateText(target, &self.font, item.title, max_text_w, panel_font_size, &title_trunc);
+                ui.text(title_label, .{
+                    .size = panel_font_size,
+                    .color = if (is_selected) self.cfg.theme.card_selected_fg else self.cfg.theme.text_bright,
+                });
+
+                var desc_trunc: [160]u8 = undefined;
+                const desc_label = truncateText(target, &self.font, item.description, max_text_w, desc_font_size, &desc_trunc);
+                if (desc_label.len > 0) {
+                    ui.text(desc_label, .{
+                        .size = desc_font_size,
+                        .color = if (is_selected) self.cfg.theme.card_selected_fg else self.cfg.theme.text_muted,
+                    });
+                }
+                ui.close();
+
+                if (badge_str) |b_str| {
+                    _ = ui.open(.{
+                        .width = .fit,
+                        .height = .{ .fixed = @floatFromInt(22 * scale) },
+                        .padding = .{ .left = @intCast(8 * scale), .right = @intCast(8 * scale) },
+                        .bg = if (is_confirming)
+                            self.cfg.theme.accent
+                        else if (is_selected)
+                            self.cfg.theme.elevated
+                        else
+                            self.cfg.theme.surface,
+                        .radius = @floatFromInt(5 * scale),
+                        .border = 1,
+                        .border_color = self.cfg.theme.border,
+                        .align_x = .center,
+                        .align_y = .center,
+                    });
+                    ui.text(b_str, .{
+                        .size = badge_font_size,
+                        .color = if (is_confirming)
+                            self.cfg.theme.card_selected_fg
+                        else if (is_selected)
+                            self.cfg.theme.accent
+                        else
+                            self.cfg.theme.text_muted,
+                    });
+                    ui.close();
+                }
+
+                ui.close(); // row
+            }
         }
+
+        ui.close(); // root
+        const commands = ui.endLayout();
+        ui.render(target, commands);
     }
 
-    fn renderModeBadge(self: *Launcher, target: renderer.Renderer, w: u32, footer_y: i32, scale: u32) void {
-        const cur_mode = self.effectiveMode();
-        const badge_str = cur_mode.badgeText();
-        const badge_font_sz = self.cfg.typography.secondary * scale;
-        const badge_w = target.measureTextWithSize(&self.font, badge_str, badge_font_sz) + 14 * scale;
-        const badge_x = @as(i32, @intCast(w)) - @as(i32, @intCast(badge_w)) - 20 * @as(i32, @intCast(scale));
-        const badge_y = footer_y - 12 * @as(i32, @intCast(scale));
-
-        target.fillSquircle(badge_x, badge_y, badge_w, 18 * scale, 5 * scale, self.cfg.theme.elevated);
-        target.drawSquircleBorder(badge_x, badge_y, badge_w, 18 * scale, 5 * scale, 1 * scale, self.cfg.theme.border);
-        target.drawTextWithSize(&self.font, badge_str, badge_x + 7 * @as(i32, @intCast(scale)), badge_y + 13 * @as(i32, @intCast(scale)), badge_font_sz, self.cfg.theme.accent);
-    }
 };
 
 // ======================== Unit Tests ========================

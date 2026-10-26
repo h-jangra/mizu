@@ -1,42 +1,46 @@
 const std = @import("std");
-const renderer = @import("../core/renderer.zig");
 const types = @import("context.zig");
-const icons = @import("../graphics/icons.zig");
+const ui_mod = @import("../core/ui.zig");
 
-pub fn render(ctx: *types.BarContext, target: renderer.Renderer, right_x: i32) !i32 {
+pub fn render(ctx: *types.BarContext, ui: *ui_mod.Ui) !void {
     var buf: [24]u8 = undefined;
     const value = try std.fmt.bufPrint(&buf, "{d:.1} GB", .{ctx.sys.mem_used_gib});
     const icon_size = ctx.iconFontSize();
-    const text_size = ctx.textFontSize();
-    const text_w = target.measureTextWithSize(ctx.font, value, text_size);
-    const width = icon_size + 8 * ctx.scale + text_w + 16 * ctx.scale;
-    const x = right_x - @as(i32, @intCast(width));
+    const id = "bar-memory";
+    const hovered = ui.hovered(id, 0);
+    const border_col = if (hovered)
+        ctx.cfg.theme.accent
+    else if (ctx.cfg.theme.pill_border.a > 0)
+        ctx.cfg.theme.pill_border
+    else
+        null;
 
-    ctx.drawChipBase(target, x, ctx.chip_y, width, ctx.chip_h, ctx.cfg.theme.cpu_mem_bg);
+    _ = ui.open(.{
+        .id = id,
+        .width = .fit,
+        .height = .{ .grow = .{} },
+        .padding = .{
+            .left = ui.su(8),
+            .right = ui.su(8),
+        },
+        .gap = ui.su(8),
+        .bg = if (hovered) ctx.cfg.theme.pill_hover else ctx.cfg.theme.cpu_mem_bg,
+        .radius = ui.f(ctx.cfg.pill_radius),
+        .border = if (border_col != null) ui.su(1) else 0,
+        .border_color = border_col,
+        .align_y = .center,
+    });
+    ui.icon("memory", icon_size, ctx.cfg.theme.cpu_mem_fg, 0);
+    ui.text(value, .{
+        .size = ctx.textFontSize(),
+        .color = ctx.cfg.theme.text_main,
+    });
+    ui.close();
 
-    // Center both icon and text vertically in the chip
-    const center_y = ctx.chip_y + @divTrunc(@as(i32, @intCast(ctx.chip_h)), 2);
-    const icon_cx = x + @as(i32, @intCast(icon_size / 2)) + @as(i32, @intCast(8 * ctx.scale));
-    icons.drawSvgIcon(
-        target,
-        ctx.allocator,
-        "memory",
-        icon_size,
-        ctx.scale,
-        icon_cx,
-        center_y,
-        ctx.cfg.theme.cpu_mem_fg,
-    );
-    const text_x = icon_cx + @as(i32, @intCast(icon_size / 2)) + @as(i32, @intCast(8 * ctx.scale));
-    const text_baseline = center_y + @as(i32, @intCast(@as(u32, @intCast(ctx.font.ascender_px)) * ctx.scale / 2));
-    target.drawTextWithSize(ctx.font, value, text_x, text_baseline, text_size, ctx.cfg.theme.text_main);
-
-    try ctx.addClickable(x, ctx.chip_y, width, ctx.chip_h, .{
+    try ctx.linkClick(ui, id, 0, .{
         .dual_command = .{
             .left = "mizu memory-monitor",
             .right = "mizu quicksettings",
         },
-    });
-
-    return x;
+    }, null);
 }

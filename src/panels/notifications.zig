@@ -4,6 +4,7 @@ const theme = @import("../core/theme.zig");
 const config = @import("../core/config.zig");
 const renderer = @import("../core/renderer.zig");
 const icons = @import("../graphics/icons.zig");
+const ui_mod = @import("../core/ui.zig");
 
 pub const Notification = struct {
     id: u32 = 0,
@@ -279,66 +280,128 @@ pub const ToastOverlay = struct {
         const h = target.height;
         const radius: u32 = 14;
 
-        // Outer soft drop shadow for floating depth
         target.drawDropShadow(6, 6, w - 12, h - 12, radius, 6, theme.Color.init(90, 0, 0, 0));
 
-        // Translucent rounded card with clean border
-        target.fillRoundedRect(6, 6, w - 12, h - 12, radius, self.cfg.theme.panel_bg);
-        target.drawRoundedBorder(6, 6, w - 12, h - 12, radius, 1, self.cfg.theme.panel_border);
-
-        // App Icon / Bell glyph badge
-        const badge_size: u32 = 36;
-        const badge_x: i32 = 18;
-        const badge_y: i32 = 18;
-        target.fillRoundedRect(badge_x, badge_y, badge_size, badge_size, 10, self.cfg.theme.surface);
-        target.drawRoundedBorder(badge_x, badge_y, badge_size, badge_size, 10, 1, self.cfg.theme.border);
-        icons.drawSvgIcon(
-            target,
+        var ui = try ui_mod.Ui.begin(
             self.allocator,
-            "bell",
-            22,
+            &self.font,
+            w,
+            h,
             1,
-            badge_x + @divTrunc(@as(i32, @intCast(badge_size)), 2),
-            badge_y + @divTrunc(@as(i32, @intCast(badge_size)), 2),
-            self.cfg.theme.accent,
+            -1,
+            -1,
+            false,
+            1.0 / 60.0,
         );
+        defer ui.deinit();
 
-        // Header: App Name + relative time
-        const text_x: i32 = badge_x + @as(i32, @intCast(badge_size)) + 12;
-        const app_name = notif.getAppName();
-        target.drawTextWithSize(&self.font, app_name, text_x, 26, self.cfg.typography.secondary, self.cfg.theme.text_muted);
+        ui.root(.{
+            .direction = .column,
+            .padding = .all(6),
+            .align_x = .left,
+            .align_y = .top,
+        });
 
-        // Dismiss "✕" glyph
-        target.drawTextWithSize(&self.font, "✕", @as(i32, @intCast(w)) - 26, 26, self.cfg.typography.secondary, self.cfg.theme.text_muted);
+        _ = ui.open(.{
+            .width = .{ .grow = .{} },
+            .height = .{ .grow = .{} },
+            .direction = .column,
+            .padding = .all(12),
+            .gap = 4,
+            .bg = self.cfg.theme.panel_bg,
+            .radius = @floatFromInt(radius),
+            .border = 1,
+            .border_color = self.cfg.theme.panel_border,
+        });
 
-        // Summary (bold, text_bright)
+        _ = ui.open(.{
+            .width = .{ .grow = .{} },
+            .height = .{ .grow = .{} },
+            .direction = .row,
+            .gap = 12,
+            .align_y = .top,
+        });
+
+        _ = ui.open(.{
+            .width = .{ .fixed = 36 },
+            .height = .{ .fixed = 36 },
+            .bg = self.cfg.theme.surface,
+            .radius = 10,
+            .border = 1,
+            .border_color = self.cfg.theme.border,
+            .align_x = .center,
+            .align_y = .center,
+        });
+        ui.icon("bell", 22, self.cfg.theme.accent, 0);
+        ui.close();
+
+        _ = ui.open(.{
+            .width = .{ .grow = .{} },
+            .height = .{ .grow = .{} },
+            .direction = .column,
+            .gap = 2,
+        });
+
+        _ = ui.open(.{
+            .width = .{ .grow = .{} },
+            .height = .fit,
+            .direction = .row,
+            .align_y = .center,
+        });
+        ui.text(notif.getAppName(), .{
+            .size = self.cfg.typography.secondary,
+            .color = self.cfg.theme.text_muted,
+        });
+        ui.spacerSized(.{ .grow = .{} }, .{ .fixed = 0 });
+        ui.text("✕", .{
+            .size = self.cfg.typography.secondary,
+            .color = self.cfg.theme.text_muted,
+        });
+        ui.close();
+
         const summary = notif.getSummary();
         var trunc_sum_buf: [128]u8 = undefined;
         const trunc_summary = renderer.truncateText(&self.font, summary, w -| 110, self.cfg.typography.ui, &trunc_sum_buf);
-        target.drawTextWithSize(&self.font, trunc_summary, text_x, 46, self.cfg.typography.ui, self.cfg.theme.text_bright);
+        ui.text(trunc_summary, .{
+            .size = self.cfg.typography.ui,
+            .color = self.cfg.theme.text_bright,
+        });
 
-        // Body message (text_muted)
         const body = notif.getBody();
         if (body.len > 0) {
             var trunc_body_buf: [128]u8 = undefined;
             const trunc_body = renderer.truncateText(&self.font, body, w -| 110, self.cfg.typography.secondary, &trunc_body_buf);
-            target.drawTextWithSize(&self.font, trunc_body, text_x, 64, self.cfg.typography.secondary, self.cfg.theme.text_muted);
+            ui.text(trunc_body, .{
+                .size = self.cfg.typography.secondary,
+                .color = self.cfg.theme.text_muted,
+            });
         }
 
-        // Live countdown progress bar at bottom edge
-        const bar_h: u32 = 3;
-        const bar_y = @as(i32, @intCast(h)) - 10;
-        const bar_w = w - 36;
-        target.fillRoundedRect(18, bar_y, bar_w, bar_h, 2, self.cfg.theme.surface);
+        ui.close(); // text column
+        ui.close(); // content row
 
-        if (self.total_time_ms > 0 and self.time_remaining_ms > 0) {
-            const pct = @as(u64, @intCast(@max(0, self.time_remaining_ms))) * 100 / @as(u64, @intCast(self.total_time_ms));
-            const fill_w = (@as(u64, bar_w) * pct) / 100;
-            if (fill_w > 0) {
-                target.fillRoundedRect(18, bar_y, @intCast(fill_w), bar_h, 2, self.cfg.theme.accent);
-            }
+        const bar_pct: f32 = if (self.total_time_ms > 0 and self.time_remaining_ms > 0)
+            @as(f32, @floatFromInt(@min(self.time_remaining_ms, self.total_time_ms))) / @as(f32, @floatFromInt(self.total_time_ms))
+        else
+            0;
+        _ = ui.open(.{
+            .width = .{ .grow = .{} },
+            .height = .{ .fixed = 3 },
+            .bg = self.cfg.theme.surface,
+            .radius = 2,
+        });
+        if (bar_pct > 0) {
+            ui.rect(.{ .percent = bar_pct }, .{ .grow = .{} }, self.cfg.theme.accent, 2, .{});
         }
+        ui.close();
+
+        ui.close(); // card
+        ui.close(); // root
+
+        const commands = ui.endLayout();
+        ui.render(target, commands);
     }
+
 };
 
 test "NotificationStore add, persist and reload" {
