@@ -33,6 +33,8 @@ pub const LockApp = struct {
     is_locked: bool = false,
     is_finished: bool = false,
     auth_state: AuthState = .idle,
+    auth_result: ?bool = null,
+    auth_result_available: bool = false,
     password_buf: [128]u8 = [_]u8{0} ** 128,
     password_len: usize = 0,
     show_input: bool = false,
@@ -42,7 +44,6 @@ pub const LockApp = struct {
     height: u32 = 1080,
     scale: u32 = 1,
     auth_thread: ?std.Thread = null,
-    auth_result: ?bool = null,
     auth_username: [256]u8 = [_]u8{0} ** 256,
     auth_username_len: usize = 0,
     caret_blink: bool = true,
@@ -81,7 +82,13 @@ pub const LockApp = struct {
         if (self.seat) |st| { c.wl_seat_destroy(st); self.seat = null; }
         if (self.shm) |sh| { c.wl_shm_destroy(sh); self.shm = null; }
         if (self.session_lock) |sl| {
-            if (!self.is_locked) c.ext_session_lock_v1_destroy(sl);
+            if (self.is_locked and self.auth_state == .success) {
+                // Only unlock after successful authentication
+                c.ext_session_lock_v1_unlock_and_destroy(sl);
+            } else if (!self.is_locked) {
+                c.ext_session_lock_v1_destroy(sl);
+            }
+            // If locked but not successful, do not unlock (secure by default)
             self.session_lock = null;
         }
         if (self.session_lock_mgr) |mgr| { c.ext_session_lock_manager_v1_destroy(mgr); self.session_lock_mgr = null; }
@@ -96,6 +103,7 @@ pub const LockApp = struct {
 
     fn wipePassword(self: *LockApp) void {
         @memset(&self.password_buf, 0);
+        for (&self.password_buf) |*b| b.* = 0;
         self.password_len = 0;
         self.show_input = false;
     }
@@ -406,33 +414,52 @@ pub const LockApp = struct {
 fn authWorker(app_ptr: *LockApp, username: []const u8, password: []const u8) void {
     const result = authenticatePAM(username, password);
     app_ptr.auth_result = result;
-    if (result) {
-        app_ptr.auth_state = .success;
-    } else {
-        app_ptr.auth_state = .failed;
-    }
+    app_ptr.auth_result_available = true;
     app_ptr.needs_redraw = true;
 }
 
 fn authenticatePAM(username: []const u8, password: []const u8) bool {
+    // Make a mutable zero-terminated copy for PAM conversation
+    var pw_copy: [128]u8 = [_]u8{0} ** 128;
+    const copy_len = @min(password.len, pw_copy.len - 1);
+    @memcpy(pw_copy[0..copy_len], password[0..copy_len]);
+    pw_copy[copy_len] = 0;
+
     var pamh: ?*c.pam_handle_t = null;
     var conv: c.struct_pam_conv = .{
         .conv = pamConv,
-        .appdata_ptr = @ptrCast(@constCast(&password)),
+        .appdata_ptr = @ptrCast(&pw_copy),
     };
     const ret = c.pam_start("login", username.ptr, &conv, &pamh);
     if (ret != c.PAM_SUCCESS) return false;
     defer _ = c.pam_end(pamh, ret);
     const auth_ret = c.pam_authenticate(pamh, 0);
+    // Zero copy after auth
+    for (&pw_copy) |*b| b.* = 0;
     return auth_ret == c.PAM_SUCCESS;
 }
 
 fn pamConv(num_msg: c_int, msg: [*c][*c]const c.struct_pam_message, resp: [*c][*c]c.struct_pam_response, appdata_ptr: ?*anyopaque) callconv(.c) c_int {
-    _ = num_msg;
-    _ = msg;
-    _ = resp;
-    _ = appdata_ptr;
-    return c.PAM_CONV_ERR;
+    if (num_msg <= 0 or msg == null or resp == null) return c.PAM_CONV_ERR;
+    var i: c_int = 0;
+    while (i < num_msg) : (i += 1) {
+        const message = msg[@as(usize, @intCast(i))];
+        const msg_style = message[0].msg_style;
+        const r = resp[@as(usize, @intCast(i))];
+        if (msg_style == c.PAM_PROMPT_ECHO_ON or msg_style == c.PAM_PROMPT_ECHO_OFF) {
+            if (appdata_ptr) |ptr| {
+                const mutable_buf: [*c]u8 = @ptrCast(@alignCast(ptr));
+                r.*.resp = mutable_buf;
+            } else {
+                r.*.resp = null;
+            }
+            r.*.resp_retcode = 0;
+        } else {
+            r.*.resp = null;
+            r.*.resp_retcode = 0;
+        }
+    }
+    return c.PAM_SUCCESS;
 }
 
 // Wayland listeners
@@ -450,10 +477,39 @@ fn registry_global(data: ?*anyopaque, reg: ?*c.wl_registry, name: u32, iface: [*
     } else if (std.mem.eql(u8, s, "wl_shm")) {
         self.shm = @ptrCast(c.wl_registry_bind(reg, name, &c.wl_shm_interface, 1));
     } else if (std.mem.eql(u8, s, "wl_seat")) {
-        self.seat = @ptrCast(c.wl_registry_bind(reg, name, &c.wl_seat_interface, 1));
+        self.seat = @ptrCast(c.wl_registry_bind(reg, name, &c.wl_seat_interface, 5));
+        if (self.seat) |st| {
+            _ = c.wl_seat_add_listener(st, &seat_listener, @ptrCast(self));
+        }
+    } else if (std.mem.eql(u8, s, "wl_output")) {
+        const out = c.wl_registry_bind(reg, name, &c.wl_output_interface, 3);
+        _ = out;
     } else if (std.mem.eql(u8, s, "ext_session_lock_manager_v1")) {
         self.session_lock_mgr = @ptrCast(c.wl_registry_bind(reg, name, &c.ext_session_lock_manager_v1_interface, 1));
     }
+}
+
+const seat_listener = c.wl_seat_listener{
+    .capabilities = seat_capabilities,
+    .name = seat_name,
+};
+
+fn seat_capabilities(data: ?*anyopaque, seat: ?*c.wl_seat, capabilities: u32) callconv(.c) void {
+    const self: *LockApp = @ptrCast(@alignCast(data.?));
+    const has_keyboard = (capabilities & c.WL_SEAT_CAPABILITY_KEYBOARD) != 0;
+    if (has_keyboard and self.keyboard == null) {
+        self.keyboard = c.wl_seat_get_keyboard(seat);
+        if (self.keyboard != null) {
+            _ = c.wl_keyboard_add_listener(self.keyboard.?, &keyboard_listener, self);
+        }
+    } else if (!has_keyboard and self.keyboard != null) {
+        c.wl_keyboard_destroy(self.keyboard.?);
+        self.keyboard = null;
+    }
+}
+
+fn seat_name(data: ?*anyopaque, seat: ?*c.wl_seat, name: [*c]const u8) callconv(.c) void {
+    _ = data; _ = seat; _ = name;
 }
 
 const session_listener = c.ext_session_lock_v1_listener{
@@ -487,11 +543,17 @@ const keyboard_listener = c.wl_keyboard_listener{
 fn keyboard_keymap(data: ?*anyopaque, kbd: ?*c.wl_keyboard, format: u32, fd: c_int, size: u32) callconv(.c) void {
     _ = kbd;
     const self: *LockApp = @ptrCast(@alignCast(data.?));
-    defer _ = c.close(fd);
-    if (format != c.WL_KEYBOARD_KEYMAP_FORMAT_XKB_V1) return;
+    if (format != c.WL_KEYBOARD_KEYMAP_FORMAT_XKB_V1) {
+        _ = c.close(fd);
+        return;
+    }
     const map_shm = c.mmap(null, size, c.PROT_READ, c.MAP_SHARED, fd, 0);
-    if (map_shm == c.MAP_FAILED) return;
+    if (map_shm == c.MAP_FAILED) {
+        _ = c.close(fd);
+        return;
+    }
     defer _ = c.munmap(map_shm, size);
+    defer _ = c.close(fd);
     const map_str: [*c]const u8 = @ptrCast(map_shm);
     const keymap = c.xkb_keymap_new_from_string(self.xkb_ctx.?, map_str, c.XKB_KEYMAP_FORMAT_TEXT_V1, c.XKB_KEYMAP_COMPILE_NO_FLAGS);
     if (keymap == null) return;
@@ -503,11 +565,17 @@ fn keyboard_keymap(data: ?*anyopaque, kbd: ?*c.wl_keyboard, format: u32, fd: c_i
 }
 
 fn keyboard_enter(data: ?*anyopaque, kbd: ?*c.wl_keyboard, serial: u32, surf: ?*c.wl_surface, keys: [*c]c.wl_array) callconv(.c) void {
-    _ = data; _ = kbd; _ = serial; _ = surf; _ = keys;
+    const self: *LockApp = @ptrCast(@alignCast(data.?));
+    _ = kbd; _ = serial; _ = surf; _ = keys;
+    // Keyboard focus granted; nothing extra needed for minimal lock UI
+    self.show_input = true;
+    self.needs_redraw = true;
 }
 
 fn keyboard_leave(data: ?*anyopaque, kbd: ?*c.wl_keyboard, serial: u32, surf: ?*c.wl_surface) callconv(.c) void {
-    _ = data; _ = kbd; _ = serial; _ = surf;
+    _ = data;
+    _ = kbd; _ = serial; _ = surf;
+    // Focus lost; keep session locked securely
 }
 
 fn keyboard_key(data: ?*anyopaque, kbd: ?*c.wl_keyboard, serial: u32, time: u32, key: u32, state: u32) callconv(.c) void {
@@ -517,6 +585,9 @@ fn keyboard_key(data: ?*anyopaque, kbd: ?*c.wl_keyboard, serial: u32, time: u32,
 
     if (self.xkb_state == null) return;
     const keycode = key + 8;
+
+    // Update modifier state from xkb_state before getting sym (modifiers affect sym mapping)
+    // Note: modifiers event updates state; key event uses updated state
     const sym = c.xkb_state_key_get_one_sym(self.xkb_state.?, keycode);
 
     if (sym == c.XKB_KEY_Return or sym == c.XKB_KEY_KP_Enter) {
@@ -525,9 +596,11 @@ fn keyboard_key(data: ?*anyopaque, kbd: ?*c.wl_keyboard, serial: u32, time: u32,
         return;
     }
     if (sym == c.XKB_KEY_Escape) {
-        self.wipePassword();
-        self.auth_state = .idle;
-        self.needs_redraw = true;
+        if (self.auth_state != .authenticating) {
+            self.wipePassword();
+            self.auth_state = .idle;
+            self.needs_redraw = true;
+        }
         return;
     }
     if (sym == c.XKB_KEY_BackSpace) {
@@ -541,13 +614,14 @@ fn keyboard_key(data: ?*anyopaque, kbd: ?*c.wl_keyboard, serial: u32, time: u32,
     }
 
     // Printable character input using UTF-8
-    if (self.xkb_state != null) {
-        var utf8_buf: [32]u8 = [_]u8{0} ** 32;
-        const len = c.xkb_state_key_get_utf8(self.xkb_state.?, keycode, &utf8_buf, utf8_buf.len);
-        if (len > 0 and self.password_len + @as(usize, @intCast(len)) < self.password_buf.len) {
-            const slice = utf8_buf[0..@as(usize, @intCast(len))];
-            const first_char = slice[0];
-            if (first_char >= 32 and first_char != 127) {
+    var utf8_buf: [32]u8 = [_]u8{0} ** 32;
+    const len = c.xkb_state_key_get_utf8(self.xkb_state.?, keycode, &utf8_buf, utf8_buf.len);
+    if (len > 0) {
+        const slice = utf8_buf[0..@as(usize, @intCast(len))];
+        const first_char = slice[0];
+        // Allow printable ASCII characters and common UTF-8 printable chars
+        if (first_char >= 32 and first_char != 127) {
+            if (self.password_len + slice.len < self.password_buf.len) {
                 @memcpy(self.password_buf[self.password_len..self.password_len + slice.len], slice);
                 self.password_len += slice.len;
                 self.show_input = true;
@@ -658,7 +732,21 @@ pub fn runLock(allocator: std.mem.Allocator, cfg: config.Config) !void {
         _ = c.wl_display_dispatch_pending(disp);
         _ = c.wl_display_flush(disp);
 
+        // Process auth thread results
+        if (app.auth_result_available) {
+            app.auth_result_available = false;
+            if (app.auth_result == true) {
+                // Success: unlock and exit loop
+                app.auth_state = .success;
+            } else {
+                app.auth_state = .failed;
+            }
+            app.needs_redraw = true;
+        }
+
         if (app.auth_state == .success) {
+            // Flush unlock request before exiting
+            _ = c.wl_display_flush(disp);
             break;
         }
 

@@ -126,6 +126,7 @@ pub const SharedWorkerState = struct {
     ref_count: std.atomic.Value(u32) = .init(2), // 1 for UI, 1 for worker
     wifi_enabled: std.atomic.Value(bool) = .init(true),
     bluetooth_enabled: std.atomic.Value(bool) = .init(false),
+    earbud_safety_enabled: std.atomic.Value(bool) = .init(true),
     lock: SpinLock = .{},
     data: AsyncSysData = .{},
     thread: ?std.Thread = null,
@@ -194,6 +195,9 @@ pub const SysStatus = struct {
     uptime_str: [32]u8 = [_]u8{0} ** 32,
     uptime_len: usize = 0,
 
+    // Audio & safety
+    earbud_safety_enabled: bool = true,
+
     // Ticks & throttling
     tick_count: u32 = 0,
 
@@ -205,11 +209,15 @@ pub const SysStatus = struct {
             self.power_profile = cached;
             self.profile_manually_set = true;
         }
+        if (loadEarbudSafetyCache()) |cached| {
+            self.earbud_safety_enabled = cached;
+        }
 
         // Allocate heap-pinned worker state so it remains valid across moves
         const shared = std.heap.c_allocator.create(SharedWorkerState) catch null;
         if (shared) |s| {
             s.* = SharedWorkerState{};
+            s.earbud_safety_enabled.store(self.earbud_safety_enabled, .release);
             s.thread = std.Thread.spawn(.{}, workerLoop, .{s}) catch null;
             if (s.thread == null) {
                 s.ref_count.store(1, .release);
@@ -491,6 +499,68 @@ pub const SysStatus = struct {
             return .balanced;
         }
         return null;
+    }
+
+    pub fn setEarbudSafety(self: *SysStatus, enabled: bool) void {
+        self.earbud_safety_enabled = enabled;
+        saveEarbudSafetyCache(enabled);
+        if (self.shared) |s| {
+            s.earbud_safety_enabled.store(enabled, .release);
+        }
+    }
+
+    pub fn saveEarbudSafetyCache(enabled: bool) void {
+        const home = c.getenv("HOME") orelse return;
+        var path_buf: [256]u8 = undefined;
+        const path = std.fmt.bufPrintZ(&path_buf, "{s}/.cache/mizu/earbud_safety", .{std.mem.span(home)}) catch return;
+        const f = c.fopen(path.ptr, "wb") orelse return;
+        defer _ = c.fclose(f);
+        const s: []const u8 = if (enabled) "1\n" else "0\n";
+        _ = c.fwrite(s.ptr, 1, s.len, f);
+    }
+
+    pub fn loadEarbudSafetyCache() ?bool {
+        const home = c.getenv("HOME") orelse return null;
+        var path_buf: [256]u8 = undefined;
+        const path = std.fmt.bufPrintZ(&path_buf, "{s}/.cache/mizu/earbud_safety", .{std.mem.span(home)}) catch return null;
+        const f = c.fopen(path.ptr, "rb") orelse return null;
+        defer _ = c.fclose(f);
+        var buf: [16]u8 = undefined;
+        const n = c.fread(&buf, 1, buf.len - 1, f);
+        if (n == 0) return null;
+        buf[n] = 0;
+        const s = std.mem.trim(u8, buf[0..n], " \t\r\n");
+        if (std.mem.eql(u8, s, "1") or std.mem.eql(u8, s, "true")) return true;
+        if (std.mem.eql(u8, s, "0") or std.mem.eql(u8, s, "false")) return false;
+        return null;
+    }
+
+    pub fn isHeadphoneOrEarbud(name: []const u8) bool {
+        var lower_buf: [128]u8 = undefined;
+        const len = @min(name.len, lower_buf.len);
+        for (name[0..len], 0..) |ch, i| {
+            lower_buf[i] = std.ascii.toLower(ch);
+        }
+        const lower = lower_buf[0..len];
+
+        // Bluetooth sink
+        if (std.mem.indexOf(u8, lower, "bluez") != null) {
+            if (std.mem.indexOf(u8, lower, "speaker") != null) return false;
+            return true;
+        }
+
+        // Wired / USB / other headphones or earbuds
+        if (std.mem.indexOf(u8, lower, "headphone") != null) return true;
+        if (std.mem.indexOf(u8, lower, "headset") != null) return true;
+        if (std.mem.indexOf(u8, lower, "earbud") != null) return true;
+        if (std.mem.indexOf(u8, lower, "earphone") != null) return true;
+        if (std.mem.indexOf(u8, lower, "in-ear") != null) return true;
+        if (std.mem.indexOf(u8, lower, "airpod") != null) return true;
+        if (std.mem.indexOf(u8, lower, "buds") != null) return true;
+        if (std.mem.indexOf(u8, lower, " ear") != null) return true;
+        if (std.mem.indexOf(u8, lower, "ear ") != null) return true;
+
+        return false;
     }
 
     fn updateUserHost(self: *SysStatus) void {
@@ -1260,6 +1330,24 @@ fn queryBluetooth(tools: ToolAvailability, connected: *bool, dev_buf: *[64]u8, d
     }
 }
 
+fn getDefaultSinkName(buf: *[128]u8) ?[]const u8 {
+    const pipe = c.popen("pactl get-default-sink 2>/dev/null", "r") orelse {
+        const wp_pipe = c.popen("wpctl inspect @DEFAULT_AUDIO_SINK@ 2>/dev/null | grep 'node.name' | head -1 | cut -d'\"' -f2", "r") orelse return null;
+        defer _ = c.pclose(wp_pipe);
+        const n = c.fread(buf, 1, buf.len - 1, wp_pipe);
+        if (n == 0) return null;
+        buf[n] = 0;
+        const s = std.mem.trim(u8, buf[0..n], " \t\r\n");
+        return if (s.len > 0) s else null;
+    };
+    defer _ = c.pclose(pipe);
+    const n = c.fread(buf, 1, buf.len - 1, pipe);
+    if (n == 0) return null;
+    buf[n] = 0;
+    const s = std.mem.trim(u8, buf[0..n], " \t\r\n");
+    return if (s.len > 0) s else null;
+}
+
 fn workerLoop(shared: *SharedWorkerState) void {
     defer shared.release();
     const tools = detectTools();
@@ -1267,10 +1355,15 @@ fn workerLoop(shared: *SharedWorkerState) void {
     var last_mpris: i64 = 0;
     var last_wifi: i64 = 0;
     var last_bluetooth: i64 = 0;
+    var last_sink: [128]u8 = [_]u8{0} ** 128;
+    var last_sink_len: usize = 0;
+    var last_audio_check: i64 = 0;
+    var initialized_sink = false;
 
     const volume_interval_ms: i64 = 1000;
     const mpris_interval_ms: i64 = 1000;
     const network_interval_ms: i64 = 5000;
+    const safety_interval_ms: i64 = 500;
 
     while (shared.running.load(.acquire)) {
         const now = monotonicMs();
@@ -1286,12 +1379,46 @@ fn workerLoop(shared: *SharedWorkerState) void {
         }
         if (dbus_monitor.mizu_dbus_monitor_check_bluetooth_dirty()) {
             last_bluetooth = 0;
+            last_audio_check = 0;
         }
 
         if (tools.wpctl and now - last_volume >= volume_interval_ms) {
             queryVolume(&snap.volume_percent, &snap.volume_muted);
             last_volume = now;
             changed = true;
+        }
+
+        // Earphone safety volume monitoring
+        if (now - last_audio_check >= safety_interval_ms) {
+            last_audio_check = now;
+            var sink_buf: [128]u8 = undefined;
+            if (getDefaultSinkName(&sink_buf)) |cur_sink| {
+                if (!initialized_sink) {
+                    initialized_sink = true;
+                    const clen = @min(cur_sink.len, last_sink.len);
+                    @memcpy(last_sink[0..clen], cur_sink[0..clen]);
+                    last_sink_len = clen;
+                } else {
+                    const prev_sink = last_sink[0..last_sink_len];
+                    if (!std.mem.eql(u8, cur_sink, prev_sink)) {
+                        if (shared.earbud_safety_enabled.load(.acquire) and SysStatus.isHeadphoneOrEarbud(cur_sink)) {
+                            var cur_vol: u32 = snap.volume_percent;
+                            var cur_mute: bool = snap.volume_muted;
+                            queryVolume(&cur_vol, &cur_mute);
+                            if (cur_vol > 20) {
+                                spawnCmd("wpctl set-volume -l 2.0 @DEFAULT_AUDIO_SINK@ 20% 2>/dev/null || pactl set-sink-volume @DEFAULT_SINK@ 20% 2>/dev/null || true");
+                                snap.volume_percent = 20;
+                                snap.volume_muted = false;
+                                last_volume = now;
+                                changed = true;
+                            }
+                        }
+                        const clen = @min(cur_sink.len, last_sink.len);
+                        @memcpy(last_sink[0..clen], cur_sink[0..clen]);
+                        last_sink_len = clen;
+                    }
+                }
+            }
         }
 
         if (tools.playerctl and now - last_mpris >= mpris_interval_ms) {
@@ -1382,5 +1509,39 @@ test "SysStatus batteryIcon and updateBattery" {
     status.updateBattery();
     if (status.has_battery) {
         try std.testing.expect(status.bat_capacity <= 100);
+    }
+}
+
+test "isHeadphoneOrEarbud detection and earbud safety settings" {
+    // Should NOT match speakers / internal audio
+    try std.testing.expect(!SysStatus.isHeadphoneOrEarbud("alsa_output.pci-0000_06_00.6.HiFi__Speaker__sink"));
+    try std.testing.expect(!SysStatus.isHeadphoneOrEarbud("alsa_output.pci-0000_01_00.1.hdmi-stereo"));
+    try std.testing.expect(!SysStatus.isHeadphoneOrEarbud("bluez_output.11_22_33_44_55_66.speaker"));
+
+    // Should match wired headphones / headsets / earbuds
+    try std.testing.expect(SysStatus.isHeadphoneOrEarbud("alsa_output.pci-0000_06_00.6.HiFi__Headphones__sink"));
+    try std.testing.expect(SysStatus.isHeadphoneOrEarbud("alsa_output.usb-Generic_USB_Headset-00.analog-stereo"));
+    try std.testing.expect(SysStatus.isHeadphoneOrEarbud("analog-output-headphones"));
+
+    // Should match bluetooth earphones / earbuds / headsets
+    try std.testing.expect(SysStatus.isHeadphoneOrEarbud("bluez_output.B0_38_E2_FB_21_DC.1"));
+    try std.testing.expect(SysStatus.isHeadphoneOrEarbud("AirPods Pro"));
+    try std.testing.expect(SysStatus.isHeadphoneOrEarbud("Galaxy Buds2 Pro"));
+    try std.testing.expect(SysStatus.isHeadphoneOrEarbud("Sony WH-1000XM4 Headset"));
+    try std.testing.expect(SysStatus.isHeadphoneOrEarbud("Nothing Ear (2)"));
+
+    var status = SysStatus.init(std.testing.allocator);
+    defer status.deinit();
+
+    status.setEarbudSafety(false);
+    try std.testing.expect(!status.earbud_safety_enabled);
+    if (status.shared) |s| {
+        try std.testing.expect(!s.earbud_safety_enabled.load(.acquire));
+    }
+
+    status.setEarbudSafety(true);
+    try std.testing.expect(status.earbud_safety_enabled);
+    if (status.shared) |s| {
+        try std.testing.expect(s.earbud_safety_enabled.load(.acquire));
     }
 }

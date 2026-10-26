@@ -209,8 +209,12 @@ pub const Bar = struct {
             {
                 switch (area.action) {
                     .workspace => |ws_idx| {
-                        if (button == 272) { // BTN_LEFT: switch to workspace
-                            ipc.switchWorkspace(ws_idx);
+                        if (button == 272) { // BTN_LEFT: if current active workspace, toggle tile/scroller; otherwise switch
+                            if (ipc.isWorkspaceActive(ws_idx)) {
+                                ipc.switchLayout();
+                            } else {
+                                ipc.switchWorkspace(ws_idx);
+                            }
                         } else if (button == 273) { // BTN_RIGHT: toggle workspace in current view
                             ipc.toggleWorkspace(ws_idx);
                         }

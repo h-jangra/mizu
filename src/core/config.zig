@@ -127,6 +127,9 @@ pub const Config = struct {
     recorder_cmd: []const u8 = "gpu-screen-recorder -w screen -f 60 -fm cfr -fallback-cpu-encoding yes -o \"$HOME/Videos/recording_$(date +%Y%m%d_%H%M%S).mp4\"",
     recorder_hide_when_idle: bool = false,
 
+    // Earphone / Earbud safety volume limiting (auto limit to 20% on connect)
+    earphone_safety: bool = true,
+
     // Wallpaper configuration
     wallpaper: ?[]const u8 = null,
 
@@ -378,6 +381,8 @@ pub const Config = struct {
                     cfg.recorder_cmd = allocator.dupe(u8, val) catch cfg.recorder_cmd;
                 } else if (std.mem.eql(u8, key, "recorder_hide_when_idle")) {
                     cfg.recorder_hide_when_idle = std.mem.eql(u8, val, "true") or std.mem.eql(u8, val, "1");
+                } else if (std.mem.eql(u8, key, "earphone_safety") or std.mem.eql(u8, key, "earbud_safety")) {
+                    cfg.earphone_safety = std.mem.eql(u8, val, "true") or std.mem.eql(u8, val, "1");
                 } else if (std.mem.eql(u8, key, "bar_bg")) {
                     cfg.theme.bar_bg = theme.Color.fromHex(val);
                 } else if (std.mem.eql(u8, key, "bar_border")) {

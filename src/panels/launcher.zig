@@ -1352,7 +1352,7 @@ pub const Launcher = struct {
             &self.font,
             w,
             h,
-            1,
+            scale,
             -1,
             -1,
             false,
@@ -1362,11 +1362,16 @@ pub const Launcher = struct {
 
         ui.root(.{
             .direction = .column,
-            .padding = .all(Launcher.OUTER_PAD),
-            .gap = Launcher.INPUT_GAP,
+            .padding = .{
+                .left = ui.su(@intCast(Launcher.OUTER_PAD)),
+                .right = ui.su(@intCast(Launcher.OUTER_PAD)),
+                .top = ui.su(@intCast(Launcher.OUTER_PAD)),
+                .bottom = ui.su(@intCast(Launcher.OUTER_PAD)),
+            },
+            .gap = ui.su(@intCast(Launcher.INPUT_GAP)),
             .bg = self.cfg.theme.panel_bg,
-            .radius = @floatFromInt(self.cfg.theme.radius_panel),
-            .border = 1,
+            .radius = ui.f(self.cfg.theme.radius_panel),
+            .border = ui.su(1),
             .border_color = self.cfg.theme.panel_border,
         });
 
@@ -1377,13 +1382,13 @@ pub const Launcher = struct {
             self.cfg.theme.pill_border;
         _ = ui.open(.{
             .width = .{ .grow = .{} },
-            .height = .{ .fixed = @floatFromInt(Launcher.INPUT_H) },
+            .height = .{ .fixed = ui.s(Launcher.INPUT_H) },
             .direction = .row,
-            .padding = .{ .left = 16, .right = 16 },
-            .gap = 8,
+            .padding = .{ .left = ui.su(16), .right = ui.su(16) },
+            .gap = ui.su(8),
             .bg = self.cfg.theme.pill_bg,
-            .radius = @floatFromInt(self.cfg.theme.radius_pill),
-            .border = 1,
+            .radius = ui.f(self.cfg.theme.radius_pill),
+            .border = ui.su(1),
             .border_color = search_border,
             .align_y = .center,
         });
@@ -1463,18 +1468,18 @@ pub const Launcher = struct {
 
                 _ = ui.open(.{
                     .width = .{ .grow = .{} },
-                    .height = .{ .fixed = @floatFromInt(Launcher.ROW_H) },
+                    .height = .{ .fixed = ui.s(Launcher.ROW_H) },
                     .direction = .row,
-                    .padding = .{ .left = 10, .right = 12 },
-                    .gap = 10,
+                    .padding = .{ .left = ui.su(10), .right = ui.su(12) },
+                    .gap = ui.su(10),
                     .bg = if (is_selected)
                         self.cfg.theme.card_selected_bg
                     else if (is_hovered)
                         self.cfg.theme.card_hover_bg
                     else
                         null,
-                    .radius = @floatFromInt(self.cfg.theme.radius_button),
-                    .border = if (is_selected or is_hovered) 1 else 0,
+                    .radius = ui.f(self.cfg.theme.radius_button),
+                    .border = if (is_selected or is_hovered) ui.su(1) else 0,
                     .border_color = if (is_selected) self.cfg.theme.accent else if (is_hovered) self.cfg.theme.border else null,
                     .align_y = .center,
                 });
@@ -1488,8 +1493,8 @@ pub const Launcher = struct {
                             .width = .{ .fixed = @floatFromInt(icon_s) },
                             .height = .{ .fixed = @floatFromInt(icon_s) },
                             .bg = getAppToneColor(self.cfg.theme, item.title),
-                            .radius = @floatFromInt(8 * scale),
-                            .border = 1,
+                            .radius = ui.f(8),
+                            .border = ui.su(1),
                             .border_color = self.cfg.theme.border,
                             .align_x = .center,
                             .align_y = .center,
@@ -1505,8 +1510,8 @@ pub const Launcher = struct {
                         .width = .{ .fixed = @floatFromInt(icon_s) },
                         .height = .{ .fixed = @floatFromInt(icon_s) },
                         .bg = self.cfg.theme.elevated,
-                        .radius = @floatFromInt(8 * scale),
-                        .border = 1,
+                        .radius = ui.f(8),
+                        .border = ui.su(1),
                         .border_color = self.cfg.theme.border,
                         .align_x = .center,
                         .align_y = .center,
@@ -1527,7 +1532,7 @@ pub const Launcher = struct {
                     .width = .{ .grow = .{} },
                     .height = .{ .grow = .{} },
                     .direction = .column,
-                    .gap = 2,
+                    .gap = ui.su(2),
                     .align_y = .center,
                 });
 
@@ -1551,16 +1556,16 @@ pub const Launcher = struct {
                 if (badge_str) |b_str| {
                     _ = ui.open(.{
                         .width = .fit,
-                        .height = .{ .fixed = @floatFromInt(22 * scale) },
-                        .padding = .{ .left = @intCast(8 * scale), .right = @intCast(8 * scale) },
+                        .height = .{ .fixed = ui.s(22) },
+                        .padding = .{ .left = ui.su(8), .right = ui.su(8) },
                         .bg = if (is_confirming)
                             self.cfg.theme.accent
                         else if (is_selected)
                             self.cfg.theme.elevated
                         else
                             self.cfg.theme.surface,
-                        .radius = @floatFromInt(5 * scale),
-                        .border = 1,
+                        .radius = ui.f(5),
+                        .border = ui.su(1),
                         .border_color = self.cfg.theme.border,
                         .align_x = .center,
                         .align_y = .center,

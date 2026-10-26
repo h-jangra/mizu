@@ -209,6 +209,19 @@ pub const MangoIpc = struct {
         _ = c.send(sock, cmd.ptr, cmd.len, 0);
     }
 
+    pub fn isWorkspaceActive(self: *const MangoIpc, index: u32) bool {
+        for (self.tags) |tag| {
+            if (tag.index == index and tag.is_active) return true;
+        }
+        return false;
+    }
+
+    pub fn switchLayout(self: *MangoIpc) void {
+        self.sendCommand("dispatch switch_layout\n", .{});
+        const cmd = "mmsg dispatch switch_layout 2>/dev/null || true";
+        @import("./system_status.zig").spawnCmd(cmd);
+    }
+
     pub fn switchWorkspace(self: *MangoIpc, index: u32) void {
         self.sendCommand("dispatch view,{d},0\n", .{index});
         var cmd_buf: [64]u8 = undefined;

@@ -511,8 +511,8 @@ pub const ClipboardPanel = struct {
     font: renderer.Font,
 
     // 2-column layout dimensions
-    width: u32 = 1500,
-    height: u32 = 750,
+    width: u32 = 980,
+    height: u32 = 620,
     ui_scale: u32 = 1,
     running: bool = true,
 
@@ -1218,7 +1218,7 @@ pub const ClipboardPanel = struct {
         const title_sz = self.cfg.typography.title * scale;
         const button_sz = self.cfg.typography.button_text * scale;
         const ui_sz = self.cfg.typography.ui * scale;
-        const col1_w = 480 * scale;
+        const col1_w = 460 * scale;
 
         const total_filtered = self.filtered_indices.items.len;
         const selected_actual: ?usize = if (total_filtered > 0 and self.selected_index < total_filtered)
@@ -1504,17 +1504,22 @@ pub const ClipboardPanel = struct {
         selected_actual_idx: ?usize,
         scale: u32,
     ) !void {
-        const card_y = y + 36;
-        const card_h: u32 = if (h > 36) h - 36 else 0;
+        const iscale: i32 = @intCast(scale);
+        const card_y = y + 36 * iscale;
+        const card_h: u32 = if (h > 36 * scale) h - 36 * scale else 0;
+        const title_sz = self.cfg.typography.title * scale;
+        const sec_sz = self.cfg.typography.secondary * scale;
+        const ui_sz = self.cfg.typography.ui * scale;
+        const heading_sz = self.cfg.typography.heading * scale;
 
         if (selected_actual_idx == null or selected_actual_idx.? >= self.items.items.len) {
-            target.fillSquircle(x, card_y, w, card_h, 10, self.cfg.theme.surface);
-            target.drawSquircleBorder(x, card_y, w, card_h, 10, 1, self.cfg.theme.border);
+            target.fillSquircle(x, card_y, w, card_h, 10 * scale, self.cfg.theme.surface);
+            target.drawSquircleBorder(x, card_y, w, card_h, 10 * scale, 1, self.cfg.theme.border);
 
             const icon_name = if (self.history_loading) "refresh" else "clipboard";
             const ph_msg = if (self.history_loading) "Loading history..." else "Select an item to preview";
-            const icon_sz = self.cfg.typography.title * scale;
-            const msg_w = target.measureTextWithSize(&self.font, ph_msg, self.cfg.typography.ui);
+            const icon_sz = title_sz;
+            const msg_w = target.measureTextWithSize(&self.font, ph_msg, ui_sz);
 
             const center_x = x + @divTrunc(@as(i32, @intCast(w)), 2);
             const center_y = card_y + @divTrunc(@as(i32, @intCast(card_h)), 2);
@@ -1526,10 +1531,10 @@ pub const ClipboardPanel = struct {
                 icon_sz,
                 scale,
                 center_x,
-                center_y - 14,
+                center_y - 14 * iscale,
                 self.cfg.theme.text_muted,
             );
-            target.drawTextWithSize(&self.font, ph_msg, center_x - @divTrunc(@as(i32, @intCast(msg_w)), 2), center_y + 22, self.cfg.typography.ui, self.cfg.theme.text_muted);
+            target.drawTextWithSize(&self.font, ph_msg, center_x - @divTrunc(@as(i32, @intCast(msg_w)), 2), center_y + 22 * iscale, ui_sz, self.cfg.theme.text_muted);
             return;
         }
 
@@ -1542,23 +1547,23 @@ pub const ClipboardPanel = struct {
             const cached_img = self.image_cache.get(item.id);
             if (cached_img) |img| {
                 // Preview Header
-                target.drawTextWithSize(&self.font, "Preview", x, y + 20, self.cfg.typography.title, self.cfg.theme.text_bright);
+                target.drawTextWithSize(&self.font, "Preview", x, y + 20 * iscale, title_sz, self.cfg.theme.text_bright);
 
                 var meta_buf: [64]u8 = undefined;
                 const shown_w = if (item.image_width > 0) item.image_width else img.width;
                 const shown_h = if (item.image_height > 0) item.image_height else img.height;
                 const meta_str = std.fmt.bufPrint(&meta_buf, "{d}x{d} · {s}", .{ shown_w, shown_h, item.image_format }) catch "";
-                const mw = target.measureTextWithSize(&self.font, meta_str, self.cfg.typography.secondary);
+                const mw = target.measureTextWithSize(&self.font, meta_str, sec_sz);
                 const meta_x = x + @as(i32, @intCast(w)) - @as(i32, @intCast(mw));
-                target.drawTextWithSize(&self.font, meta_str, meta_x, y + 20, self.cfg.typography.secondary, self.cfg.theme.text_muted);
+                target.drawTextWithSize(&self.font, meta_str, meta_x, y + 20 * iscale, sec_sz, self.cfg.theme.text_muted);
 
                 // Content Card
-                target.fillSquircle(x, card_y, w, card_h, 10, self.cfg.theme.surface);
-                target.drawSquircleBorder(x, card_y, w, card_h, 10, 1, self.cfg.theme.border);
+                target.fillSquircle(x, card_y, w, card_h, 10 * scale, self.cfg.theme.surface);
+                target.drawSquircleBorder(x, card_y, w, card_h, 10 * scale, 1, self.cfg.theme.border);
 
                 // Calculate thumbnail dimensions (maintain aspect ratio, max 90% of card)
-                const max_w = w - 40;
-                const max_h = card_h - 40;
+                const max_w = if (w > 40 * scale) w - 40 * scale else w;
+                const max_h = if (card_h > 40 * scale) card_h - 40 * scale else card_h;
                 var thumb_w: u32 = img.width;
                 var thumb_h: u32 = img.height;
                 const aspect = @as(f32, @floatFromInt(img.width)) / @as(f32, @floatFromInt(img.height));
@@ -1581,18 +1586,18 @@ pub const ClipboardPanel = struct {
                 // Image info below thumbnail
                 var info_buf: [64]u8 = undefined;
                 const info_str = std.fmt.bufPrint(&info_buf, "{d} × {d} · {s}", .{ shown_w, shown_h, item.image_format }) catch "";
-                target.drawTextWithSize(&self.font, info_str, x + 20, thumb_y + @as(i32, @intCast(thumb_h)) + 16, self.cfg.typography.secondary, self.cfg.theme.text_muted);
+                target.drawTextWithSize(&self.font, info_str, x + 20 * iscale, thumb_y + @as(i32, @intCast(thumb_h)) + 16 * iscale, sec_sz, self.cfg.theme.text_muted);
 
                 return;
             } else {
                 // Image not yet decoded or decode failed - show placeholder
-                target.fillSquircle(x, card_y, w, card_h, 10, self.cfg.theme.surface);
-                target.drawSquircleBorder(x, card_y, w, card_h, 10, 1, self.cfg.theme.border);
+                target.fillSquircle(x, card_y, w, card_h, 10 * scale, self.cfg.theme.surface);
+                target.drawSquircleBorder(x, card_y, w, card_h, 10 * scale, 1, self.cfg.theme.border);
 
                 const icon_name = "cat";
                 const ph_msg = "Loading preview...";
-                const icon_sz = self.cfg.typography.title * scale;
-                const msg_w = target.measureTextWithSize(&self.font, ph_msg, self.cfg.typography.ui);
+                const icon_sz = title_sz;
+                const msg_w = target.measureTextWithSize(&self.font, ph_msg, ui_sz);
                 const center_x = x + @divTrunc(@as(i32, @intCast(w)), 2);
                 const center_y = card_y + @divTrunc(@as(i32, @intCast(card_h)), 2);
                 icons.drawSvgIcon(
@@ -1602,10 +1607,10 @@ pub const ClipboardPanel = struct {
                     icon_sz,
                     scale,
                     center_x,
-                    center_y - 14,
+                    center_y - 14 * iscale,
                     self.cfg.theme.text_muted,
                 );
-                target.drawTextWithSize(&self.font, ph_msg, center_x - @divTrunc(@as(i32, @intCast(msg_w)), 2), center_y + 22, self.cfg.typography.ui, self.cfg.theme.text_muted);
+                target.drawTextWithSize(&self.font, ph_msg, center_x - @divTrunc(@as(i32, @intCast(msg_w)), 2), center_y + 22 * iscale, ui_sz, self.cfg.theme.text_muted);
                 return;
             }
         }
@@ -1620,17 +1625,17 @@ pub const ClipboardPanel = struct {
         const char_count = content.len;
 
         // Preview Header: restrained title & metadata
-        target.drawTextWithSize(&self.font, "Preview", x, y + 20, self.cfg.typography.title, self.cfg.theme.text_bright);
+        target.drawTextWithSize(&self.font, "Preview", x, y + 20 * iscale, title_sz, self.cfg.theme.text_bright);
 
         var meta_buf: [64]u8 = undefined;
         const meta_str = std.fmt.bufPrint(&meta_buf, "{d} chars · {d} lines", .{ char_count, line_count }) catch "";
-        const mw = target.measureTextWithSize(&self.font, meta_str, self.cfg.typography.secondary);
+        const mw = target.measureTextWithSize(&self.font, meta_str, sec_sz);
         const meta_x = x + @as(i32, @intCast(w)) - @as(i32, @intCast(mw));
-        target.drawTextWithSize(&self.font, meta_str, meta_x, y + 20, self.cfg.typography.secondary, self.cfg.theme.text_muted);
+        target.drawTextWithSize(&self.font, meta_str, meta_x, y + 20 * iscale, sec_sz, self.cfg.theme.text_muted);
 
         // Content Card (Flat surface, 10px squircle radius)
-        target.fillSquircle(x, card_y, w, card_h, 10, self.cfg.theme.surface);
-        target.drawSquircleBorder(x, card_y, w, card_h, 10, 1, self.cfg.theme.border);
+        target.fillSquircle(x, card_y, w, card_h, 10 * scale, self.cfg.theme.surface);
+        target.drawSquircleBorder(x, card_y, w, card_h, 10 * scale, 1, self.cfg.theme.border);
 
         // Check if content is a simple hex color
         const clean_str = std.mem.trim(u8, content, " \t\r\n");
@@ -1638,30 +1643,30 @@ pub const ClipboardPanel = struct {
 
         if (is_hex) {
             const parsed_color = theme.Color.fromHex(clean_str);
-            const swatch_size: u32 = 64;
-            const swatch_x = x + 24;
-            const swatch_y = card_y + 28;
+            const swatch_size: u32 = 64 * scale;
+            const swatch_x = x + 24 * iscale;
+            const swatch_y = card_y + 28 * iscale;
 
-            target.fillSquircle(swatch_x, swatch_y, swatch_size, swatch_size, 10, parsed_color);
-            target.drawSquircleBorder(swatch_x, swatch_y, swatch_size, swatch_size, 10, 1, self.cfg.theme.border);
+            target.fillSquircle(swatch_x, swatch_y, swatch_size, swatch_size, 10 * scale, parsed_color);
+            target.drawSquircleBorder(swatch_x, swatch_y, swatch_size, swatch_size, 10 * scale, 1, self.cfg.theme.border);
 
-            const detail_x = swatch_x + @as(i32, @intCast(swatch_size)) + 20;
-            target.drawTextWithSize(&self.font, clean_str, detail_x, swatch_y + 26, self.cfg.typography.heading, self.cfg.theme.text_bright);
+            const detail_x = swatch_x + @as(i32, @intCast(swatch_size)) + 20 * iscale;
+            target.drawTextWithSize(&self.font, clean_str, detail_x, swatch_y + 26 * iscale, heading_sz, self.cfg.theme.text_bright);
 
             var rgb_buf: [48]u8 = undefined;
             const rgb_str = std.fmt.bufPrint(&rgb_buf, "rgb({d}, {d}, {d})", .{ parsed_color.r, parsed_color.g, parsed_color.b }) catch "";
-            target.drawTextWithSize(&self.font, rgb_str, detail_x, swatch_y + 52, self.cfg.typography.secondary, self.cfg.theme.text_muted);
+            target.drawTextWithSize(&self.font, rgb_str, detail_x, swatch_y + 52 * iscale, sec_sz, self.cfg.theme.text_muted);
         } else {
             // Multi-line text display with comfortable padding and clean line spacing
-            const gutter_x = x + 40;
-            target.fillRect(gutter_x, card_y + 12, 1, card_h - 24, Color.init(20, self.cfg.theme.border.r, self.cfg.theme.border.g, self.cfg.theme.border.b));
+            const gutter_x = x + 40 * iscale;
+            target.fillRect(gutter_x, card_y + 12 * iscale, 1, if (card_h > 24 * scale) card_h - 24 * scale else 0, Color.init(20, self.cfg.theme.border.r, self.cfg.theme.border.g, self.cfg.theme.border.b));
 
-            const max_line_w = w - 60;
+            const max_line_w = if (w > 60 * scale) w - 60 * scale else w;
             const max_visible_lines: usize = 22;
-            const line_step: i32 = 25;
+            const line_step: i32 = @as(i32, @intCast(24 * scale));
             var line_idx: usize = 0;
             var line_start: usize = 0;
-            var cur_line_y: i32 = card_y + 26;
+            var cur_line_y: i32 = card_y + 26 * iscale;
 
             while (line_start < content.len and line_idx < max_visible_lines) {
                 var line_end = line_start;
@@ -1674,9 +1679,9 @@ pub const ClipboardPanel = struct {
                 // Muted line number
                 var num_buf: [16]u8 = undefined;
                 const num_str = std.fmt.bufPrint(&num_buf, "{d}", .{line_idx + 1}) catch "";
-                const nw = target.measureTextWithSize(&self.font, num_str, self.cfg.typography.secondary);
-                const nx = gutter_x - @as(i32, @intCast(nw)) - 8;
-                target.drawTextWithSize(&self.font, num_str, nx, cur_line_y, self.cfg.typography.secondary, self.cfg.theme.text_muted);
+                const nw = target.measureTextWithSize(&self.font, num_str, sec_sz);
+                const nx = gutter_x - @as(i32, @intCast(nw)) - 8 * iscale;
+                target.drawTextWithSize(&self.font, num_str, nx, cur_line_y, sec_sz, self.cfg.theme.text_muted);
 
                 // Sanitize tabs and control chars
                 var clean_buf: [256]u8 = undefined;
@@ -1695,8 +1700,8 @@ pub const ClipboardPanel = struct {
                 const clean_slice = clean_buf[0..clen];
 
                 var trunc_buf: [260]u8 = undefined;
-                const display_line = truncateStrWithSize(target, &self.font, clean_slice, self.cfg.typography.ui, max_line_w, &trunc_buf);
-                target.drawTextWithSize(&self.font, display_line, gutter_x + 12, cur_line_y, self.cfg.typography.ui, self.cfg.theme.text_bright);
+                const display_line = truncateStrWithSize(target, &self.font, clean_slice, ui_sz, max_line_w, &trunc_buf);
+                target.drawTextWithSize(&self.font, display_line, gutter_x + 12 * iscale, cur_line_y, ui_sz, self.cfg.theme.text_bright);
 
                 cur_line_y += line_step;
                 line_idx += 1;
@@ -1716,7 +1721,7 @@ pub const ClipboardPanel = struct {
 
                 var rem_buf: [64]u8 = undefined;
                 const rem_str = std.fmt.bufPrint(&rem_buf, "... and {d} more lines", .{rem_lines}) catch "";
-                target.drawTextWithSize(&self.font, rem_str, gutter_x + 12, cur_line_y, self.cfg.typography.secondary, self.cfg.theme.text_muted);
+                target.drawTextWithSize(&self.font, rem_str, gutter_x + 12 * iscale, cur_line_y, sec_sz, self.cfg.theme.text_muted);
             }
         }
     }
@@ -1811,8 +1816,8 @@ test "ClipboardPanel initialization, 2-column layout and filtering" {
         panel.items.deinit(allocator);
     }
 
-    try std.testing.expectEqual(@as(u32, 1500), panel.width);
-    try std.testing.expectEqual(@as(u32, 750), panel.height);
+    try std.testing.expectEqual(@as(u32, 980), panel.width);
+    try std.testing.expectEqual(@as(u32, 620), panel.height);
 
     var item1 = ClipItem{ .id = 1 };
     const t1 = "https://example.com";

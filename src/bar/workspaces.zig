@@ -7,15 +7,15 @@ pub fn render(ctx: *types.BarContext, ui: *ui_mod.Ui) !void {
         if (!tag.is_active and !tag.is_urgent and tag.client_count == 0) continue;
 
         const w: u32 = if (tag.is_active)
-            28
+            32
         else if (tag.is_urgent)
-            20
+            24
         else if (tag.client_count > 0)
-            14
+            16
         else
-            8;
+            10;
 
-        const pill_h: u32 = 8;
+        const pill_h: u32 = 12;
 
         const id = "bar-workspace";
         const hovered = ui.hovered(id, tag.index);

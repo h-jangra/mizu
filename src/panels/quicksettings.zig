@@ -65,6 +65,7 @@ pub const Action = union(enum) {
     select_audio_source: usize,
     set_audio_tab_output,
     set_audio_tab_input,
+    toggle_earbud_safety,
     set_recording_mode_system,
     set_recording_mode_mic,
     set_recording_mode_none,
@@ -250,8 +251,10 @@ const QsSliderDraw = struct {
         const tip_y: i32 = @as(i32, @intFromFloat(thumb_cy - thumb_r)) - @as(i32, @intCast(tip_h)) - @as(i32, @intCast(1 * scale));
 
         const is_active = self.hovered or (self.panel.active_slider != null and self.panel.active_slider.? == self.kind);
+        if (!is_active) return;
+
         target.fillRoundedRect(tip_x, tip_y, tip_w, tip_h, tip_h / 2, self.panel.cfg.theme.elevated);
-        target.drawRoundedBorder(tip_x, tip_y, tip_w, tip_h, tip_h / 2, 1, if (is_active) self.panel.cfg.theme.accent else self.panel.cfg.theme.glass_border);
+        target.drawRoundedBorder(tip_x, tip_y, tip_w, tip_h, tip_h / 2, 1, self.panel.cfg.theme.accent);
 
         const baseline = tip_y + @as(i32, @intCast(tip_h / 2)) + @divTrunc(self.panel.font.ascender_px * @as(i32, @intCast(font_sz)), @as(i32, @intCast(self.panel.font.size_px * 2))) - @as(i32, @intCast(scale));
         target.drawTextCentered(&self.panel.font, num_str, tip_x + @as(i32, @intCast(tip_w / 2)), baseline, font_sz, self.panel.cfg.theme.text_bright);
@@ -370,7 +373,7 @@ pub const QuickSettings = struct {
             },
             .display_menu => 520,
             .wifi_menu, .bluetooth_menu => 480,
-            .audio_menu => 460,
+            .audio_menu => 510,
             .notifications_menu => 460,
             .recording_menu => 420,
             .power_menu => 360,
@@ -922,9 +925,20 @@ pub const QuickSettings = struct {
                             var cmd_buf: [64]u8 = undefined;
                             const cmd = std.fmt.bufPrint(&cmd_buf, "wpctl set-default {d}", .{item.id}) catch return true;
                             sys_status.spawnCmd(cmd);
+                            if (self.sys.earbud_safety_enabled and sys_status.SysStatus.isHeadphoneOrEarbud(item.name[0..item.name_len])) {
+                                if (self.sys.volume_percent > 20) {
+                                    sys_status.spawnCmd("wpctl set-volume -l 2.0 @DEFAULT_AUDIO_SINK@ 20% 2>/dev/null || pactl set-sink-volume @DEFAULT_SINK@ 20% 2>/dev/null || true");
+                                    self.sys.volume_percent = 20;
+                                    self.sys.volume_muted = false;
+                                }
+                            }
                             self.sys.updateVolume();
                             self.triggerAudioScan();
                         }
+                        return true;
+                    },
+                    .toggle_earbud_safety => {
+                        self.sys.setEarbudSafety(!self.sys.earbud_safety_enabled);
                         return true;
                     },
                     .select_audio_source => |idx| {
@@ -3637,6 +3651,72 @@ pub const QuickSettings = struct {
                 }
             },
             .audio_menu => {
+                // Earphone Safety Volume Toggle Card
+                {
+                    const is_enabled = self.sys.earbud_safety_enabled;
+                    const hov = ui.hovered("qs-earbud-safety", 0);
+                    _ = ui.open(.{
+                        .id = "qs-earbud-safety",
+                        .width = .{ .grow = .{} },
+                        .height = .{ .fixed = ui.s(44) },
+                        .direction = .row,
+                        .padding = .{ .left = ui.su(10), .right = ui.su(10) },
+                        .gap = ui.su(10),
+                        .bg = if (hov) self.cfg.theme.btn_raised_hover else self.cfg.theme.surface,
+                        .radius = ui.f(self.cfg.theme.radius_button),
+                        .border = ui.su(1),
+                        .border_color = if (is_enabled) self.cfg.theme.accent else self.cfg.theme.border,
+                        .align_y = .center,
+                    });
+
+                    _ = ui.open(.{
+                        .width = .{ .fixed = ui.s(26) },
+                        .height = .{ .fixed = ui.s(26) },
+                        .bg = if (is_enabled) self.cfg.theme.toggle_on else self.cfg.theme.btn_raised_bg,
+                        .radius = ui.f(13),
+                        .border = ui.su(1),
+                        .border_color = self.cfg.theme.glass_border,
+                        .align_x = .center,
+                        .align_y = .center,
+                    });
+                    ui.icon("volume-low", 15 * scale, if (is_enabled) self.cfg.theme.accent_fg else self.cfg.theme.text_bright, 0);
+                    ui.close();
+
+                    _ = ui.open(.{
+                        .width = .{ .grow = .{} },
+                        .height = .{ .grow = .{} },
+                        .direction = .column,
+                        .gap = 0,
+                        .align_y = .center,
+                        .clip_horizontal = true,
+                    });
+                    ui.text("Earphone Safety Volume", .{ .size = sub_sz, .color = self.cfg.theme.text_bright, .line_height = @intCast(sub_sz + 1) });
+                    ui.text("Limit to 20% when earphones connect", .{ .size = sec_sz, .color = if (is_enabled) self.cfg.theme.accent else self.cfg.theme.text_muted, .line_height = @intCast(sec_sz + 1) });
+                    ui.close();
+
+                    // Switch pill
+                    _ = ui.open(.{
+                        .width = .{ .fixed = ui.s(36) },
+                        .height = .{ .fixed = ui.s(20) },
+                        .bg = if (is_enabled) self.cfg.theme.accent else self.cfg.theme.slider_track,
+                        .radius = ui.f(10),
+                        .direction = .row,
+                        .align_y = .center,
+                        .padding = .{ .left = ui.su(3), .right = ui.su(3) },
+                        .align_x = if (is_enabled) .right else .left,
+                    });
+                    _ = ui.open(.{
+                        .width = .{ .fixed = ui.s(14) },
+                        .height = .{ .fixed = ui.s(14) },
+                        .bg = if (is_enabled) self.cfg.theme.accent_fg else self.cfg.theme.text_muted,
+                        .radius = ui.f(7),
+                    });
+                    ui.close(); // knob
+                    ui.close(); // switch
+
+                    ui.close(); // earbud safety card
+                }
+
                 _ = ui.open(.{
                     .width = .{ .grow = .{} },
                     .height = .{ .fixed = ui.s(32) },
@@ -4359,6 +4439,7 @@ pub const QuickSettings = struct {
                 }
             },
             .audio_menu => {
+                if (ui.rectOf("qs-earbud-safety", 0)) |rect| try self.appendRect(rect, scale, .toggle_earbud_safety);
                 if (ui.rectOf("qs-audio-out", 0)) |rect| try self.appendRect(rect, scale, .set_audio_tab_output);
                 if (ui.rectOf("qs-audio-in", 0)) |rect| try self.appendRect(rect, scale, .set_audio_tab_input);
                 const items = if (self.audio_tab == .output) self.sink_items.items else self.source_items.items;
@@ -5256,6 +5337,15 @@ test "QuickSettings audio options tabs and device selection" {
     try qs.hit_areas.append(allocator, .{ .x = 0, .y = 0, .w = 100, .h = 30, .action = .open_audio_menu });
     try std.testing.expect(qs.handlePointerButton(10, 10, 272, true));
     try std.testing.expectEqual(ViewMode.audio_menu, qs.view_mode);
+
+    // Toggle earbud safety
+    const initial_safety = qs.sys.earbud_safety_enabled;
+    qs.hit_areas.clearRetainingCapacity();
+    try qs.hit_areas.append(allocator, .{ .x = 0, .y = 0, .w = 100, .h = 30, .action = .toggle_earbud_safety });
+    try std.testing.expect(qs.handlePointerButton(10, 10, 272, true));
+    try std.testing.expectEqual(!initial_safety, qs.sys.earbud_safety_enabled);
+    try std.testing.expect(qs.handlePointerButton(10, 10, 272, true));
+    try std.testing.expectEqual(initial_safety, qs.sys.earbud_safety_enabled);
 
     qs.hit_areas.clearRetainingCapacity();
     try qs.hit_areas.append(allocator, .{ .x = 0, .y = 0, .w = 100, .h = 30, .action = .back_to_main });
