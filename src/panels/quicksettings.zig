@@ -2955,7 +2955,7 @@ pub const QuickSettings = struct {
             ui.close();
 
             const media_actions = [_]struct { icon: []const u8, act: Action }{
-                .{ .icon = "prev", .act = .media_prev },
+                .{ .icon = "previous", .act = .media_prev },
                 .{ .icon = if (self.sys.mpris_state == .playing) "pause" else "play", .act = .media_play_pause },
                 .{ .icon = "next", .act = .media_next },
             };

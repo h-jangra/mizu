@@ -59,6 +59,7 @@ pub fn spawnNotify(summary: []const u8, body: []const u8) void {
         "/proc/self/exe",
         "mizu",
         "notify",
+        "--no-store",
         @as([*:0]const u8, @ptrCast(&sum_buf)),
         @as([*:0]const u8, @ptrCast(&body_buf)),
         @as(?*anyopaque, null),

@@ -39,7 +39,7 @@ pub fn render(ctx: *types.BarContext, ui: *ui_mod.Ui) !void {
 
     try ctx.linkClick(ui, id, 0, .{
         .dual_command = .{
-            .left = "mizu memory-monitor",
+            .left = "mizu system-monitor",
             .right = "mizu quicksettings",
         },
     }, null);

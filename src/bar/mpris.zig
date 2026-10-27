@@ -1,80 +1,102 @@
-const std = @import("std");
-const renderer = @import("../core/renderer.zig");
 const types = @import("context.zig");
 const ui_mod = @import("../core/ui.zig");
-
-fn truncateText(font: *renderer.Font, text: []const u8, size: u32, max_w: u32, buf: []u8) []const u8 {
-    if (font.measureTextWithSize(text, size) <= max_w) return text;
-
-    const ellipsis = "...";
-    const ellipsis_w = font.measureTextWithSize(ellipsis, size);
-    if (ellipsis_w >= max_w) return "";
-
-    const available_w = max_w - ellipsis_w;
-    var view = std.unicode.Utf8View.init(text) catch return "";
-    var iter = view.iterator();
-    var cur_len: usize = 0;
-
-    while (iter.nextCodepoint()) |cp| {
-        var cp_buf: [4]u8 = undefined;
-        const cp_len = std.unicode.utf8Encode(cp, &cp_buf) catch break;
-        if (cur_len + cp_len + ellipsis.len > buf.len) break;
-        @memcpy(buf[cur_len .. cur_len + cp_len], cp_buf[0..cp_len]);
-        const candidate_w = font.measureTextWithSize(buf[0 .. cur_len + cp_len], size);
-        if (candidate_w > available_w) break;
-        cur_len += cp_len;
-    }
-
-    if (cur_len == 0) return "";
-    @memcpy(buf[cur_len .. cur_len + ellipsis.len], ellipsis);
-    return buf[0 .. cur_len + ellipsis.len];
-}
 
 pub fn render(ctx: *types.BarContext, ui: *ui_mod.Ui) !void {
     if (ctx.sys.mpris_state == .stopped or ctx.sys.mpris_track_len == 0) return;
 
     const playing = ctx.sys.mpris_state == .playing;
-    const icon = if (playing) "󰎆" else "󰏥";
-    const icon_color = if (playing) ctx.cfg.theme.accent else ctx.cfg.theme.text_muted;
     const icon_size = ctx.iconFontSize();
-    const text_size = ctx.textFontSize();
-
-    var buf: [128]u8 = undefined;
-    const text = truncateText(
-        ctx.font,
-        ctx.sys.mpris_track[0..ctx.sys.mpris_track_len],
-        text_size,
-        @as(u32, @intFromFloat(ui.f(260))),
-        &buf,
-    );
-    if (text.len == 0) return;
 
     const id = "bar-mpris";
     const hovered = ui.hovered(id, 0);
-    const bg = if (hovered)
-        ctx.cfg.theme.pill_hover
-    else if (playing)
-        ctx.cfg.theme.mpris_playing_bg
+    const bg = if (hovered) ctx.cfg.theme.pill_hover else ctx.cfg.theme.clock_bg;
+    const border_col = if (hovered)
+        ctx.cfg.theme.accent
+    else if (ctx.cfg.theme.pill_border.a > 0)
+        ctx.cfg.theme.pill_border
     else
-        ctx.cfg.theme.mpris_paused_bg;
+        null;
 
     _ = ui.open(.{
         .id = id,
         .width = .fit,
         .height = .{ .grow = .{} },
         .padding = .{
-            .left = ui.su(8),
-            .right = ui.su(8),
+            .left = ui.su(4),
+            .right = ui.su(4),
         },
-        .gap = ui.su(6),
+        .gap = ui.su(2),
         .bg = bg,
+        .radius = ui.f(ctx.cfg.pill_radius),
+        .border = if (border_col != null) ui.su(1) else 0,
+        .border_color = border_col,
+        .align_x = .center,
+        .align_y = .center,
+    });
+
+    const slot_w = @as(f32, @floatFromInt(icon_size)) + ui.s(10);
+
+    // 1. Previous button
+    const prev_id = "bar-mpris-prev";
+    const prev_hov = ui.hovered(prev_id, 0);
+    _ = ui.open(.{
+        .id = prev_id,
+        .width = .{ .fixed = slot_w },
+        .height = .{ .grow = .{} },
+        .bg = if (prev_hov) ctx.cfg.theme.elevated else null,
         .radius = ui.f(ctx.cfg.pill_radius),
         .align_x = .center,
         .align_y = .center,
     });
-    ui.text(icon, .{ .size = icon_size, .color = icon_color });
-    ui.text(text, .{ .size = text_size, .color = ctx.cfg.theme.text_main });
+    ui.icon("previous", icon_size, if (prev_hov) ctx.cfg.theme.accent else ctx.cfg.theme.clock_fg, 0);
     ui.close();
 
-    try ctx.linkClick(ui, id, 0, .{ .command = "playerctl play-pause" }, null);
+    // 2. Play/Pause button
+    const play_id = "bar-mpris-play";
+    const play_hov = ui.hovered(play_id, 0);
+    const play_icon = if (playing) "pause" else "play";
+    const play_fg = if (play_hov)
+        ctx.cfg.theme.accent
+    else if (playing)
+        ctx.cfg.theme.accent
+    else
+        ctx.cfg.theme.clock_fg;
+
+    _ = ui.open(.{
+        .id = play_id,
+        .width = .{ .fixed = slot_w },
+        .height = .{ .grow = .{} },
+        .bg = if (play_hov) ctx.cfg.theme.elevated else null,
+        .radius = ui.f(ctx.cfg.pill_radius),
+        .align_x = .center,
+        .align_y = .center,
+    });
+    ui.icon(play_icon, icon_size, play_fg, 0);
+    ui.close();
+
+    // 3. Next button
+    const next_id = "bar-mpris-next";
+    const next_hov = ui.hovered(next_id, 0);
+    _ = ui.open(.{
+        .id = next_id,
+        .width = .{ .fixed = slot_w },
+        .height = .{ .grow = .{} },
+        .bg = if (next_hov) ctx.cfg.theme.elevated else null,
+        .radius = ui.f(ctx.cfg.pill_radius),
+        .align_x = .center,
+        .align_y = .center,
+    });
+    ui.icon("next", icon_size, if (next_hov) ctx.cfg.theme.accent else ctx.cfg.theme.clock_fg, 0);
+    ui.close();
+
+    ui.close();
+
+    try ctx.linkClick(ui, prev_id, 0, .{ .command = "playerctl previous" }, null);
+    try ctx.linkClick(ui, play_id, 0, .{
+        .dual_command = .{
+            .left = "playerctl play-pause",
+            .right = "mizu quicksettings",
+        },
+    }, null);
+    try ctx.linkClick(ui, next_id, 0, .{ .command = "playerctl next" }, null);
 }

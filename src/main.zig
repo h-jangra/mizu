@@ -134,8 +134,22 @@ fn onDbusNotification(raw: ?*const notify_dbus.MizuDbusNotification, userdata: ?
 
     store.add(item);
 
-    // Spawn transient notification popup (direct exec, no shell parsing)
-    exec.spawnNotify(summary_slice, body_slice);
+    // Show transient notification popup (fast IPC send if active, otherwise exec)
+    showNotification(summary_slice, body_slice);
+}
+
+fn showNotification(summary: []const u8, body: []const u8) void {
+    var sock_path_buf: [256]u8 = undefined;
+    const sock_path = getOsdSocketPath(&sock_path_buf, .notification);
+
+    var msg_buf: [1024]u8 = undefined;
+    const msg = std.fmt.bufPrint(&msg_buf, "notify:{s}:::{s}\n", .{ summary, body }) catch "notify:Mizu:::\n";
+
+    if (trySendOsdIpc(sock_path, msg)) {
+        return;
+    }
+
+    exec.spawnNotify(summary, body);
 }
 
 const Command = enum {
@@ -158,7 +172,7 @@ const Command = enum {
 };
 
 fn parseCommand(arg: []const u8) ?Command {
-    if (std.mem.eql(u8, arg, "bar")) {
+    if (std.mem.eql(u8, arg, "bar") or std.mem.eql(u8, arg, "daemon") or std.mem.eql(u8, arg, "run") or std.mem.eql(u8, arg, "start")) {
         return .bar;
     } else if (std.mem.eql(u8, arg, "lock")) {
         return .lock;
@@ -172,7 +186,7 @@ fn parseCommand(arg: []const u8) ?Command {
         return .launcher;
     } else if (std.mem.eql(u8, arg, "quicksettings") or std.mem.eql(u8, arg, "qs") or std.mem.eql(u8, arg, "panel") or std.mem.eql(u8, arg, "-q") or std.mem.eql(u8, arg, "--quicksettings")) {
         return .quicksettings;
-    } else if (std.mem.eql(u8, arg, "memory-monitor") or std.mem.eql(u8, arg, "mem-monitor") or std.mem.eql(u8, arg, "memmon")) {
+    } else if (std.mem.eql(u8, arg, "system-monitor") or std.mem.eql(u8, arg, "sysmon") or std.mem.eql(u8, arg, "sys-monitor") or std.mem.eql(u8, arg, "memory-monitor") or std.mem.eql(u8, arg, "mem-monitor") or std.mem.eql(u8, arg, "memmon")) {
         return .memory_monitor;
     } else if (std.mem.eql(u8, arg, "calendar") or std.mem.eql(u8, arg, "cal") or std.mem.eql(u8, arg, "-c") or std.mem.eql(u8, arg, "--calendar")) {
         return .calendar;
@@ -196,18 +210,20 @@ fn parseCommand(arg: []const u8) ?Command {
 
 fn printUsage() void {
     const help_text =
-        \\Usage: mizu <command> [options]
+        \\Usage: mizu [command] [options]
         \\
         \\A lightweight, from-scratch Wayland desktop shell for Void Linux and MangoWC.
+        \\Running 'mizu' without commands starts the desktop shell (bar + notification daemon).
         \\
         \\Commands:
-        \\  bar             Start the top desktop bar
+        \\  (default)       Start the desktop shell daemon (bar + notifications + tray)
+        \\  bar             Start the desktop shell daemon (aliases: daemon, run, start)
         \\  lock            Lock the session with native Wayland lock screen
         \\  power           Open session & power confirmation overlay
         \\  session         Session management (lock, reboot, poweroff, suspend, logout)
         \\  launcher        Open the application launcher overlay (aliases: -l, --launcher)
         \\  quicksettings   Open the quick settings control panel (aliases: qs, panel, -q)
-        \\  memory-monitor  Open the live process memory monitor (aliases: mem-monitor, memmon)
+        \\  system-monitor  Open the live system & process monitor (aliases: sysmon, memory-monitor, memmon)
         \\  calendar        Open interactive month/year calendar (aliases: cal, -c)
         \\  clipboard       Open clipboard history search & manager (aliases: clip)
         \\  notify          Show a desktop notification popup (mizu notify <title> [body])
@@ -221,7 +237,7 @@ fn printUsage() void {
         \\  -h, --help      Display this help message
         \\  -v, --version   Display version information
         \\
-        \\Run 'mizu bar' to launch the desktop status bar, 'mizu lock' to lock the screen, or 'mizu clip' for clipboard history.
+        \\Run 'mizu & disown' to launch the desktop shell in background, 'mizu lock' to lock the screen, or 'mizu clip' for clipboard history.
         \\
     ;
     std.debug.print("{s}", .{help_text});
@@ -268,6 +284,26 @@ fn cleanupPidFile(name: []const u8) void {
     if (std.fmt.bufPrintZ(&pid_path_buf, "/tmp/mizu-{s}.pid", .{name})) |pid_path| {
         _ = c.unlink(pid_path.ptr);
     } else |_| {}
+}
+
+fn getBarPid() ?c_int {
+    const pid_path = "/tmp/mizu-bar.pid";
+    if (c.fopen(pid_path, "r")) |f| {
+        var buf: [32]u8 = undefined;
+        const n = c.fread(&buf, 1, buf.len - 1, f);
+        _ = c.fclose(f);
+        if (n > 0) {
+            buf[n] = 0;
+            const pid_str = std.mem.trim(u8, buf[0..n], " \t\r\n");
+            const existing_pid = std.fmt.parseInt(c_int, pid_str, 10) catch 0;
+            if (existing_pid > 0 and existing_pid != c.getpid()) {
+                if (c.kill(existing_pid, 0) == 0) {
+                    return existing_pid;
+                }
+            }
+        }
+    }
+    return null;
 }
 
 fn isAlreadyLocked() bool {
@@ -396,7 +432,19 @@ pub fn main(init: std.process.Init.Minimal) u8 {
 
     const maybe_cmd_str = arg_it.next();
     if (maybe_cmd_str == null) {
-        printUsage();
+        const allocator = std.heap.c_allocator;
+        var cfg = loadConfig(allocator);
+        defer cfg.deinit(allocator);
+
+        if (getBarPid()) |existing_pid| {
+            std.debug.print("mizu: desktop shell already running (PID {d})\n", .{existing_pid});
+            return 0;
+        }
+
+        runBar(allocator, cfg) catch |err| {
+            std.debug.print("mizu error: {any}\n", .{err});
+            return 1;
+        };
         return 0;
     }
 
@@ -433,6 +481,11 @@ pub fn main(init: std.process.Init.Minimal) u8 {
             const allocator = std.heap.c_allocator;
             var cfg = loadConfig(allocator);
             defer cfg.deinit(allocator);
+
+            if (getBarPid()) |existing_pid| {
+                std.debug.print("mizu: desktop shell already running (PID {d})\n", .{existing_pid});
+                return 0;
+            }
 
             runBar(allocator, cfg) catch |err| {
                 std.debug.print("mizu bar error: {any}\n", .{err});
@@ -570,32 +623,57 @@ pub fn main(init: std.process.Init.Minimal) u8 {
             var cfg = loadConfig(allocator);
             defer cfg.deinit(allocator);
 
-            const title = arg_it.next() orelse "Mizu Notification";
-            const body = arg_it.next() orelse "";
+            var no_store = false;
+            var title: []const u8 = "Mizu Notification";
+            var body: []const u8 = "";
 
-            // Record to persistent notification history
-            var store = notification_module.NotificationStore.init(allocator);
-            defer store.deinit();
+            var title_set = false;
+            while (arg_it.next()) |arg| {
+                if (std.mem.eql(u8, arg, "--no-store")) {
+                    no_store = true;
+                } else if (!title_set) {
+                    title = arg;
+                    title_set = true;
+                } else {
+                    body = arg;
+                }
+            }
 
-            var item = notification_module.Notification{
-                .id = @intCast(@max(1, c.time(null))),
-                .timestamp = @intCast(@max(0, c.time(null))),
-                .expire_timeout_ms = 4000,
-                .time_remaining_ms = 4000,
-            };
-            const app_str = "Mizu";
-            @memcpy(item.app_name[0..app_str.len], app_str);
-            item.app_name_len = app_str.len;
-            const t_len = @min(title.len, item.summary.len);
-            @memcpy(item.summary[0..t_len], title[0..t_len]);
-            item.summary_len = t_len;
-            const b_len = @min(body.len, item.body.len);
-            @memcpy(item.body[0..b_len], body[0..b_len]);
-            item.body_len = b_len;
-            store.add(item);
+            if (!no_store) {
+                // Record to persistent notification history
+                var store = notification_module.NotificationStore.init(allocator);
+                defer store.deinit();
+
+                var item = notification_module.Notification{
+                    .id = @intCast(@max(1, c.time(null))),
+                    .timestamp = @intCast(@max(0, c.time(null))),
+                    .expire_timeout_ms = 4000,
+                    .time_remaining_ms = 4000,
+                };
+                const app_str = "Mizu";
+                @memcpy(item.app_name[0..app_str.len], app_str);
+                item.app_name_len = app_str.len;
+                const t_len = @min(title.len, item.summary.len);
+                @memcpy(item.summary[0..t_len], title[0..t_len]);
+                item.summary_len = t_len;
+                const b_len = @min(body.len, item.body.len);
+                @memcpy(item.body[0..b_len], body[0..b_len]);
+                item.body_len = b_len;
+                store.add(item);
+            }
+
+            var sock_path_buf: [256]u8 = undefined;
+            const sock_path = getOsdSocketPath(&sock_path_buf, .notification);
 
             var cmd_buf: [1024]u8 = undefined;
             const initial_cmd = std.fmt.bufPrint(&cmd_buf, "notify:{s}:::{s}", .{ title, body }) catch "notify:Mizu:::";
+
+            var msg_buf: [1024]u8 = undefined;
+            const msg = std.fmt.bufPrint(&msg_buf, "{s}\n", .{initial_cmd}) catch initial_cmd;
+
+            if (trySendOsdIpc(sock_path, msg)) {
+                return 0;
+            }
 
             runOsd(allocator, cfg, .notification, initial_cmd) catch |err| {
                 std.debug.print("mizu notify error: {any}\n", .{err});
@@ -615,7 +693,7 @@ pub fn main(init: std.process.Init.Minimal) u8 {
             std.debug.print("  lock           (native Wayland session lock)\n", .{});
             std.debug.print("  launcher       (aliases: -l, --launcher)\n", .{});
             std.debug.print("  quicksettings  (aliases: qs, panel, -q)\n", .{});
-            std.debug.print("  memory-monitor (aliases: mem-monitor, memmon)\n", .{});
+            std.debug.print("  system-monitor (aliases: sysmon, memory-monitor, memmon)\n", .{});
             std.debug.print("  calendar       (aliases: cal, -c)\n", .{});
             std.debug.print("  clipboard      (aliases: clip)\n", .{});
             std.debug.print("  keyoverlay     (aliases: keymap, keys)\n", .{});
@@ -695,6 +773,19 @@ fn createSigUsr1Fd() c_int {
 }
 
 fn runBar(allocator: std.mem.Allocator, cfg: config.Config) !void {
+    if (getBarPid()) |existing_pid| {
+        std.debug.print("mizu: desktop shell already running (PID {d})\n", .{existing_pid});
+        return;
+    }
+
+    if (c.fopen("/tmp/mizu-bar.pid", "w")) |f| {
+        var buf: [32]u8 = undefined;
+        const pid_str = std.fmt.bufPrint(&buf, "{d}\n", .{c.getpid()}) catch "";
+        _ = c.fwrite(pid_str.ptr, 1, pid_str.len, f);
+        _ = c.fclose(f);
+    }
+    defer _ = c.unlink("/tmp/mizu-bar.pid");
+
     var ipc = mango_ipc.MangoIpc.init();
     defer ipc.deinit();
 
@@ -749,6 +840,8 @@ fn runBar(allocator: std.mem.Allocator, cfg: config.Config) !void {
     const dbus_init_res = notify_dbus.mizu_dbus_notify_init(onDbusNotification, null);
     if (dbus_init_res == 0) {
         std.debug.print("Mizu notification daemon active on org.freedesktop.Notifications\n", .{});
+    } else {
+        std.debug.print("Warning: failed to acquire org.freedesktop.Notifications (error code {d})\n", .{dbus_init_res});
     }
     defer notify_dbus.mizu_dbus_notify_deinit();
 
@@ -1498,11 +1591,12 @@ fn rearmTimer(timer_fd: c_int, ms: u64) void {
     _ = c.timerfd_settime(timer_fd, 0, &its, null);
 }
 
-fn getOsdSocketPath(buf: []u8) []const u8 {
+fn getOsdSocketPath(buf: []u8, kind: osd_module.OsdKind) []const u8 {
+    const sock_name = if (kind == .notification) "mizu-notify.sock" else "mizu-osd.sock";
     if (c.getenv("XDG_RUNTIME_DIR")) |xdg| {
-        return std.fmt.bufPrint(buf, "{s}/mizu-osd.sock", .{std.mem.span(xdg)}) catch "/tmp/mizu-osd.sock";
+        return std.fmt.bufPrint(buf, "{s}/{s}", .{ std.mem.span(xdg), sock_name }) catch if (kind == .notification) "/tmp/mizu-notify.sock" else "/tmp/mizu-osd.sock";
     }
-    return "/tmp/mizu-osd.sock";
+    return if (kind == .notification) "/tmp/mizu-notify.sock" else "/tmp/mizu-osd.sock";
 }
 
 fn trySendOsdIpc(sock_path: []const u8, msg: []const u8) bool {
@@ -1528,7 +1622,7 @@ fn trySendOsdIpc(sock_path: []const u8, msg: []const u8) bool {
 
 fn runOsd(allocator: std.mem.Allocator, cfg: config.Config, kind: osd_module.OsdKind, initial_cmd: []const u8) !void {
     var sock_path_buf: [256]u8 = undefined;
-    const sock_path = getOsdSocketPath(&sock_path_buf);
+    const sock_path = getOsdSocketPath(&sock_path_buf, kind);
 
     var msg_buf: [1024]u8 = undefined;
     const msg = std.fmt.bufPrint(&msg_buf, "{s}\n", .{initial_cmd}) catch initial_cmd;
@@ -1679,7 +1773,8 @@ fn runOsd(allocator: std.mem.Allocator, cfg: config.Config, kind: osd_module.Osd
                     c_buf[@intCast(bytes)] = 0;
                     const client_msg = std.mem.trim(u8, c_buf[0..@intCast(bytes)], " \t\r\n");
                     osd.handleCommand(client_msg);
-                    rearmTimer(timer_fd, duration_ms);
+                    const rearm_ms: u64 = if (osd.kind == .notification) 3500 else 1500;
+                    rearmTimer(timer_fd, rearm_ms);
                     app.needs_redraw = true;
                 }
             }

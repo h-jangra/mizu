@@ -11,20 +11,21 @@ const desktop_entries = @import("../services/desktop_entries.zig");
 
 const Color = theme_mod.Color;
 
-pub const SURFACE_W: u32 = 432;
-pub const SURFACE_H: u32 = 552;
+pub const SURFACE_W: u32 = 512;
+pub const SURFACE_H: u32 = 652;
 
-const PANEL_W: f64 = 420.0;
-const PANEL_H: f64 = 540.0;
+const PANEL_W: f64 = 500.0;
+const PANEL_H: f64 = 640.0;
 const INSET: f64 = 6.0;
 const PAD: f64 = 16.0;
 
-const FILTER_TOP: f64 = 66.0;
+const HEADER_H: f64 = 122.0;
+const FILTER_TOP: f64 = 122.0;
 const FILTER_H: f64 = 36.0;
-const HEADER_BASELINE: f64 = 119.0;
-const LIST_TOP: f64 = 138.0;
+const COLUMNS_H: f64 = 28.0;
+const LIST_TOP: f64 = 186.0;
 const LIST_BOTTOM_PAD: f64 = 12.0;
-const ROW_H: f64 = 38.0;
+const ROW_H: f64 = 40.0;
 
 const REFRESH_MS: i64 = 1000;
 const POINTER_BUTTON_LEFT: u32 = 272;
@@ -76,6 +77,24 @@ pub const MemoryMonitor = struct {
 
     running: bool = true,
     mem: proc_mem.MemInfo = .{},
+    cpu_percent: u32 = 0,
+    prev_idle: u64 = 0,
+    prev_total: u64 = 0,
+
+    disk_used_gb: f64 = 0.0,
+    disk_total_gb: f64 = 0.0,
+    disk_percent: u32 = 0,
+
+    prev_rx_bytes: u64 = 0,
+    prev_tx_bytes: u64 = 0,
+    rx_rate_bps: u64 = 0,
+    tx_rate_bps: u64 = 0,
+    last_net_time_ms: i64 = 0,
+
+    confirm_kill_pid: ?u32 = null,
+    hover_kill_pid: ?u32 = null,
+    hover_kill_action: enum { none, kill, confirm, cancel } = .none,
+
     desktop_apps: std.ArrayList(desktop_entries.DesktopApp),
     processes: std.ArrayList(proc_mem.ProcessInfo),
     groups: std.ArrayList(ProcessGroup),
@@ -113,8 +132,8 @@ pub const MemoryMonitor = struct {
             .expanded_names = std.ArrayList([128]u8).empty,
             .expanded_lens = std.ArrayList(usize).empty,
             .filter = filter,
-            .measure = try renderer.Font.init(allocator, family, cfg.typography.ui),
-            .row_measure = try renderer.Font.init(allocator, family, cfg.typography.secondary),
+            .measure = try renderer.Font.init(allocator, family, @max(16, cfg.typography.ui + 1)),
+            .row_measure = try renderer.Font.init(allocator, family, @max(15, cfg.typography.ui)),
         };
         self.refresh();
         self.last_refresh_ms = nowMs();
@@ -489,6 +508,7 @@ pub const MemoryMonitor = struct {
     }
 
     pub fn refresh(self: *MemoryMonitor) void {
+        self.updateSystemStats();
         const prev_pid = self.selectedPid();
         self.mem = proc_mem.collectMemInfo();
         proc_mem.collectProcesses(self.allocator, &self.processes) catch {};
@@ -496,10 +516,141 @@ pub const MemoryMonitor = struct {
         self.rebuildFiltered(prev_pid);
     }
 
+    pub fn updateSystemStats(self: *MemoryMonitor) void {
+        self.updateCpu();
+        self.updateDisk();
+        self.updateNetwork(nowMs());
+    }
+
+    fn updateCpu(self: *MemoryMonitor) void {
+        var buf: [512]u8 = undefined;
+        const f = c.fopen("/proc/stat", "r") orelse return;
+        defer _ = c.fclose(f);
+        const len = c.fread(&buf, 1, buf.len - 1, f);
+        if (len == 0) return;
+        buf[len] = 0;
+        const content = buf[0..len];
+        if (!std.mem.startsWith(u8, content, "cpu ")) return;
+
+        var it = std.mem.tokenizeAny(u8, content[4..], " \t\r\n");
+        var fields: [10]u64 = [_]u64{0} ** 10;
+        var count: usize = 0;
+        while (it.next()) |token| {
+            if (count >= 10) break;
+            fields[count] = std.fmt.parseInt(u64, token, 10) catch 0;
+            count += 1;
+        }
+        if (count < 4) return;
+
+        const idle = fields[3] + (if (count > 4) fields[4] else 0);
+        var total: u64 = 0;
+        for (fields[0..count]) |val| {
+            total += val;
+        }
+
+        if (self.prev_total > 0 and total > self.prev_total) {
+            const diff_idle = idle -| self.prev_idle;
+            const diff_total = total -| self.prev_total;
+            if (diff_total > 0) {
+                const usage = 100 -| (diff_idle * 100 / diff_total);
+                self.cpu_percent = @min(100, @as(u32, @intCast(usage)));
+            }
+        }
+        self.prev_idle = idle;
+        self.prev_total = total;
+    }
+
+    fn updateDisk(self: *MemoryMonitor) void {
+        var st: c.struct_statvfs = undefined;
+        if (c.statvfs("/", &st) == 0) {
+            const frsize = if (st.f_frsize > 0) st.f_frsize else st.f_bsize;
+            const total_bytes = @as(u64, st.f_blocks) * @as(u64, frsize);
+            const free_bytes = @as(u64, st.f_bfree) * @as(u64, frsize);
+            if (total_bytes > 0) {
+                const used_bytes = total_bytes -| free_bytes;
+                self.disk_total_gb = @as(f64, @floatFromInt(total_bytes)) / 1073741824.0;
+                self.disk_used_gb = @as(f64, @floatFromInt(used_bytes)) / 1073741824.0;
+                self.disk_percent = @min(100, @as(u32, @intFromFloat(@round((self.disk_used_gb / self.disk_total_gb) * 100.0))));
+            }
+        }
+    }
+
+    fn updateNetwork(self: *MemoryMonitor, now: i64) void {
+        const f = c.fopen("/proc/net/dev", "r") orelse return;
+        defer _ = c.fclose(f);
+
+        var line_buf: [512]u8 = undefined;
+        // Skip first 2 header lines
+        if (c.fgets(&line_buf, @intCast(line_buf.len), f) == null) return;
+        if (c.fgets(&line_buf, @intCast(line_buf.len), f) == null) return;
+
+        var total_rx: u64 = 0;
+        var total_tx: u64 = 0;
+
+        while (c.fgets(&line_buf, @intCast(line_buf.len), f)) |line_ptr| {
+            const line = std.mem.span(line_ptr);
+            const colon = std.mem.indexOfScalar(u8, line, ':') orelse continue;
+            const iface = std.mem.trim(u8, line[0..colon], " \t\r\n");
+            if (std.mem.eql(u8, iface, "lo")) continue;
+
+            var tok_it = std.mem.tokenizeAny(u8, line[colon + 1 ..], " \t\r\n");
+            var col: usize = 0;
+            var rx: u64 = 0;
+            var tx: u64 = 0;
+            while (tok_it.next()) |tok| {
+                if (col == 0) {
+                    rx = std.fmt.parseInt(u64, tok, 10) catch 0;
+                } else if (col == 8) {
+                    tx = std.fmt.parseInt(u64, tok, 10) catch 0;
+                    break;
+                }
+                col += 1;
+            }
+            total_rx += rx;
+            total_tx += tx;
+        }
+
+        if (self.last_net_time_ms > 0 and now > self.last_net_time_ms) {
+            const delta_ms = now - self.last_net_time_ms;
+            if (delta_ms >= 200) {
+                const diff_rx = total_rx -| self.prev_rx_bytes;
+                const diff_tx = total_tx -| self.prev_tx_bytes;
+                self.rx_rate_bps = diff_rx * 1000 / @as(u64, @intCast(delta_ms));
+                self.tx_rate_bps = diff_tx * 1000 / @as(u64, @intCast(delta_ms));
+            }
+        }
+        self.prev_rx_bytes = total_rx;
+        self.prev_tx_bytes = total_tx;
+        self.last_net_time_ms = now;
+    }
+
+    pub fn formatRate(buf: []u8, bytes_per_sec: u64) []const u8 {
+        if (bytes_per_sec < 1024) {
+            return std.fmt.bufPrint(buf, "{d} B/s", .{bytes_per_sec}) catch "";
+        } else if (bytes_per_sec < 1024 * 1024) {
+            const kb = @as(f64, @floatFromInt(bytes_per_sec)) / 1024.0;
+            if (kb >= 100.0) {
+                return std.fmt.bufPrint(buf, "{d:.0} KB/s", .{kb}) catch "";
+            } else {
+                return std.fmt.bufPrint(buf, "{d:.1} KB/s", .{kb}) catch "";
+            }
+        } else if (bytes_per_sec < 1024 * 1024 * 1024) {
+            const mb = @as(f64, @floatFromInt(bytes_per_sec)) / 1048576.0;
+            return std.fmt.bufPrint(buf, "{d:.1} MB/s", .{mb}) catch "";
+        } else {
+            const gb = @as(f64, @floatFromInt(bytes_per_sec)) / 1073741824.0;
+            return std.fmt.bufPrint(buf, "{d:.2} GB/s", .{gb}) catch "";
+        }
+    }
+
     // ---- Input ----------------------------------------------------------
 
     pub fn handleKey(self: *MemoryMonitor, sym: u32, utf8_bytes: []const u8, ctrl: bool, shift: bool) bool {
         if (sym == c.XKB_KEY_Escape) {
+            if (self.confirm_kill_pid != null) {
+                self.confirm_kill_pid = null;
+                return true;
+            }
             self.running = false;
             return true;
         }
@@ -550,12 +701,72 @@ pub const MemoryMonitor = struct {
             changed = true;
         }
 
+        const fx: f64 = @as(f64, @floatFromInt(x));
+        if (new_hover) |idx| {
+            if (idx < self.visible_rows.items.len) {
+                const row = self.visible_rows.items[idx];
+                if (row.kind == .subprocess and row.group_idx < self.groups.items.len) {
+                    const grp = &self.groups.items[row.group_idx];
+                    if (row.sub_idx < grp.procs.items.len) {
+                        const proc = grp.procs.items[row.sub_idx];
+                        if (self.confirm_kill_pid == proc.pid) {
+                            if (fx >= contentX1() - 32.0 and fx <= contentX1()) {
+                                if (self.hover_kill_action != .cancel or self.hover_kill_pid != proc.pid) {
+                                    self.hover_kill_action = .cancel;
+                                    self.hover_kill_pid = proc.pid;
+                                    changed = true;
+                                }
+                            } else if (fx >= contentX1() - 66.0 and fx < contentX1() - 32.0) {
+                                if (self.hover_kill_action != .confirm or self.hover_kill_pid != proc.pid) {
+                                    self.hover_kill_action = .confirm;
+                                    self.hover_kill_pid = proc.pid;
+                                    changed = true;
+                                }
+                            } else {
+                                if (self.hover_kill_action != .none) {
+                                    self.hover_kill_action = .none;
+                                    self.hover_kill_pid = null;
+                                    changed = true;
+                                }
+                            }
+                        } else {
+                            if (fx >= contentX1() - 32.0 and fx <= contentX1()) {
+                                if (self.hover_kill_action != .kill or self.hover_kill_pid != proc.pid) {
+                                    self.hover_kill_action = .kill;
+                                    self.hover_kill_pid = proc.pid;
+                                    changed = true;
+                                }
+                            } else {
+                                if (self.hover_kill_action != .none) {
+                                    self.hover_kill_action = .none;
+                                    self.hover_kill_pid = null;
+                                    changed = true;
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    if (self.hover_kill_action != .none) {
+                        self.hover_kill_action = .none;
+                        self.hover_kill_pid = null;
+                        changed = true;
+                    }
+                }
+            }
+        } else {
+            if (self.hover_kill_action != .none) {
+                self.hover_kill_action = .none;
+                self.hover_kill_pid = null;
+                changed = true;
+            }
+        }
+
         if (self.drag_active and self.pointInFilter(x, y)) {
             const idx = self.cursorIndexFromX(
                 self.filter.getText(),
                 filterTextX() - self.filter_scroll,
                 @as(f64, @floatFromInt(x)),
-                self.cfg.typography.ui,
+                @max(16, self.cfg.typography.ui + 1),
             );
             if (self.filter.selection_anchor == null) self.filter.selection_anchor = self.filter.cursor_idx;
             if (self.filter.cursor_idx != idx) {
@@ -572,6 +783,11 @@ pub const MemoryMonitor = struct {
         var changed = false;
         if (self.hover != null) {
             self.hover = null;
+            changed = true;
+        }
+        if (self.hover_kill_action != .none) {
+            self.hover_kill_action = .none;
+            self.hover_kill_pid = null;
             changed = true;
         }
         if (self.drag_active) {
@@ -592,6 +808,7 @@ pub const MemoryMonitor = struct {
         }
 
         if (self.filter.getText().len > 0 and self.pointInClear(x, y)) {
+            self.confirm_kill_pid = null;
             self.filter.clear();
             self.rebuildFiltered(null);
             self.filter_scroll = 0.0;
@@ -599,32 +816,70 @@ pub const MemoryMonitor = struct {
         }
 
         if (self.pointInFilter(x, y)) {
+            self.confirm_kill_pid = null;
             self.filter.focused = true;
             self.drag_active = true;
             self.filter.cursor_idx = self.cursorIndexFromX(
                 self.filter.getText(),
                 filterTextX() - self.filter_scroll,
                 @as(f64, @floatFromInt(x)),
-                self.cfg.typography.ui,
+                @max(16, self.cfg.typography.ui + 1),
             );
             self.filter.selection_anchor = null;
             self.ensureFilterCaretVisible();
             return true;
         }
 
+        const fx: f64 = @as(f64, @floatFromInt(x));
         if (self.rowIndexAt(x, y)) |idx| {
             if (idx < self.visible_rows.items.len) {
                 const row = self.visible_rows.items[idx];
                 self.selected = idx;
                 if (row.kind == .group) {
+                    self.confirm_kill_pid = null;
                     const grp = &self.groups.items[row.group_idx];
                     grp.expanded = !grp.expanded;
                     self.setGroupExpanded(grp.name[0..grp.name_len], grp.expanded);
                     self.rebuildFiltered(grp.main_pid);
+                    return true;
+                } else {
+                    if (row.group_idx < self.groups.items.len) {
+                        const grp = &self.groups.items[row.group_idx];
+                        if (row.sub_idx < grp.procs.items.len) {
+                            const proc = grp.procs.items[row.sub_idx];
+                            if (self.confirm_kill_pid == proc.pid) {
+                                if (fx >= contentX1() - 32.0 and fx <= contentX1()) {
+                                    // Clicked Cancel (x)
+                                    self.confirm_kill_pid = null;
+                                    self.hover_kill_action = .none;
+                                    self.hover_kill_pid = null;
+                                    return true;
+                                } else if (fx >= contentX1() - 66.0 and fx < contentX1() - 32.0) {
+                                    // Clicked Confirm (check)
+                                    _ = c.kill(@intCast(proc.pid), c.SIGTERM);
+                                    self.confirm_kill_pid = null;
+                                    self.hover_kill_action = .none;
+                                    self.hover_kill_pid = null;
+                                    self.refresh();
+                                    return true;
+                                }
+                            } else {
+                                if (fx >= contentX1() - 32.0 and fx <= contentX1()) {
+                                    // Clicked Kill (x)
+                                    self.confirm_kill_pid = proc.pid;
+                                    self.hover_kill_action = .none;
+                                    self.hover_kill_pid = null;
+                                    return true;
+                                }
+                            }
+                        }
+                    }
+                    self.confirm_kill_pid = null;
+                    return true;
                 }
-                return true;
             }
         }
+        self.confirm_kill_pid = null;
         return false;
     }
 
@@ -701,11 +956,11 @@ pub const MemoryMonitor = struct {
     }
 
     fn pidRight() f64 {
-        return contentX0() + 246.0;
+        return contentX0() + 294.0;
     }
 
     fn memRight() f64 {
-        return contentX1() - 56.0;
+        return contentX1() - 80.0;
     }
 
     fn pctRight() f64 {
@@ -713,7 +968,7 @@ pub const MemoryMonitor = struct {
     }
 
     fn nameMaxWidth() f64 {
-        return pidRight() - nameX() - 22.0;
+        return pidRight() - nameX() - 24.0;
     }
 
     fn visibleRows() usize {
@@ -994,51 +1249,229 @@ pub const MemoryMonitor = struct {
             .align_y = .top,
         });
 
-        // Header: title, usage summary, and memory bar.
+        // Header: 2x2 system stat cards (RAM, CPU, Disk, Network) right at top.
         _ = ui.open(.{
             .width = .{ .grow = .{} },
-            .height = .{ .fixed = ui.s(66) },
+            .height = .{ .fixed = ui.s(HEADER_H) },
             .direction = .column,
-            .padding = .{ .top = ui.su(14) },
+            .padding = .{ .top = ui.su(12) },
             .gap = ui.su(6),
             .align_y = .top,
         });
 
-        const used_gib = @as(f64, @floatFromInt(self.mem.used_kb)) / 1048576.0;
-        const total_gib = @as(f64, @floatFromInt(self.mem.total_kb)) / 1048576.0;
-        const percent = self.mem.used_percent;
-        var pct_buf: [32]u8 = undefined;
-        const pct_str = std.fmt.bufPrint(&pct_buf, "{d:.0}%", .{percent}) catch "0%";
-        var mem_buf: [64]u8 = undefined;
-        const mem_str = std.fmt.bufPrint(&mem_buf, "{d:.1} / {d:.1} GB", .{ used_gib, total_gib }) catch "";
+        const card_bg = th.card_bg;
+        const bar_track = alphaCol(overlay, if (is_light) 0.08 else 0.12);
 
+        // 2x2 stat cards grid
         _ = ui.open(.{
             .width = .{ .grow = .{} },
-            .height = .{ .fixed = ui.s(24) },
+            .direction = .column,
+            .gap = ui.su(6),
+            .align_y = .center,
+        });
+
+        // Row 1: RAM & CPU
+        _ = ui.open(.{
+            .width = .{ .grow = .{} },
+            .height = .{ .fixed = ui.s(48) },
             .direction = .row,
             .gap = ui.su(8),
             .align_y = .center,
         });
-        ui.text("Memory", .{ .size = self.cfg.typography.title * scale, .color = text_main });
-        ui.spacerSized(.{ .grow = .{} }, .{ .fixed = 0 });
-        ui.text(mem_str, .{ .size = self.cfg.typography.secondary * scale, .color = text_muted });
-        ui.text(pct_str, .{ .size = self.cfg.typography.secondary * scale, .color = accent });
-        ui.close();
 
+        // 1. RAM Card
+        {
+            const used_gib = @as(f64, @floatFromInt(self.mem.used_kb)) / 1048576.0;
+            const total_gib = @as(f64, @floatFromInt(self.mem.total_kb)) / 1048576.0;
+            const percent = self.mem.used_percent;
+            var mem_val_buf: [32]u8 = undefined;
+            const mem_val_str = std.fmt.bufPrint(&mem_val_buf, "{d:.1} / {d:.1} GB", .{ used_gib, total_gib }) catch "";
+            _ = ui.open(.{
+                .width = .{ .grow = .{} },
+                .height = .{ .grow = .{} },
+                .direction = .column,
+                .padding = .{ .left = ui.su(12), .right = ui.su(12), .top = ui.su(7), .bottom = ui.su(7) },
+                .gap = ui.su(6),
+                .bg = card_bg,
+                .radius = ui.f(10),
+                .align_y = .center,
+            });
+            _ = ui.open(.{
+                .width = .{ .grow = .{} },
+                .direction = .row,
+                .align_y = .center,
+            });
+            ui.text("RAM", .{ .size = 14 * scale, .color = text_muted });
+            ui.spacerSized(.{ .grow = .{} }, .{ .fixed = 0 });
+            ui.text(mem_val_str, .{ .size = 14 * scale, .color = text_main });
+            ui.close();
+
+            _ = ui.open(.{
+                .width = .{ .grow = .{} },
+                .height = .{ .fixed = ui.s(4) },
+                .bg = bar_track,
+                .radius = 2.0 * @as(f32, @floatFromInt(scale)),
+            });
+            ui.rect(
+                .{ .percent = std.math.clamp(percent / 100.0, 0.0, 1.0) },
+                .{ .grow = .{} },
+                accent,
+                2.0 * @as(f32, @floatFromInt(scale)),
+                .{},
+            );
+            ui.close();
+            ui.close();
+        }
+
+        // 2. CPU Card
+        {
+            var cpu_buf: [16]u8 = undefined;
+            const cpu_str = std.fmt.bufPrint(&cpu_buf, "{d}%", .{self.cpu_percent}) catch "0%";
+            _ = ui.open(.{
+                .width = .{ .grow = .{} },
+                .height = .{ .grow = .{} },
+                .direction = .column,
+                .padding = .{ .left = ui.su(12), .right = ui.su(12), .top = ui.su(7), .bottom = ui.su(7) },
+                .gap = ui.su(6),
+                .bg = card_bg,
+                .radius = ui.f(10),
+                .align_y = .center,
+            });
+            _ = ui.open(.{
+                .width = .{ .grow = .{} },
+                .direction = .row,
+                .align_y = .center,
+            });
+            ui.text("CPU", .{ .size = 14 * scale, .color = text_muted });
+            ui.spacerSized(.{ .grow = .{} }, .{ .fixed = 0 });
+            ui.text(cpu_str, .{ .size = 14 * scale, .color = text_main });
+            ui.close();
+
+            _ = ui.open(.{
+                .width = .{ .grow = .{} },
+                .height = .{ .fixed = ui.s(4) },
+                .bg = bar_track,
+                .radius = 2.0 * @as(f32, @floatFromInt(scale)),
+            });
+            ui.rect(
+                .{ .percent = std.math.clamp(@as(f32, @floatFromInt(self.cpu_percent)) / 100.0, 0.0, 1.0) },
+                .{ .grow = .{} },
+                th.secondary,
+                2.0 * @as(f32, @floatFromInt(scale)),
+                .{},
+            );
+            ui.close();
+            ui.close();
+        }
+
+        ui.close(); // Row 1
+
+        // Row 2: Disk & Network
         _ = ui.open(.{
             .width = .{ .grow = .{} },
-            .height = .{ .fixed = ui.s(5) },
-            .bg = alphaCol(overlay, if (is_light) 0.08 else 0.10),
-            .radius = 2.5 * @as(f32, @floatFromInt(scale)),
+            .height = .{ .fixed = ui.s(48) },
+            .direction = .row,
+            .gap = ui.su(8),
+            .align_y = .center,
         });
-        ui.rect(
-            .{ .percent = std.math.clamp(percent / 100.0, 0.0, 1.0) },
-            .{ .grow = .{} },
-            accent,
-            2.5 * @as(f32, @floatFromInt(scale)),
-            .{},
-        );
-        ui.close();
+
+        // 3. Disk Card
+        {
+            var disk_val_buf: [32]u8 = undefined;
+            const disk_val_str = if (self.disk_total_gb > 0)
+                std.fmt.bufPrint(&disk_val_buf, "{d:.0} / {d:.0} GB", .{ self.disk_used_gb, self.disk_total_gb }) catch ""
+            else
+                "N/A";
+            _ = ui.open(.{
+                .width = .{ .grow = .{} },
+                .height = .{ .grow = .{} },
+                .direction = .column,
+                .padding = .{ .left = ui.su(12), .right = ui.su(12), .top = ui.su(7), .bottom = ui.su(7) },
+                .gap = ui.su(6),
+                .bg = card_bg,
+                .radius = ui.f(10),
+                .align_y = .center,
+            });
+            _ = ui.open(.{
+                .width = .{ .grow = .{} },
+                .direction = .row,
+                .align_y = .center,
+            });
+            ui.text("Disk", .{ .size = 14 * scale, .color = text_muted });
+            ui.spacerSized(.{ .grow = .{} }, .{ .fixed = 0 });
+            ui.text(disk_val_str, .{ .size = 14 * scale, .color = text_main });
+            ui.close();
+
+            _ = ui.open(.{
+                .width = .{ .grow = .{} },
+                .height = .{ .fixed = ui.s(4) },
+                .bg = bar_track,
+                .radius = 2.0 * @as(f32, @floatFromInt(scale)),
+            });
+            ui.rect(
+                .{ .percent = std.math.clamp(@as(f32, @floatFromInt(self.disk_percent)) / 100.0, 0.0, 1.0) },
+                .{ .grow = .{} },
+                accent,
+                2.0 * @as(f32, @floatFromInt(scale)),
+                .{},
+            );
+            ui.close();
+            ui.close();
+        }
+
+        // 4. Network Card
+        {
+            var net_buf: [64]u8 = undefined;
+            var rx_buf: [24]u8 = undefined;
+            var tx_buf: [24]u8 = undefined;
+            const rx_s = formatRate(&rx_buf, self.rx_rate_bps);
+            const tx_s = formatRate(&tx_buf, self.tx_rate_bps);
+            const net_str = std.fmt.bufPrint(&net_buf, "↓{s}  ↑{s}", .{ rx_s, tx_s }) catch "";
+            const total_rate = self.rx_rate_bps + self.tx_rate_bps;
+            const net_pct = if (total_rate > 0)
+                std.math.clamp(@as(f32, @floatFromInt(total_rate)) / (20.0 * 1024.0 * 1024.0), 0.05, 1.0)
+            else
+                0.0;
+
+            _ = ui.open(.{
+                .width = .{ .grow = .{} },
+                .height = .{ .grow = .{} },
+                .direction = .column,
+                .padding = .{ .left = ui.su(12), .right = ui.su(12), .top = ui.su(7), .bottom = ui.su(7) },
+                .gap = ui.su(6),
+                .bg = card_bg,
+                .radius = ui.f(10),
+                .align_y = .center,
+            });
+            _ = ui.open(.{
+                .width = .{ .grow = .{} },
+                .direction = .row,
+                .align_y = .center,
+            });
+            ui.text("Network", .{ .size = 14 * scale, .color = text_muted });
+            ui.spacerSized(.{ .grow = .{} }, .{ .fixed = 0 });
+            ui.text(net_str, .{ .size = 13 * scale, .color = text_main });
+            ui.close();
+
+            _ = ui.open(.{
+                .width = .{ .grow = .{} },
+                .height = .{ .fixed = ui.s(4) },
+                .bg = bar_track,
+                .radius = 2.0 * @as(f32, @floatFromInt(scale)),
+            });
+            ui.rect(
+                .{ .percent = net_pct },
+                .{ .grow = .{} },
+                th.network_fg,
+                2.0 * @as(f32, @floatFromInt(scale)),
+                .{},
+            );
+            ui.close();
+            ui.close();
+        }
+
+        ui.close(); // Row 2
+        ui.close(); // 2x2 stat cards grid
         ui.close(); // header
 
         // Filter field: the whole field is a Clay box with a custom leaf for
@@ -1063,35 +1496,35 @@ pub const MemoryMonitor = struct {
         // Column headings at the same logical offsets used by pointer hit tests.
         _ = ui.open(.{
             .width = .{ .grow = .{} },
-            .height = .{ .fixed = ui.s(36) },
+            .height = .{ .fixed = ui.s(COLUMNS_H) },
             .direction = .row,
             .align_y = .center,
         });
         _ = ui.open(.{
-            .width = .{ .fixed = ui.s(246) },
+            .width = .{ .fixed = ui.s(294) },
             .height = .{ .grow = .{} },
             .direction = .row,
             .padding = .{ .left = ui.su(6) },
             .align_y = .center,
         });
-        ui.text("Application", .{ .size = self.cfg.typography.secondary * scale, .color = text_muted });
+        ui.text("Application", .{ .size = (self.cfg.typography.secondary + 2) * scale, .color = text_muted });
         ui.spacerSized(.{ .grow = .{} }, .{ .fixed = 0 });
-        ui.text("PID", .{ .size = self.cfg.typography.secondary * scale, .color = text_muted });
+        ui.text("PID", .{ .size = (self.cfg.typography.secondary + 2) * scale, .color = text_muted });
         ui.close();
         ui.text("Memory", .{
-            .size = self.cfg.typography.secondary * scale,
+            .size = (self.cfg.typography.secondary + 2) * scale,
             .color = text_muted,
-            .width = ui.s(86),
+            .width = ui.s(94),
             .text_align = .right,
         });
         _ = ui.open(.{
-            .width = .{ .fixed = ui.s(56) },
+            .width = .{ .fixed = ui.s(80) },
             .height = .{ .grow = .{} },
-            .padding = .{ .right = ui.su(2) },
+            .padding = .{ .right = ui.su(6) },
             .align_x = .right,
             .align_y = .center,
         });
-        ui.text("%", .{ .size = self.cfg.typography.secondary * scale, .color = text_muted });
+        ui.text("%", .{ .size = (self.cfg.typography.secondary + 2) * scale, .color = text_muted });
         ui.close();
         ui.close(); // columns
 
@@ -1115,8 +1548,8 @@ pub const MemoryMonitor = struct {
                 .gap = ui.su(6),
             });
             ui.text(icons.glyphs.memory, .{ .size = 28 * scale, .color = alphaCol(text_muted, 0.45) });
-            ui.text("No processes match", .{ .size = 13 * scale, .color = text_muted });
-            ui.text("Try a different filter", .{ .size = 11 * scale, .color = alphaCol(text_muted, 0.6) });
+            ui.text("No processes match", .{ .size = 14 * scale, .color = text_muted });
+            ui.text("Try a different filter", .{ .size = 12 * scale, .color = alphaCol(text_muted, 0.6) });
             ui.close();
         } else {
             const vis = visibleRows();
@@ -1131,11 +1564,13 @@ pub const MemoryMonitor = struct {
                 const is_hovered = self.hover != null and self.hover.? == fi;
 
                 const row_bg: ?Color = if (is_selected)
-                    alphaCol(accent, 0.16)
+                    th.card_selected_bg
                 else if (is_hovered)
-                    alphaCol(overlay, if (is_light) 0.045 else 0.06)
+                    th.card_hover_bg
                 else
                     null;
+
+                const fg_selected = th.card_selected_fg;
 
                 _ = ui.open(.{
                     .width = .{ .grow = .{} },
@@ -1147,23 +1582,26 @@ pub const MemoryMonitor = struct {
                 });
 
                 if (is_selected) {
-                    ui.rect(.{ .fixed = ui.s(3) }, .{ .fixed = ui.s(18) }, accent, 1.5 * @as(f32, @floatFromInt(scale)), .{});
+                    ui.rect(.{ .fixed = ui.s(3) }, .{ .fixed = ui.s(20) }, fg_selected, 1.5 * @as(f32, @floatFromInt(scale)), .{});
                 }
 
                 if (row.kind == .group) {
                     _ = ui.open(.{
-                        .width = .{ .fixed = ui.s(if (is_selected) 243 else 246) },
+                        .width = .{ .fixed = ui.s(if (is_selected) 291 else 294) },
                         .height = .{ .grow = .{} },
                         .direction = .row,
                         .padding = .{ .left = ui.su(if (is_selected) 3 else 6) },
-                        .gap = ui.su(4),
+                        .gap = ui.su(6),
                         .align_y = .center,
                         .clip_horizontal = true,
                     });
 
                     if (grp.procs.items.len > 1) {
                         const chevron = if (grp.expanded) "▾" else "▸";
-                        ui.text(chevron, .{ .size = (self.cfg.typography.secondary - 1) * scale, .color = if (grp.expanded) accent else text_muted });
+                        ui.text(chevron, .{
+                            .size = (self.cfg.typography.secondary + 2) * scale,
+                            .color = if (is_selected) fg_selected else if (grp.expanded) accent else text_muted,
+                        });
                     } else {
                         ui.spacerSized(.{ .fixed = ui.s(10) }, .{ .fixed = 0 });
                     }
@@ -1177,20 +1615,26 @@ pub const MemoryMonitor = struct {
 
                     var name_buf: [160]u8 = undefined;
                     const max_w = nameMaxWidth() - 14.0;
-                    const name = renderer.truncateText(&self.row_measure, full_label, @intFromFloat(max_w * @as(f64, @floatFromInt(scale))), self.cfg.typography.secondary * scale, &name_buf);
-                    ui.text(name, .{ .size = self.cfg.typography.secondary * scale, .color = th.text_bright });
+                    const name = renderer.truncateText(&self.row_measure, full_label, @intFromFloat(max_w * @as(f64, @floatFromInt(scale))), (self.cfg.typography.ui + 1) * scale, &name_buf);
+                    ui.text(name, .{
+                        .size = (self.cfg.typography.ui + 1) * scale,
+                        .color = if (is_selected) fg_selected else th.text_bright,
+                    });
                     ui.spacerSized(.{ .grow = .{} }, .{ .fixed = 0 });
                     var pid_buf: [16]u8 = undefined;
                     const pid_str = std.fmt.bufPrint(&pid_buf, "{d}", .{grp.main_pid}) catch "";
-                    ui.text(pid_str, .{ .size = self.cfg.typography.secondary * scale, .color = text_muted });
+                    ui.text(pid_str, .{
+                        .size = (self.cfg.typography.secondary + 2) * scale,
+                        .color = if (is_selected) alphaCol(fg_selected, 0.85) else text_muted,
+                    });
                     ui.close();
 
                     var mem_row_buf: [32]u8 = undefined;
                     const mem_row_str = formatMemory(&mem_row_buf, grp.total_rss_kb);
                     ui.text(mem_row_str, .{
-                        .size = self.cfg.typography.secondary * scale,
-                        .color = text_main,
-                        .width = ui.s(86),
+                        .size = (self.cfg.typography.ui + 1) * scale,
+                        .color = if (is_selected) fg_selected else text_main,
+                        .width = ui.s(94),
                         .text_align = .right,
                     });
 
@@ -1201,62 +1645,146 @@ pub const MemoryMonitor = struct {
                         0.0;
                     const pct_row_str = std.fmt.bufPrint(&pct_row_buf, "{d:.1}%", .{pct_row}) catch "";
                     _ = ui.open(.{
-                        .width = .{ .fixed = ui.s(56) },
+                        .width = .{ .fixed = ui.s(80) },
                         .height = .{ .grow = .{} },
-                        .padding = .{ .right = ui.su(2) },
+                        .padding = .{ .right = ui.su(6) },
                         .align_x = .right,
                         .align_y = .center,
                     });
-                    ui.text(pct_row_str, .{ .size = self.cfg.typography.secondary * scale, .color = accent });
+                    ui.text(pct_row_str, .{
+                        .size = (self.cfg.typography.secondary + 2) * scale,
+                        .color = if (is_selected) fg_selected else accent,
+                    });
                     ui.close();
                 } else {
                     const proc = grp.procs.items[row.sub_idx];
+                    const is_confirming = self.confirm_kill_pid != null and self.confirm_kill_pid.? == proc.pid;
 
-                    // Subprocesses show only their command and RAM usage
-                    _ = ui.open(.{
-                        .width = .{ .grow = .{} },
-                        .height = .{ .grow = .{} },
-                        .direction = .row,
-                        .padding = .{ .left = ui.su(if (is_selected) 16 else 19) },
-                        .gap = ui.su(6),
-                        .align_y = .center,
-                        .clip_horizontal = true,
-                    });
+                    if (is_confirming) {
+                        _ = ui.open(.{
+                            .width = .{ .grow = .{} },
+                            .height = .{ .grow = .{} },
+                            .direction = .row,
+                            .padding = .{ .left = ui.su(if (is_selected) 16 else 19) },
+                            .gap = ui.su(6),
+                            .align_y = .center,
+                            .clip_horizontal = true,
+                        });
 
-                    ui.text("↳", .{ .size = (self.cfg.typography.secondary - 2) * scale, .color = alphaCol(text_muted, 0.65) });
+                        var kill_label_buf: [128]u8 = undefined;
+                        const kill_label = std.fmt.bufPrint(&kill_label_buf, "Kill PID {d} ({s})?", .{ proc.pid, proc.name[0..proc.name_len] }) catch "Kill process?";
+                        ui.text(kill_label, .{
+                            .size = (self.cfg.typography.secondary + 1) * scale,
+                            .color = th.error_color,
+                        });
+                        ui.close();
 
-                    var cmd_fmt_buf: [256]u8 = undefined;
-                    const clean_cmd = formatSubprocessCommand(&cmd_fmt_buf, proc.cmdline[0..proc.cmdline_len], proc.name[0..proc.name_len]);
+                        // Action buttons: [✓ Confirm] [✗ Cancel]
+                        _ = ui.open(.{
+                            .width = .{ .fixed = ui.s(66) },
+                            .height = .{ .grow = .{} },
+                            .direction = .row,
+                            .gap = ui.su(4),
+                            .align_x = .right,
+                            .align_y = .center,
+                        });
 
-                    var sub_buf: [256]u8 = undefined;
-                    const sub_max_w: f64 = (PANEL_W - 2 * PAD) - 120.0 - 24.0;
-                    const sub_name = renderer.truncateText(
-                        &self.row_measure,
-                        clean_cmd,
-                        @intFromFloat(sub_max_w * @as(f64, @floatFromInt(scale))),
-                        (self.cfg.typography.secondary - 1) * scale,
-                        &sub_buf,
-                    );
-                    ui.text(sub_name, .{
-                        .size = (self.cfg.typography.secondary - 1) * scale,
-                        .color = alphaCol(text_main, 0.9),
-                    });
-                    ui.close();
+                        // 1. Confirm button (check)
+                        const is_chk_hov = self.hover_kill_action == .confirm and self.hover_kill_pid == proc.pid;
+                        _ = ui.open(.{
+                            .width = .{ .fixed = ui.s(30) },
+                            .height = .{ .fixed = ui.s(26) },
+                            .bg = if (is_chk_hov) alphaCol(th.success_color, 0.30) else alphaCol(th.success_color, 0.14),
+                            .radius = ui.f(6),
+                            .border = ui.su(1),
+                            .border_color = alphaCol(th.success_color, 0.45),
+                            .align_x = .center,
+                            .align_y = .center,
+                        });
+                        ui.icon("check", 13 * scale, th.success_color, 0);
+                        ui.close();
 
-                    _ = ui.open(.{
-                        .width = .{ .fixed = ui.s(142) },
-                        .height = .{ .grow = .{} },
-                        .padding = .{ .right = ui.su(8) },
-                        .align_x = .right,
-                        .align_y = .center,
-                    });
-                    var mem_row_buf: [32]u8 = undefined;
-                    const mem_row_str = formatMemory(&mem_row_buf, proc.rss_kb);
-                    ui.text(mem_row_str, .{
-                        .size = (self.cfg.typography.secondary - 1) * scale,
-                        .color = alphaCol(text_main, 0.85),
-                    });
-                    ui.close();
+                        // 2. Cancel button (x)
+                        const is_cnc_hov = self.hover_kill_action == .cancel and self.hover_kill_pid == proc.pid;
+                        _ = ui.open(.{
+                            .width = .{ .fixed = ui.s(30) },
+                            .height = .{ .fixed = ui.s(26) },
+                            .bg = if (is_cnc_hov) alphaCol(th.error_color, 0.30) else alphaCol(text_muted, 0.14),
+                            .radius = ui.f(6),
+                            .border = ui.su(1),
+                            .border_color = if (is_cnc_hov) alphaCol(th.error_color, 0.45) else alphaCol(text_muted, 0.30),
+                            .align_x = .center,
+                            .align_y = .center,
+                        });
+                        ui.icon("x", 13 * scale, if (is_cnc_hov) th.error_color else text_muted, 0);
+                        ui.close();
+
+                        ui.close(); // action buttons
+                    } else {
+                        _ = ui.open(.{
+                            .width = .{ .grow = .{} },
+                            .height = .{ .grow = .{} },
+                            .direction = .row,
+                            .padding = .{ .left = ui.su(if (is_selected) 16 else 19) },
+                            .gap = ui.su(6),
+                            .align_y = .center,
+                            .clip_horizontal = true,
+                        });
+
+                        ui.text("↳", .{
+                            .size = self.cfg.typography.secondary * scale,
+                            .color = if (is_selected) alphaCol(fg_selected, 0.75) else alphaCol(text_muted, 0.70),
+                        });
+
+                        var cmd_fmt_buf: [256]u8 = undefined;
+                        const clean_cmd = formatSubprocessCommand(&cmd_fmt_buf, proc.cmdline[0..proc.cmdline_len], proc.name[0..proc.name_len]);
+
+                        var sub_buf: [256]u8 = undefined;
+                        const sub_max_w: f64 = (PANEL_W - 2 * PAD) - 142.0 - 28.0;
+                        const sub_name = renderer.truncateText(
+                            &self.row_measure,
+                            clean_cmd,
+                            @intFromFloat(sub_max_w * @as(f64, @floatFromInt(scale))),
+                            (self.cfg.typography.secondary + 2) * scale,
+                            &sub_buf,
+                        );
+                        ui.text(sub_name, .{
+                            .size = (self.cfg.typography.secondary + 2) * scale,
+                            .color = if (is_selected) fg_selected else alphaCol(text_main, 0.92),
+                        });
+                        ui.close();
+
+                        // Right section: Memory + Kill button
+                        _ = ui.open(.{
+                            .width = .{ .fixed = ui.s(142) },
+                            .height = .{ .grow = .{} },
+                            .direction = .row,
+                            .gap = ui.su(8),
+                            .align_x = .right,
+                            .align_y = .center,
+                        });
+                        var mem_row_buf: [32]u8 = undefined;
+                        const mem_row_str = formatMemory(&mem_row_buf, proc.rss_kb);
+                        ui.text(mem_row_str, .{
+                            .size = (self.cfg.typography.secondary + 2) * scale,
+                            .color = if (is_selected) fg_selected else alphaCol(text_main, 0.88),
+                        });
+
+                        // Kill button (x)
+                        const is_kill_hov = self.hover_kill_action == .kill and self.hover_kill_pid == proc.pid;
+                        _ = ui.open(.{
+                            .width = .{ .fixed = ui.s(28) },
+                            .height = .{ .fixed = ui.s(26) },
+                            .bg = if (is_kill_hov) alphaCol(th.error_color, 0.22) else null,
+                            .radius = ui.f(6),
+                            .align_x = .center,
+                            .align_y = .center,
+                        });
+                        ui.icon("x", 13 * scale, if (is_kill_hov) th.error_color else alphaCol(text_muted, 0.60), 0);
+                        ui.close();
+
+                        ui.close(); // right section
+                    }
                 }
 
                 ui.close(); // row
@@ -1275,7 +1803,7 @@ pub const MemoryMonitor = struct {
         const text_muted = self.cfg.theme.text_muted;
         const text_main = self.cfg.theme.text_main;
         const accent = self.cfg.theme.accent;
-        const ui_sz = self.cfg.typography.ui * scale;
+        const ui_sz = @max(16, (self.cfg.typography.ui + 1)) * scale;
         const sc: i32 = @intCast(scale);
         const fx: f64 = @floatFromInt(rect.x);
         const fy: f64 = @floatFromInt(rect.y);
@@ -1718,4 +2246,68 @@ test "memory monitor ancestry grouping for browsers, electron and terminals" {
     var cbuf: [128]u8 = undefined;
     const clean = formatSubprocessCommand(&cbuf, "/usr/lib/firefox/firefox -contentproc tab", "firefox");
     try std.testing.expectEqualStrings("firefox -contentproc tab", clean);
+}
+
+test "system monitor stats and subprocess kill confirm flow" {
+    const allocator = std.testing.allocator;
+    var cfg = config.Config.init(allocator);
+    defer cfg.deinit(allocator);
+
+    var mm = try MemoryMonitor.init(allocator, cfg);
+    defer mm.deinit();
+
+    // Verify system stats populated
+    mm.updateSystemStats();
+    try std.testing.expect(mm.disk_total_gb > 0.0);
+
+    // Synthetic setup with an expanded group containing 2 subprocesses
+    mm.processes.clearRetainingCapacity();
+    for (mm.groups.items) |*grp| grp.deinit(allocator);
+    mm.groups.clearRetainingCapacity();
+
+    var grp = ProcessGroup{
+        .name_len = 3,
+        .main_pid = 1000,
+        .total_rss_kb = 8000,
+        .procs = std.ArrayList(proc_mem.ProcessInfo).empty,
+        .expanded = true,
+    };
+    @memcpy(grp.name[0..3], "app");
+    try grp.procs.append(allocator, .{ .pid = 1000, .name_len = 3, .rss_kb = 4000 });
+    try grp.procs.append(allocator, .{ .pid = 1001, .name_len = 3, .rss_kb = 4000 });
+    try mm.groups.append(allocator, grp);
+
+    mm.rebuildFiltered(null);
+    try std.testing.expectEqual(@as(usize, 3), mm.visible_rows.items.len); // group, sub0, sub1
+
+    // Subprocess 1 is at index 2 (row 2 in list)
+    const row2_y: i32 = @intFromFloat(MemoryMonitor.listTop() + ROW_H * 2.0 + 10.0);
+    const click_kill_x: i32 = @intFromFloat(MemoryMonitor.contentX1() - 15.0);
+
+    // Initial state: no confirmation
+    try std.testing.expectEqual(@as(?u32, null), mm.confirm_kill_pid);
+
+    // Click kill button on subprocess 1
+    _ = mm.handlePointerButton(click_kill_x, row2_y, POINTER_BUTTON_LEFT, true);
+    try std.testing.expectEqual(@as(?u32, 1001), mm.confirm_kill_pid);
+
+    // In confirm mode, clicking cancel (x) at the same right edge cancels it
+    _ = mm.handlePointerButton(click_kill_x, row2_y, POINTER_BUTTON_LEFT, true);
+    try std.testing.expectEqual(@as(?u32, null), mm.confirm_kill_pid);
+
+    // Click kill button again to re-enter confirm mode
+    _ = mm.handlePointerButton(click_kill_x, row2_y, POINTER_BUTTON_LEFT, true);
+    try std.testing.expectEqual(@as(?u32, 1001), mm.confirm_kill_pid);
+
+    // Press Escape to cancel
+    try std.testing.expect(mm.handleKey(c.XKB_KEY_Escape, "", false, false));
+    try std.testing.expectEqual(@as(?u32, null), mm.confirm_kill_pid);
+    try std.testing.expect(mm.running); // Should still be running after cancelling confirm
+
+    // Test network formatting
+    var rbuf: [32]u8 = undefined;
+    try std.testing.expectEqualStrings("512 B/s", MemoryMonitor.formatRate(&rbuf, 512));
+    try std.testing.expectEqualStrings("12.5 KB/s", MemoryMonitor.formatRate(&rbuf, 12800));
+    try std.testing.expectEqualStrings("150 KB/s", MemoryMonitor.formatRate(&rbuf, 150 * 1024));
+    try std.testing.expectEqualStrings("4.5 MB/s", MemoryMonitor.formatRate(&rbuf, 4718592));
 }

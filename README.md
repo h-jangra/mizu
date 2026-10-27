@@ -127,12 +127,14 @@ sudo xbps-install -S wayland-devel wayland-protocols libxkbcommon-devel freetype
 Mizu is built as a single unified executable with dedicated subcommands:
 
 ```text
-Usage: mizu <command> [options]
+Usage: mizu [command] [options]
 
 A lightweight, from-scratch Wayland desktop shell for Void Linux and MangoWC.
+Running 'mizu' without commands starts the desktop shell (bar + notification daemon).
 
 Commands:
-  bar             Start the top desktop bar
+  (default)       Start the desktop shell daemon (bar + notifications + tray)
+  bar             Start the desktop shell daemon (aliases: daemon, run, start)
   lock            Lock the session with native Wayland lock screen
   launcher        Open the application launcher overlay (aliases: -l, --launcher)
   quicksettings   Open the quick settings control panel (aliases: qs, panel, -q)
@@ -150,7 +152,8 @@ Options:
   -v, --version   Display version information
 ```
 
-### Direct Panel & Action Commands
+### Desktop Shell & Panel Commands
+- `mizu & disown` (or `mizu`) — starts the unified desktop shell daemon (top bar, D-Bus notification service, tray watcher, and system monitor).
 - `mizu lock` — locks all monitors using the native Wayland session-lock protocol with PAM authentication.
 - `mizu launcher` — toggles the application launcher overlay.
 - `mizu quicksettings` (or `mizu qs`) — toggles the quick settings control drawer.
@@ -200,10 +203,11 @@ Add the following keybinding to `~/.config/mango/config.conf` to launch Mizu wit
 bind = SUPER, Space, spawn, mizu launcher
 ```
 
-To auto-start the Mizu bar when MangoWC starts, add:
+To auto-start the Mizu desktop shell (bar + notifications) when MangoWC starts, add:
 ```conf
-exec_always = mizu bar
+exec_always = mizu
 ```
+*(Make sure to remove standalone notification daemons like `mako` or `dunst` so Mizu can manage desktop notifications).*
 
 ### Run Unit Tests
 ```bash

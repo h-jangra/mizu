@@ -183,6 +183,7 @@ static DBusHandlerResult handle_message(DBusConnection *conn, DBusMessage *msg, 
         if (reply) {
             dbus_message_append_args(reply, DBUS_TYPE_UINT32, &id, DBUS_TYPE_INVALID);
             dbus_connection_send(conn, reply, NULL);
+            dbus_connection_flush(conn);
             dbus_message_unref(reply);
         }
         return DBUS_HANDLER_RESULT_HANDLED;
@@ -219,7 +220,7 @@ int mizu_dbus_notify_init(MizuNotifyCallback callback, void *userdata) {
     int ret = dbus_bus_request_name(
         s_conn,
         "org.freedesktop.Notifications",
-        DBUS_NAME_FLAG_REPLACE_EXISTING | DBUS_NAME_FLAG_DO_NOT_QUEUE,
+        DBUS_NAME_FLAG_REPLACE_EXISTING | DBUS_NAME_FLAG_DO_NOT_QUEUE | DBUS_NAME_FLAG_ALLOW_REPLACEMENT,
         &err
     );
     if (dbus_error_is_set(&err)) {
@@ -228,6 +229,33 @@ int mizu_dbus_notify_init(MizuNotifyCallback callback, void *userdata) {
         dbus_connection_unref(s_conn);
         s_conn = NULL;
         return -2;
+    }
+
+    if (ret != DBUS_REQUEST_NAME_REPLY_PRIMARY_OWNER &&
+        ret != DBUS_REQUEST_NAME_REPLY_ALREADY_OWNER) {
+        // If another notification daemon (e.g. mako, dunst, swaync, fnott) is running,
+        // terminate competing daemons so Mizu can become the active notification service.
+        system("pkill -x mako 2>/dev/null; pkill -x dunst 2>/dev/null; pkill -x swaync 2>/dev/null; pkill -x fnott 2>/dev/null");
+        struct timespec ts;
+        ts.tv_sec = 0;
+        ts.tv_nsec = 150000000; // 150ms
+        nanosleep(&ts, NULL);
+
+        dbus_error_free(&err);
+        dbus_error_init(&err);
+        ret = dbus_bus_request_name(
+            s_conn,
+            "org.freedesktop.Notifications",
+            DBUS_NAME_FLAG_REPLACE_EXISTING | DBUS_NAME_FLAG_DO_NOT_QUEUE | DBUS_NAME_FLAG_ALLOW_REPLACEMENT,
+            &err
+        );
+        if (dbus_error_is_set(&err)) {
+            dbus_error_free(&err);
+            dbus_connection_close(s_conn);
+            dbus_connection_unref(s_conn);
+            s_conn = NULL;
+            return -2;
+        }
     }
 
     if (ret != DBUS_REQUEST_NAME_REPLY_PRIMARY_OWNER &&

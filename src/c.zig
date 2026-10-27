@@ -20,6 +20,7 @@ pub const c = @cImport({
     @cInclude("sys/timerfd.h");
     @cInclude("sys/eventfd.h");
     @cInclude("sys/signalfd.h");
+    @cInclude("sys/statvfs.h");
     @cInclude("sys/wait.h");
     @cInclude("pthread.h");
     @cInclude("signal.h");

@@ -412,9 +412,9 @@ fn makeTheme(
         .battery_fg = succ,
         .clock_bg = surface,
         .clock_fg = text,
-        .mpris_playing_bg = accent,
+        .mpris_playing_bg = surface,
         .mpris_paused_bg = surface,
-        .mpris_fg = accent_fg,
+        .mpris_fg = text,
         .separator_fg = sep,
 
         .theme_bg = surface,

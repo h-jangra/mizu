@@ -105,6 +105,7 @@ pub const MIZU_ACTIONS = [_]MizuAction{
     .{ .icon = "󰏘 ", .title = "Theme: Tokyo Night", .desc = "Clean neon cyberpunk night in Shibuya", .cmd = "mizu theme set tokyo_night" },
     .{ .icon = "󰏘 ", .title = "Theme: Rosé Pine", .desc = "All natural pine, faux fur and delicate bougainvillea", .cmd = "mizu theme set rose_pine" },
     .{ .icon = "󰒓 ", .title = "Quick Settings", .desc = "Open quick settings control panel", .cmd = "mizu quicksettings" },
+    .{ .icon = "󰍛 ", .title = "System Monitor", .desc = "Open live system & process monitor", .cmd = "mizu system-monitor" },
     .{ .icon = " ", .title = "Calendar", .desc = "Open interactive calendar popup", .cmd = "mizu calendar" },
     .{ .icon = "󰅍 ", .title = "Clipboard History", .desc = "Open clipboard history search & manager", .cmd = "mizu clipboard" },
     .{ .icon = "󰌌 ", .title = "Keybindings Overlay", .desc = "Show keyboard shortcuts cheat sheet", .cmd = "mizu keyoverlay" },
