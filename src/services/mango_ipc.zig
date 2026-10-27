@@ -222,6 +222,12 @@ pub const MangoIpc = struct {
         @import("./system_status.zig").spawnCmd(cmd);
     }
 
+    pub fn switchPreviousWorkspace(self: *MangoIpc) void {
+        self.sendCommand("dispatch viewtoleft,0\n", .{});
+        const cmd = "mmsg dispatch viewtoleft,0 2>/dev/null || true";
+        @import("./system_status.zig").spawnCmd(cmd);
+    }
+
     pub fn switchWorkspace(self: *MangoIpc, index: u32) void {
         self.sendCommand("dispatch view,{d},0\n", .{index});
         var cmd_buf: [64]u8 = undefined;

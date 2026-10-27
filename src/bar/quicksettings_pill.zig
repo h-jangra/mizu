@@ -42,7 +42,18 @@ pub fn render(ctx: *types.BarContext, ui: *ui_mod.Ui) !void {
     ui.icon(vol_name, icon_size, vol_fg, 1);
 
     if (has_bat) {
-        const svg_name = if (charging) "battery-charging" else if (bat_cap <= 10) "battery-empty" else if (bat_cap >= 90) "battery-full" else if (bat_cap >= 60) "battery-high" else if (bat_cap >= 30) "battery-middle" else "battery-low";
+        const svg_name = if (charging)
+            "battery-charging"
+        else if (bat_cap <= 20)
+            "battery-empty"
+        else if (bat_cap <= 50)
+            "battery-low"
+        else if (bat_cap <= 80)
+            "battery-middle"
+        else if (bat_cap <= 90)
+            "battery-high"
+        else
+            "battery-full";
         const bat_color = if (charging)
             theme.Color.rgb(0x81, 0xC7, 0x84)
         else if (bat_cap <= 15)

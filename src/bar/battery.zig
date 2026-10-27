@@ -36,11 +36,11 @@ fn formatBatteryLabel(buf: *[32]u8, cap: u8, charging: bool, seconds: ?i64) []co
 
 fn batterySvgName(cap: u8, charging: bool) []const u8 {
     if (charging) return "battery-charging";
-    if (cap <= 10) return "battery-empty";
-    if (cap >= 90) return "battery-full";
-    if (cap >= 60) return "battery-high";
-    if (cap >= 30) return "battery-middle";
-    return "battery-low";
+    if (cap <= 20) return "battery-empty";
+    if (cap <= 50) return "battery-low";
+    if (cap <= 80) return "battery-middle";
+    if (cap <= 90) return "battery-high";
+    return "battery-full";
 }
 
 pub fn render(ctx: *types.BarContext, ui: *ui_mod.Ui) !void {
@@ -93,4 +93,31 @@ pub fn render(ctx: *types.BarContext, ui: *ui_mod.Ui) !void {
     ui.close();
 
     try ctx.linkClick(ui, id, 0, .{ .command = "mizu quicksettings" }, null);
+}
+
+test "batterySvgName thresholds" {
+    // Charging override
+    try std.testing.expectEqualStrings("battery-charging", batterySvgName(0, true));
+    try std.testing.expectEqualStrings("battery-charging", batterySvgName(100, true));
+
+    // Discharging thresholds:
+    // 0-20% -> battery-empty
+    try std.testing.expectEqualStrings("battery-empty", batterySvgName(0, false));
+    try std.testing.expectEqualStrings("battery-empty", batterySvgName(20, false));
+
+    // 20-50% -> battery-low
+    try std.testing.expectEqualStrings("battery-low", batterySvgName(21, false));
+    try std.testing.expectEqualStrings("battery-low", batterySvgName(50, false));
+
+    // 50-80% -> battery-middle
+    try std.testing.expectEqualStrings("battery-middle", batterySvgName(51, false));
+    try std.testing.expectEqualStrings("battery-middle", batterySvgName(80, false));
+
+    // 80-90% -> battery-high
+    try std.testing.expectEqualStrings("battery-high", batterySvgName(81, false));
+    try std.testing.expectEqualStrings("battery-high", batterySvgName(90, false));
+
+    // 90-100% -> battery-full
+    try std.testing.expectEqualStrings("battery-full", batterySvgName(91, false));
+    try std.testing.expectEqualStrings("battery-full", batterySvgName(100, false));
 }

@@ -26,6 +26,8 @@ pub const dbus_monitor = struct {
     pub extern "c" fn mizu_dbus_monitor_check_network_dirty() bool;
     pub extern "c" fn mizu_dbus_monitor_check_bluetooth_dirty() bool;
     pub extern "c" fn mizu_dbus_monitor_trigger_mpris_refresh() void;
+    pub extern "c" fn mizu_dbus_monitor_start_bt_discovery() void;
+    pub extern "c" fn mizu_dbus_monitor_stop_bt_discovery() void;
     pub extern "c" fn mizu_dbus_monitor_deinit() void;
 };
 
@@ -883,6 +885,13 @@ pub const SysStatus = struct {
                     power_now = std.fmt.parseInt(u64, std.mem.trim(u8, p_now_buf[0..l], " \t\r\n"), 10) catch 0;
                 }
             } else |_| {}
+        }
+
+        // Battery saver: if low battery (<30%) and on battery, enable saver
+        if (self.has_battery and self.bat_capacity <= 30 and !self.ac_online and self.bat_status == .discharging and !self.profile_manually_set) {
+            self.setPowerProfile(.power_saver);
+            spawnCmd("(echo 1 > /tmp/mizu-eye-comfort 2>/dev/null || true)");
+            spawnCmd("echo 60 > /tmp/mizu-display-refresh-rate 2>/dev/null || true");
         }
 
         if (power_now > 0) {

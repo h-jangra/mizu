@@ -209,14 +209,18 @@ pub const Bar = struct {
             {
                 switch (area.action) {
                     .workspace => |ws_idx| {
-                        if (button == 272) { // BTN_LEFT: if current active workspace, toggle tile/scroller; otherwise switch
+                        if (button == 272) { // BTN_LEFT: switch to workspace (previous if active)
                             if (ipc.isWorkspaceActive(ws_idx)) {
-                                ipc.switchLayout();
+                                ipc.switchPreviousWorkspace();
                             } else {
                                 ipc.switchWorkspace(ws_idx);
                             }
-                        } else if (button == 273) { // BTN_RIGHT: toggle workspace in current view
-                            ipc.toggleWorkspace(ws_idx);
+                        } else if (button == 273) { // BTN_RIGHT: if active, toggle layout; else toggle workspace in view
+                            if (ipc.isWorkspaceActive(ws_idx)) {
+                                ipc.switchLayout();
+                            } else {
+                                ipc.toggleWorkspace(ws_idx);
+                            }
                         }
                     },
                     .command => |cmd| {
@@ -468,3 +472,7 @@ pub const Bar = struct {
         ui.render(target_renderer, commands);
     }
 };
+
+test {
+    std.testing.refAllDecls(@This());
+}

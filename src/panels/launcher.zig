@@ -75,6 +75,7 @@ pub const GenericItem = struct {
     action_data: []const u8,
     action_type: ActionType,
     badge: ?[]const u8 = null,
+    is_history: bool = false,
     owns_strings: bool = true,
     app: ?*const desktop_entry.DesktopApp = null,
 
@@ -98,16 +99,11 @@ pub const MizuAction = struct {
 pub const MIZU_ACTIONS = [_]MizuAction{
     .{ .icon = "󰏘 ", .title = "Theme: Next Theme", .desc = "Cycle to next desktop color scheme", .cmd = "mizu theme next" },
     .{ .icon = "󰏘 ", .title = "Theme: Previous Theme", .desc = "Cycle to previous desktop color scheme", .cmd = "mizu theme prev" },
-    .{ .icon = "󰏘 ", .title = "Theme: Nord", .desc = "Arctic north-bluish palette", .cmd = "mizu theme set nord" },
+    .{ .icon = "󰏘 ", .title = "Theme: Frosted Neumorphic", .desc = "Clean glassy neumorphic aesthetic", .cmd = "mizu theme set frosted_neumorphic" },
+    .{ .icon = "󰏘 ", .title = "Theme: Nord Frost", .desc = "Arctic north-bluish palette", .cmd = "mizu theme set nord" },
     .{ .icon = "󰏘 ", .title = "Theme: Catppuccin Mocha", .desc = "Soothing pastel theme for high-spirited minds", .cmd = "mizu theme set catppuccin_mocha" },
-    .{ .icon = "󰏘 ", .title = "Theme: Dracula", .desc = "Famous dark vampire aesthetic", .cmd = "mizu theme set dracula" },
-    .{ .icon = "󰏘 ", .title = "Theme: Gruvbox Dark", .desc = "Retro warm groove aesthetic", .cmd = "mizu theme set gruvbox_dark" },
     .{ .icon = "󰏘 ", .title = "Theme: Tokyo Night", .desc = "Clean neon cyberpunk night in Shibuya", .cmd = "mizu theme set tokyo_night" },
-    .{ .icon = "󰏘 ", .title = "Theme: Solarized Dark", .desc = "Precision color palette designed for low eye fatigue", .cmd = "mizu theme set solarized_dark" },
-    .{ .icon = "󰏘 ", .title = "Theme: Cyberpunk", .desc = "High-contrast neon yellow & magenta palette", .cmd = "mizu theme set cyberpunk" },
-    .{ .icon = "󰏘 ", .title = "Theme: Rose Pine", .desc = "All natural pine, faux fur and delicate bougainvillea", .cmd = "mizu theme set rose_pine" },
-    .{ .icon = "󰏘 ", .title = "Theme: OLED Pure Black", .desc = "Deep pitch black for maximum OLED battery savings", .cmd = "mizu theme set oled_pure_black" },
-    .{ .icon = "󰏘 ", .title = "Theme: Sakura Pink", .desc = "Soft pastel cherry blossom aesthetic", .cmd = "mizu theme set sakura_pink" },
+    .{ .icon = "󰏘 ", .title = "Theme: Rosé Pine", .desc = "All natural pine, faux fur and delicate bougainvillea", .cmd = "mizu theme set rose_pine" },
     .{ .icon = "󰒓 ", .title = "Quick Settings", .desc = "Open quick settings control panel", .cmd = "mizu quicksettings" },
     .{ .icon = " ", .title = "Calendar", .desc = "Open interactive calendar popup", .cmd = "mizu calendar" },
     .{ .icon = "󰅍 ", .title = "Clipboard History", .desc = "Open clipboard history search & manager", .cmd = "mizu clipboard" },
@@ -321,7 +317,53 @@ fn spawnDirect(argv: []const [*:0]const u8) void {
     }
 }
 
-fn parseAndSpawnApp(allocator: std.mem.Allocator, exec: []const u8, in_terminal: bool) void {
+pub fn isCommandAvailable(cmd: []const u8) bool {
+    if (cmd.len == 0) return false;
+    if (cmd[0] == '/') {
+        var buf: [512]u8 = undefined;
+        const z = std.fmt.bufPrintZ(&buf, "{s}", .{cmd}) catch return false;
+        return c.access(z.ptr, c.X_OK) == 0;
+    }
+    const path_env = c.getenv("PATH") orelse return false;
+    const path_str = std.mem.span(path_env);
+    var it = std.mem.splitScalar(u8, path_str, ':');
+    var buf: [512]u8 = undefined;
+    while (it.next()) |dir| {
+        if (dir.len == 0) continue;
+        const full_path = std.fmt.bufPrintZ(&buf, "{s}/{s}", .{ dir, cmd }) catch continue;
+        if (c.access(full_path.ptr, c.X_OK) == 0) return true;
+    }
+    return false;
+}
+
+pub fn resolveTerminal(cfg: *const config.Config) []const u8 {
+    if (cfg.terminal) |t| {
+        const trimmed = std.mem.trim(u8, t, " \t\r\n");
+        if (trimmed.len > 0) return trimmed;
+    }
+    if (c.getenv("TERMINAL")) |t_env| {
+        const t_span = std.mem.span(t_env);
+        const trimmed = std.mem.trim(u8, t_span, " \t\r\n");
+        if (trimmed.len > 0) return trimmed;
+    }
+    const candidates = [_][]const u8{
+        "foot",
+        "alacritty",
+        "kitty",
+        "ghostty",
+        "wezterm",
+        "gnome-terminal",
+        "konsole",
+        "xfce4-terminal",
+        "xterm",
+    };
+    for (candidates) |cand| {
+        if (isCommandAvailable(cand)) return cand;
+    }
+    return "foot";
+}
+
+fn parseAndSpawnApp(allocator: std.mem.Allocator, exec: []const u8, in_terminal: bool, term: []const u8) void {
     const trimmed = std.mem.trim(u8, exec, " \t\r\n");
     if (trimmed.len == 0) return;
 
@@ -332,8 +374,8 @@ fn parseAndSpawnApp(allocator: std.mem.Allocator, exec: []const u8, in_terminal:
     }
 
     if (in_terminal) {
-        const foot_str = allocator.dupeZ(u8, "foot") catch return;
-        tokens.append(allocator, foot_str) catch return;
+        const term_str = allocator.dupeZ(u8, term) catch return;
+        tokens.append(allocator, term_str) catch return;
         const e_flag = allocator.dupeZ(u8, "-e") catch return;
         tokens.append(allocator, e_flag) catch return;
     }
@@ -399,12 +441,11 @@ fn openFileDirect(allocator: std.mem.Allocator, path: []const u8) void {
     spawnDirect(&argv);
 }
 
-fn spawnShellCommand(allocator: std.mem.Allocator, cmd: []const u8, in_terminal: bool) void {
+fn spawnShellCommand(allocator: std.mem.Allocator, cmd: []const u8, in_terminal: bool, term: []const u8) void {
     const trimmed = std.mem.trim(u8, cmd, " \t\r\n");
     if (trimmed.len == 0) return;
 
     if (in_terminal) {
-        const term: []const u8 = if (c.getenv("TERMINAL")) |t| std.mem.span(t) else "foot";
         var term_buf: [1024]u8 = undefined;
         const full_cmd = std.fmt.bufPrint(&term_buf, "{s}; echo; printf 'Press Enter to exit... '; read _", .{trimmed}) catch return;
         const full_cmd_z = allocator.dupeZ(u8, full_cmd) catch return;
@@ -481,8 +522,131 @@ fn builtinSvgIcon(icon: []const u8) ?[]const u8 {
     if (std.mem.eql(u8, glyph, "\u{f120}")) return "terminal";
     if (std.mem.eql(u8, glyph, "\u{f018d}")) return "terminal";
     if (std.mem.eql(u8, glyph, "\u{f0a9a}")) return "calculator";
+    if (std.mem.eql(u8, glyph, "\u{f01da}")) return "refresh";
     return null;
 }
+
+fn getHistoryFilePath(buf: []u8) ?[]const u8 {
+    const home = c.getenv("HOME") orelse return null;
+    return std.fmt.bufPrint(buf, "{s}/.cache/mizu/command_history", .{std.mem.span(home)}) catch null;
+}
+
+fn loadCommandHistory(allocator: std.mem.Allocator) std.ArrayList([]const u8) {
+    var history = std.ArrayList([]const u8).empty;
+    var path_buf: [512]u8 = undefined;
+    const path = getHistoryFilePath(&path_buf) orelse return history;
+
+    var path_z_buf: [512]u8 = undefined;
+    const path_z = std.fmt.bufPrintZ(&path_z_buf, "{s}", .{path}) catch return history;
+
+    const file = c.fopen(path_z.ptr, "r") orelse return history;
+    defer _ = c.fclose(file);
+
+    var line_buf: [1024]u8 = undefined;
+    while (c.fgets(&line_buf, @intCast(line_buf.len), file)) |line_ptr| {
+        const raw_line = std.mem.span(line_ptr);
+        const trimmed = std.mem.trim(u8, raw_line, " \t\r\n");
+        if (trimmed.len == 0) continue;
+
+        var dup = false;
+        for (history.items) |existing| {
+            if (std.mem.eql(u8, existing, trimmed)) {
+                dup = true;
+                break;
+            }
+        }
+        if (dup) continue;
+
+        const cmd_copy = allocator.dupe(u8, trimmed) catch continue;
+        history.append(allocator, cmd_copy) catch {
+            allocator.free(cmd_copy);
+            break;
+        };
+        if (history.items.len >= 100) break;
+    }
+
+    return history;
+}
+
+fn saveCommandHistoryToFile(history: []const []const u8) void {
+    const home = c.getenv("HOME") orelse return;
+    var dir_buf: [256]u8 = undefined;
+    const dir_path = std.fmt.bufPrintZ(&dir_buf, "{s}/.cache/mizu", .{std.mem.span(home)}) catch return;
+    _ = c.mkdir(dir_path.ptr, 0o755);
+
+    var path_buf: [512]u8 = undefined;
+    const path_z = std.fmt.bufPrintZ(&path_buf, "{s}/.cache/mizu/command_history", .{std.mem.span(home)}) catch return;
+
+    const file = c.fopen(path_z.ptr, "w") orelse return;
+    defer _ = c.fclose(file);
+
+    for (history) |cmd| {
+        _ = c.fputs(cmd.ptr, file);
+        _ = c.fputc('\n', file);
+    }
+}
+
+fn getCalcHistoryFilePath(buf: []u8) ?[]const u8 {
+    const home = c.getenv("HOME") orelse return null;
+    return std.fmt.bufPrint(buf, "{s}/.cache/mizu/calc_history", .{std.mem.span(home)}) catch null;
+}
+
+fn loadCalcHistory(allocator: std.mem.Allocator) std.ArrayList([]const u8) {
+    var history = std.ArrayList([]const u8).empty;
+    var path_buf: [512]u8 = undefined;
+    const path = getCalcHistoryFilePath(&path_buf) orelse return history;
+
+    var path_z_buf: [512]u8 = undefined;
+    const path_z = std.fmt.bufPrintZ(&path_z_buf, "{s}", .{path}) catch return history;
+
+    const file = c.fopen(path_z.ptr, "r") orelse return history;
+    defer _ = c.fclose(file);
+
+    var line_buf: [1024]u8 = undefined;
+    while (c.fgets(&line_buf, @intCast(line_buf.len), file)) |line_ptr| {
+        const raw_line = std.mem.span(line_ptr);
+        const trimmed = std.mem.trim(u8, raw_line, " \t\r\n");
+        if (trimmed.len == 0) continue;
+
+        var dup = false;
+        for (history.items) |existing| {
+            if (std.mem.eql(u8, existing, trimmed)) {
+                dup = true;
+                break;
+            }
+        }
+        if (dup) continue;
+
+        const copy = allocator.dupe(u8, trimmed) catch continue;
+        history.append(allocator, copy) catch {
+            allocator.free(copy);
+            break;
+        };
+        if (history.items.len >= 100) break;
+    }
+
+    return history;
+}
+
+fn saveCalcHistoryToFile(history: []const []const u8) void {
+    const home = c.getenv("HOME") orelse return;
+    var dir_buf: [256]u8 = undefined;
+    const dir_path = std.fmt.bufPrintZ(&dir_buf, "{s}/.cache/mizu", .{std.mem.span(home)}) catch return;
+    _ = c.mkdir(dir_path.ptr, 0o755);
+
+    var path_buf: [512]u8 = undefined;
+    const path_z = std.fmt.bufPrintZ(&path_buf, "{s}/.cache/mizu/calc_history", .{std.mem.span(home)}) catch return;
+
+    const file = c.fopen(path_z.ptr, "w") orelse return;
+    defer _ = c.fclose(file);
+
+    for (history) |entry| {
+        _ = c.fputs(entry.ptr, file);
+        _ = c.fputc('\n', file);
+    }
+}
+
+pub const MODE_SERIES = [_]Mode{ .app, .command, .action, .files, .calc };
 
 const InputDraw = struct {
     input: *text_input.TextInput,
@@ -533,9 +697,12 @@ pub const Launcher = struct {
     apps: std.ArrayList(desktop_entry.DesktopApp),
     results: std.ArrayList(desktop_entry.SearchResult),
     items: std.ArrayList(GenericItem),
+    cmd_history: std.ArrayList([]const u8),
+    calc_history: std.ArrayList([]const u8),
     input: text_input.TextInput,
     selected_index: usize = 0,
     hover_index: ?usize = null,
+    hover_trash: bool = false,
     confirm_index: ?usize = null,
 
     width: u32 = 680,
@@ -567,6 +734,8 @@ pub const Launcher = struct {
             .apps = apps,
             .results = std.ArrayList(desktop_entry.SearchResult).empty,
             .items = std.ArrayList(GenericItem).empty,
+            .cmd_history = loadCommandHistory(allocator),
+            .calc_history = loadCalcHistory(allocator),
             .input = text_input.TextInput.init(allocator, Mode.app.placeholder(), false),
         };
 
@@ -579,6 +748,14 @@ pub const Launcher = struct {
     pub fn deinit(self: *Launcher) void {
         self.clearItems();
         self.items.deinit(self.allocator);
+        for (self.calc_history.items) |item| {
+            self.allocator.free(item);
+        }
+        self.calc_history.deinit(self.allocator);
+        for (self.cmd_history.items) |cmd| {
+            self.allocator.free(cmd);
+        }
+        self.cmd_history.deinit(self.allocator);
         self.results.deinit(self.allocator);
         self.input.deinit();
         for (self.apps.items) |*app| {
@@ -587,6 +764,107 @@ pub const Launcher = struct {
         self.apps.deinit(self.allocator);
         self.icon_cache.deinit();
         self.font.deinit();
+    }
+
+    pub fn getTrashRect(self: *const Launcher, row: usize) struct { x: i32, y: i32, w: u32, h: u32 } {
+        const card = self.getListCardRect(row);
+        const sz: u32 = 28;
+        const x = card.x + @as(i32, @intCast(card.w)) - 10 - @as(i32, @intCast(sz));
+        const y = card.y + @as(i32, @intCast((card.h - sz) / 2));
+        return .{ .x = x, .y = y, .w = sz, .h = sz };
+    }
+
+    pub fn isTrashAt(self: *const Launcher, row: usize, x: i32, y: i32) bool {
+        const r = self.getTrashRect(row);
+        return (x >= r.x and x < r.x + @as(i32, @intCast(r.w)) and
+            y >= r.y and y < r.y + @as(i32, @intCast(r.h)));
+    }
+
+    pub fn addCalcHistory(self: *Launcher, expr: []const u8, result: []const u8) !void {
+        const trimmed_expr = std.mem.trim(u8, expr, " \t\r\n");
+        const trimmed_res = std.mem.trim(u8, result, " \t\r\n");
+        if (trimmed_expr.len == 0 or trimmed_res.len == 0) return;
+
+        var full_buf: [256]u8 = undefined;
+        const entry_str = try std.fmt.bufPrint(&full_buf, "{s} = {s}", .{ trimmed_expr, trimmed_res });
+
+        var idx: ?usize = null;
+        for (self.calc_history.items, 0..) |existing, i| {
+            if (std.mem.eql(u8, existing, entry_str) or std.mem.startsWith(u8, existing, trimmed_expr)) {
+                idx = i;
+                break;
+            }
+        }
+        if (idx) |i| {
+            const removed = self.calc_history.orderedRemove(i);
+            self.allocator.free(removed);
+        }
+
+        const copy = try self.allocator.dupe(u8, entry_str);
+        try self.calc_history.insert(self.allocator, 0, copy);
+
+        while (self.calc_history.items.len > 100) {
+            const popped = self.calc_history.pop();
+            if (popped) |p| {
+                self.allocator.free(p);
+            }
+        }
+
+        saveCalcHistoryToFile(self.calc_history.items);
+    }
+
+    pub fn removeCalcHistory(self: *Launcher, entry: []const u8) !void {
+        const trimmed = std.mem.trim(u8, entry, " \t\r\n");
+        var idx: ?usize = null;
+        for (self.calc_history.items, 0..) |existing, i| {
+            if (std.mem.eql(u8, existing, trimmed) or
+                std.mem.indexOf(u8, existing, trimmed) != null or
+                std.mem.indexOf(u8, trimmed, existing) != null)
+            {
+                idx = i;
+                break;
+            }
+        }
+        if (idx) |i| {
+            const removed = self.calc_history.orderedRemove(i);
+            self.allocator.free(removed);
+            saveCalcHistoryToFile(self.calc_history.items);
+        }
+    }
+
+    pub fn removeCommandHistory(self: *Launcher, cmd: []const u8) !void {
+        const trimmed = std.mem.trim(u8, cmd, " \t\r\n");
+        var idx: ?usize = null;
+        for (self.cmd_history.items, 0..) |existing, i| {
+            if (std.mem.eql(u8, existing, trimmed)) {
+                idx = i;
+                break;
+            }
+        }
+        if (idx) |i| {
+            const removed = self.cmd_history.orderedRemove(i);
+            self.allocator.free(removed);
+            saveCommandHistoryToFile(self.cmd_history.items);
+        }
+    }
+
+    pub fn removeFromHistory(self: *Launcher, item_idx: usize) !void {
+        if (item_idx >= self.items.items.len) return;
+        const item = self.items.items[item_idx];
+        if (!item.is_history) return;
+
+        const effective = self.effectiveMode();
+        if (effective == .command) {
+            try self.removeCommandHistory(item.action_data);
+        } else if (effective == .calc) {
+            try self.removeCalcHistory(item.title);
+        }
+
+        try self.updateResults();
+        if (self.selected_index >= self.items.items.len and self.selected_index > 0) {
+            self.selected_index = self.items.items.len - 1;
+        }
+        self.hover_trash = false;
     }
 
     pub fn updateDimensions(self: *Launcher, output_w: u32, output_h: u32) void {
@@ -631,6 +909,73 @@ pub const Launcher = struct {
         self.selected_index = 0;
         self.hover_index = null;
         self.confirm_index = null;
+    }
+
+    pub fn addHistory(self: *Launcher, cmd: []const u8) !void {
+        const trimmed = std.mem.trim(u8, cmd, " \t\r\n");
+        if (trimmed.len == 0) return;
+
+        var idx: ?usize = null;
+        for (self.cmd_history.items, 0..) |existing, i| {
+            if (std.mem.eql(u8, existing, trimmed)) {
+                idx = i;
+                break;
+            }
+        }
+        if (idx) |i| {
+            const removed = self.cmd_history.orderedRemove(i);
+            self.allocator.free(removed);
+        }
+
+        const cmd_copy = try self.allocator.dupe(u8, trimmed);
+        try self.cmd_history.insert(self.allocator, 0, cmd_copy);
+
+        while (self.cmd_history.items.len > 100) {
+            const popped = self.cmd_history.pop();
+            if (popped) |p| {
+                self.allocator.free(p);
+            }
+        }
+
+        saveCommandHistoryToFile(self.cmd_history.items);
+    }
+
+    pub fn cycleMode(self: *Launcher, reverse: bool) !void {
+        const cur_mode = self.effectiveMode();
+        var cur_idx: usize = 0;
+        for (MODE_SERIES, 0..) |m, i| {
+            if (m == cur_mode) {
+                cur_idx = i;
+                break;
+            }
+        }
+
+        const next_idx = if (reverse)
+            if (cur_idx == 0) MODE_SERIES.len - 1 else cur_idx - 1
+        else
+            (cur_idx + 1) % MODE_SERIES.len;
+
+        const next_mode = MODE_SERIES[next_idx];
+
+        const cur_text = self.input.getText();
+        const trimmed = std.mem.trim(u8, cur_text, " \t\r\n");
+        var clean_query = trimmed;
+        if (clean_query.len > 0) {
+            if (clean_query[0] == '>' or clean_query[0] == ':' or clean_query[0] == '/' or clean_query[0] == '=') {
+                clean_query = std.mem.trim(u8, clean_query[1..], " \t\r\n");
+            }
+        }
+
+        self.mode = next_mode;
+        self.input.placeholder = next_mode.placeholder();
+        self.input.clear();
+        if (clean_query.len > 0) {
+            try self.input.insertBytes(clean_query);
+        }
+        self.selected_index = 0;
+        self.hover_index = null;
+        self.confirm_index = null;
+        try self.updateResults();
     }
 
     pub fn effectiveMode(self: *const Launcher) Mode {
@@ -730,11 +1075,10 @@ pub const Launcher = struct {
 
         for (self.results.items) |res| {
             const app = res.app;
-            const desc = app.generic_name orelse (app.comment orelse app.exec);
             try self.items.append(self.allocator, .{
                 .icon = app.icon,
                 .title = app.name,
-                .description = desc,
+                .description = "",
                 .action_data = app.exec,
                 .action_type = .launch_app,
                 .badge = "App",
@@ -747,15 +1091,33 @@ pub const Launcher = struct {
     fn updateCommandResults(self: *Launcher, raw_cmd: []const u8) !void {
         const cmd = std.mem.trim(u8, raw_cmd, " \t\r\n");
         if (cmd.len == 0) {
-            try self.items.append(self.allocator, .{
-                .icon = " ",
-                .title = "Execute Shell Command",
-                .description = "Type any shell command and press Enter to execute",
-                .action_data = "",
-                .action_type = .shell_command,
-                .badge = "Command",
-                .owns_strings = false,
-            });
+            if (self.cmd_history.items.len == 0) {
+                try self.items.append(self.allocator, .{
+                    .icon = " ",
+                    .title = "Execute Shell Command",
+                    .description = "Type any shell command and press Enter to execute",
+                    .action_data = "",
+                    .action_type = .shell_command,
+                    .badge = "Command",
+                    .owns_strings = false,
+                });
+            } else {
+                for (self.cmd_history.items) |hist_cmd| {
+                    const title = try self.allocator.dupe(u8, hist_cmd);
+                    const desc = try self.allocator.dupe(u8, "Recent command");
+                    const act = try self.allocator.dupe(u8, hist_cmd);
+                    try self.items.append(self.allocator, .{
+                        .icon = " ",
+                        .title = title,
+                        .description = desc,
+                        .action_data = act,
+                        .action_type = .shell_command,
+                        .badge = "History",
+                        .is_history = true,
+                        .owns_strings = true,
+                    });
+                }
+            }
             return;
         }
 
@@ -784,6 +1146,24 @@ pub const Launcher = struct {
             .badge = "Terminal",
             .owns_strings = true,
         });
+
+        for (self.cmd_history.items) |hist_cmd| {
+            if (std.mem.indexOf(u8, hist_cmd, cmd) != null and !std.mem.eql(u8, hist_cmd, cmd)) {
+                const title = try self.allocator.dupe(u8, hist_cmd);
+                const desc = try self.allocator.dupe(u8, "Recent command");
+                const act = try self.allocator.dupe(u8, hist_cmd);
+                try self.items.append(self.allocator, .{
+                    .icon = " ",
+                    .title = title,
+                    .description = desc,
+                    .action_data = act,
+                    .action_type = .shell_command,
+                    .badge = "History",
+                    .is_history = true,
+                    .owns_strings = true,
+                });
+            }
+        }
     }
 
     fn updateActionResults(self: *Launcher, raw_query: []const u8) !void {
@@ -821,15 +1201,38 @@ pub const Launcher = struct {
     fn updateCalcResults(self: *Launcher, raw_expr: []const u8) !void {
         const expr = std.mem.trim(u8, raw_expr, " \t\r\n");
         if (expr.len == 0) {
-            try self.items.append(self.allocator, .{
-                .icon = "󰪚 ",
-                .title = "Calculator",
-                .description = "Enter math expression (e.g. 125 / 5, 2^10, sqrt(144), sin(pi/2))",
-                .action_data = "",
-                .action_type = .copy_clipboard,
-                .badge = "Calc",
-                .owns_strings = false,
-            });
+            if (self.calc_history.items.len == 0) {
+                try self.items.append(self.allocator, .{
+                    .icon = "󰪚 ",
+                    .title = "Calculator",
+                    .description = "Enter math expression (e.g. 125 / 5, 2^10, sqrt(144), sin(pi/2))",
+                    .action_data = "",
+                    .action_type = .copy_clipboard,
+                    .badge = "Calc",
+                    .is_history = false,
+                    .owns_strings = false,
+                });
+            } else {
+                for (self.calc_history.items) |h_entry| {
+                    var res_part = h_entry;
+                    if (std.mem.lastIndexOf(u8, h_entry, " = ")) |eq_idx| {
+                        res_part = h_entry[eq_idx + 3 ..];
+                    }
+                    const title = try self.allocator.dupe(u8, h_entry);
+                    const desc = try std.fmt.allocPrint(self.allocator, "Press Enter to copy \"{s}\" to clipboard", .{res_part});
+                    const act = try self.allocator.dupe(u8, res_part);
+                    try self.items.append(self.allocator, .{
+                        .icon = "󰪚 ",
+                        .title = title,
+                        .description = desc,
+                        .action_data = act,
+                        .action_type = .copy_clipboard,
+                        .badge = "History",
+                        .is_history = true,
+                        .owns_strings = true,
+                    });
+                }
+            }
             return;
         }
 
@@ -848,8 +1251,31 @@ pub const Launcher = struct {
                 .action_data = act,
                 .action_type = .copy_clipboard,
                 .badge = "Calc",
+                .is_history = false,
                 .owns_strings = true,
             });
+
+            for (self.calc_history.items) |h_entry| {
+                if (std.mem.indexOf(u8, h_entry, expr) != null) {
+                    var res_part = h_entry;
+                    if (std.mem.lastIndexOf(u8, h_entry, " = ")) |eq_idx| {
+                        res_part = h_entry[eq_idx + 3 ..];
+                    }
+                    const h_title = try self.allocator.dupe(u8, h_entry);
+                    const h_desc = try std.fmt.allocPrint(self.allocator, "Press Enter to copy \"{s}\" to clipboard", .{res_part});
+                    const h_act = try self.allocator.dupe(u8, res_part);
+                    try self.items.append(self.allocator, .{
+                        .icon = "󰪚 ",
+                        .title = h_title,
+                        .description = h_desc,
+                        .action_data = h_act,
+                        .action_type = .copy_clipboard,
+                        .badge = "History",
+                        .is_history = true,
+                        .owns_strings = true,
+                    });
+                }
+            }
         } else |err| {
             const err_msg = switch (err) {
                 error.DivisionByZero => "Error: Division by zero",
@@ -868,8 +1294,31 @@ pub const Launcher = struct {
                 .action_data = "",
                 .action_type = .copy_clipboard,
                 .badge = "Calc",
+                .is_history = false,
                 .owns_strings = false,
             });
+
+            for (self.calc_history.items) |h_entry| {
+                if (std.mem.indexOf(u8, h_entry, expr) != null) {
+                    var res_part = h_entry;
+                    if (std.mem.lastIndexOf(u8, h_entry, " = ")) |eq_idx| {
+                        res_part = h_entry[eq_idx + 3 ..];
+                    }
+                    const h_title = try self.allocator.dupe(u8, h_entry);
+                    const h_desc = try std.fmt.allocPrint(self.allocator, "Press Enter to copy \"{s}\" to clipboard", .{res_part});
+                    const h_act = try self.allocator.dupe(u8, res_part);
+                    try self.items.append(self.allocator, .{
+                        .icon = "󰪚 ",
+                        .title = h_title,
+                        .description = h_desc,
+                        .action_data = h_act,
+                        .action_type = .copy_clipboard,
+                        .badge = "History",
+                        .is_history = true,
+                        .owns_strings = true,
+                    });
+                }
+            }
         }
     }
 
@@ -996,7 +1445,8 @@ pub const Launcher = struct {
     }
 
     pub fn launchApp(self: *Launcher, app: *const desktop_entry.DesktopApp) void {
-        parseAndSpawnApp(self.allocator, app.exec, app.terminal);
+        const term = resolveTerminal(&self.cfg);
+        parseAndSpawnApp(self.allocator, app.exec, app.terminal, term);
     }
 
     pub fn executeMizuAction(self: *Launcher, cmd: []const u8) void {
@@ -1039,30 +1489,46 @@ pub const Launcher = struct {
             }
         }
 
+        const term = resolveTerminal(&self.cfg);
         switch (item.action_type) {
             .launch_app => {
                 if (item.app) |app| {
                     self.launchApp(app);
                 } else {
-                    parseAndSpawnApp(self.allocator, item.action_data, false);
+                    parseAndSpawnApp(self.allocator, item.action_data, false, term);
                 }
             },
             .shell_command => {
                 if (item.action_data.len > 0) {
-                    spawnShellCommand(self.allocator, item.action_data, false);
+                    self.addHistory(item.action_data) catch {};
+                    spawnShellCommand(self.allocator, item.action_data, false, term);
                 } else {
                     return;
                 }
             },
             .terminal_cmd => {
                 if (item.action_data.len > 0) {
-                    spawnShellCommand(self.allocator, item.action_data, true);
+                    self.addHistory(item.action_data) catch {};
+                    spawnShellCommand(self.allocator, item.action_data, true, term);
                 } else {
                     return;
                 }
             },
             .copy_clipboard => {
                 if (item.action_data.len > 0) {
+                    const raw_q = self.input.getText();
+                    const trimmed_q = std.mem.trim(u8, raw_q, " \t\r\n");
+                    var expr_str = trimmed_q;
+                    if (expr_str.len > 0 and expr_str[0] == '=') {
+                        expr_str = std.mem.trim(u8, expr_str[1..], " \t\r\n");
+                    }
+                    if (expr_str.len > 0) {
+                        self.addCalcHistory(expr_str, item.action_data) catch {};
+                    } else if (item.is_history) {
+                        if (std.mem.lastIndexOf(u8, item.title, " = ")) |eq_idx| {
+                            self.addCalcHistory(item.title[0..eq_idx], item.action_data) catch {};
+                        }
+                    }
                     copyToClipboard(item.action_data);
                 } else {
                     return;
@@ -1147,8 +1613,21 @@ pub const Launcher = struct {
         }
 
         const old_hover = self.hover_index;
+        const old_trash = self.hover_trash;
         self.hover_index = self.getItemAt(x, y);
-        return old_hover != self.hover_index;
+
+        self.hover_trash = false;
+        if (self.hover_index) |idx| {
+            const page_offset = self.getPageOffset();
+            if (idx >= page_offset and idx < page_offset + self.list_rows and idx < self.items.items.len) {
+                const r = idx - page_offset;
+                const item = self.items.items[idx];
+                if (item.is_history and self.isTrashAt(r, x, y)) {
+                    self.hover_trash = true;
+                }
+            }
+        }
+        return old_hover != self.hover_index or old_trash != self.hover_trash;
     }
 
     pub fn handlePointerButton(self: *Launcher, x: i32, y: i32, button: u32, is_pressed: bool) bool {
@@ -1179,6 +1658,15 @@ pub const Launcher = struct {
         }
 
         if (self.getItemAt(x, y)) |item_idx| {
+            const page_offset = self.getPageOffset();
+            if (item_idx >= page_offset and item_idx < page_offset + self.list_rows and item_idx < self.items.items.len) {
+                const r = item_idx - page_offset;
+                const item = self.items.items[item_idx];
+                if (item.is_history and self.isTrashAt(r, x, y)) {
+                    self.removeFromHistory(item_idx) catch {};
+                    return true;
+                }
+            }
             self.selected_index = item_idx;
             self.launchSelected();
             return false;
@@ -1208,6 +1696,14 @@ pub const Launcher = struct {
                 self.running = false;
                 return true;
             }
+        } else if (sym == c.XKB_KEY_Delete) {
+            if (self.selected_index < self.items.items.len) {
+                const item = self.items.items[self.selected_index];
+                if (item.is_history) {
+                    self.removeFromHistory(self.selected_index) catch {};
+                    return true;
+                }
+            }
         } else if (sym == c.XKB_KEY_Return or sym == c.XKB_KEY_KP_Enter) {
             self.launchSelected();
             return true;
@@ -1229,15 +1725,11 @@ pub const Launcher = struct {
             return true;
         } else if (sym == c.XKB_KEY_Tab) {
             self.confirm_index = null;
-            if (shift) {
-                self.moveSelection(-1);
-            } else {
-                self.moveSelection(1);
-            }
+            self.cycleMode(shift) catch {};
             return true;
         } else if (sym == c.XKB_KEY_ISO_Left_Tab) {
             self.confirm_index = null;
-            self.moveSelection(-1);
+            self.cycleMode(true) catch {};
             return true;
         }
 
@@ -1543,17 +2035,33 @@ pub const Launcher = struct {
                     .color = if (is_selected) self.cfg.theme.card_selected_fg else self.cfg.theme.text_bright,
                 });
 
-                var desc_trunc: [160]u8 = undefined;
-                const desc_label = truncateText(target, &self.font, item.description, max_text_w, desc_font_size, &desc_trunc);
-                if (desc_label.len > 0) {
-                    ui.text(desc_label, .{
-                        .size = desc_font_size,
-                        .color = if (is_selected) self.cfg.theme.card_selected_fg else self.cfg.theme.text_muted,
-                    });
+                if (item.action_type != .launch_app and item.description.len > 0) {
+                    var desc_trunc: [160]u8 = undefined;
+                    const desc_label = truncateText(target, &self.font, item.description, max_text_w, desc_font_size, &desc_trunc);
+                    if (desc_label.len > 0) {
+                        ui.text(desc_label, .{
+                            .size = desc_font_size,
+                            .color = if (is_selected) self.cfg.theme.card_selected_fg else self.cfg.theme.text_muted,
+                        });
+                    }
                 }
                 ui.close();
 
-                if (badge_str) |b_str| {
+                if (item.is_history and is_hovered) {
+                    const is_trash_hov = self.hover_trash and (self.hover_index != null and self.hover_index.? == item_idx);
+                    _ = ui.open(.{
+                        .width = .{ .fixed = @floatFromInt(28 * scale) },
+                        .height = .{ .fixed = @floatFromInt(28 * scale) },
+                        .bg = if (is_trash_hov) theme.Color.init(50, self.cfg.theme.error_color.r, self.cfg.theme.error_color.g, self.cfg.theme.error_color.b) else self.cfg.theme.surface,
+                        .radius = ui.f(6),
+                        .border = ui.su(1),
+                        .border_color = if (is_trash_hov) self.cfg.theme.error_color else self.cfg.theme.border,
+                        .align_x = .center,
+                        .align_y = .center,
+                    });
+                    ui.icon("trash", 14 * scale, if (is_trash_hov) self.cfg.theme.error_color else self.cfg.theme.text_muted, 0);
+                    ui.close();
+                } else if (badge_str) |b_str| {
                     _ = ui.open(.{
                         .width = .fit,
                         .height = .{ .fixed = ui.s(22) },
@@ -1615,11 +2123,22 @@ test "Launcher hybrid routing and four providers" {
         .apps = std.ArrayList(desktop_entry.DesktopApp).empty,
         .results = std.ArrayList(desktop_entry.SearchResult).empty,
         .items = std.ArrayList(GenericItem).empty,
+        .cmd_history = std.ArrayList([]const u8).empty,
+        .calc_history = std.ArrayList([]const u8).empty,
+        .hover_trash = false,
         .input = text_input.TextInput.init(allocator, Mode.app.placeholder(), false),
     };
     defer {
         launcher.clearItems();
         launcher.items.deinit(allocator);
+        for (launcher.calc_history.items) |c_item| {
+            allocator.free(c_item);
+        }
+        launcher.calc_history.deinit(allocator);
+        for (launcher.cmd_history.items) |cmd| {
+            allocator.free(cmd);
+        }
+        launcher.cmd_history.deinit(allocator);
         launcher.input.deinit();
         launcher.results.deinit(allocator);
         launcher.apps.deinit(allocator);
@@ -1634,6 +2153,7 @@ test "Launcher hybrid routing and four providers" {
     try std.testing.expectEqual(Mode.app, launcher.effectiveMode());
     try std.testing.expect(launcher.items.items.len > 0);
     try std.testing.expectEqualStrings("Firefox", launcher.items.items[0].title);
+    try std.testing.expectEqualStrings("", launcher.items.items[0].description);
     try std.testing.expectEqual(ActionType.launch_app, launcher.items.items[0].action_type);
 
     // Ordinary app names should not be classified as math or commands
@@ -1755,12 +2275,73 @@ test "Launcher hybrid routing and four providers" {
     try std.testing.expectEqual(@as(usize, 1), launcher.selected_index);
     _ = launcher.handleKey(c.XKB_KEY_Up, "", false, false);
     try std.testing.expectEqual(@as(usize, 0), launcher.selected_index);
-    _ = launcher.handleKey(c.XKB_KEY_Tab, "", false, false);
-    try std.testing.expectEqual(@as(usize, 1), launcher.selected_index);
-    _ = launcher.handleKey(c.XKB_KEY_ISO_Left_Tab, "", false, false);
-    try std.testing.expectEqual(@as(usize, 0), launcher.selected_index);
 
-    // 8. Safe application search: unmatched input never executes arbitrary command
+    // 8. Tab to switch mode in series: app -> command (>) -> action (:) -> files (/) -> calc (=) -> app
+    launcher.input.clear();
+    launcher.setMode(.app);
+    try std.testing.expectEqual(Mode.app, launcher.mode);
+
+    _ = launcher.handleKey(c.XKB_KEY_Tab, "", false, false);
+    try std.testing.expectEqual(Mode.command, launcher.mode);
+
+    _ = launcher.handleKey(c.XKB_KEY_Tab, "", false, false);
+    try std.testing.expectEqual(Mode.action, launcher.mode);
+
+    _ = launcher.handleKey(c.XKB_KEY_Tab, "", false, false);
+    try std.testing.expectEqual(Mode.files, launcher.mode);
+
+    _ = launcher.handleKey(c.XKB_KEY_Tab, "", false, false);
+    try std.testing.expectEqual(Mode.calc, launcher.mode);
+
+    _ = launcher.handleKey(c.XKB_KEY_Tab, "", false, false);
+    try std.testing.expectEqual(Mode.app, launcher.mode);
+
+    // Shift-Tab cycles backward
+    _ = launcher.handleKey(c.XKB_KEY_Tab, "", false, true);
+    try std.testing.expectEqual(Mode.calc, launcher.mode);
+
+    _ = launcher.handleKey(c.XKB_KEY_ISO_Left_Tab, "", false, false);
+    try std.testing.expectEqual(Mode.files, launcher.mode);
+
+    // 9. Command mode history save, recall, and removal
+    launcher.setMode(.command);
+    try launcher.addHistory("uname -r");
+    try launcher.addHistory("ip addr");
+    try launcher.updateResults();
+    try std.testing.expect(launcher.items.items.len >= 2);
+    try std.testing.expectEqualStrings("ip addr", launcher.items.items[0].title);
+    try std.testing.expectEqualStrings("uname -r", launcher.items.items[1].title);
+    try std.testing.expectEqualStrings("History", launcher.items.items[0].badge.?);
+    try std.testing.expect(launcher.items.items[0].is_history);
+
+    // Remove from history via Delete key or removeFromHistory
+    launcher.selected_index = 0;
+    _ = launcher.handleKey(c.XKB_KEY_Delete, "", false, false);
+    try std.testing.expectEqualStrings("uname -r", launcher.items.items[0].title);
+
+    // 10. Calc mode history save, recall, and removal
+    launcher.setMode(.calc);
+    try launcher.addCalcHistory("125 / 5", "25");
+    try launcher.addCalcHistory("2^10", "1024");
+    try launcher.updateResults();
+    try std.testing.expect(launcher.items.items.len >= 2);
+    try std.testing.expectEqualStrings("2^10 = 1024", launcher.items.items[0].title);
+    try std.testing.expectEqualStrings("1024", launcher.items.items[0].action_data);
+    try std.testing.expect(launcher.items.items[0].is_history);
+
+    // Remove top calc history item
+    launcher.selected_index = 0;
+    _ = launcher.handleKey(c.XKB_KEY_Delete, "", false, false);
+    try std.testing.expectEqualStrings("125 / 5 = 25", launcher.items.items[0].title);
+
+    // 11. Terminal configuration and resolution
+    try std.testing.expect(resolveTerminal(&launcher.cfg).len > 0);
+    launcher.cfg.terminal = "alacritty";
+    try std.testing.expectEqualStrings("alacritty", resolveTerminal(&launcher.cfg));
+    launcher.cfg.terminal = null;
+
+    // 12. Safe application search: unmatched input never executes arbitrary command
+    launcher.setMode(.app);
     launcher.input.clear();
     try launcher.appendBytes("nonexistent_app_xyz");
     try std.testing.expectEqual(@as(usize, 0), launcher.items.items.len);

@@ -29,6 +29,8 @@ static MizuMprisSnapshot s_mpris_snap = {
 static int s_network_dirty = 0;
 static int s_bluetooth_dirty = 0;
 static char s_active_player[128] = {0};
+static char s_bt_adapter_path[64] = "/org/bluez/hci0";
+static int s_bt_discovering = 0;
 
 static void notify_wake(void) {
     int fd = -1;
@@ -313,7 +315,20 @@ static DBusHandlerResult system_filter(DBusConnection *conn, DBusMessage *msg, v
     if (iface && strstr(iface, "NetworkManager") != NULL) is_net = true;
     if (sender && strstr(sender, "NetworkManager") != NULL) is_net = true;
 
-    if (path && (strstr(path, "bluez") != NULL || strncmp(path, "/org/bluez", 10) == 0)) is_bt = true;
+    if (path && (strstr(path, "bluez") != NULL || strncmp(path, "/org/bluez", 10) == 0)) {
+        is_bt = true;
+        if (strncmp(path, "/org/bluez/hci", 14) == 0) {
+            const char *p = path + 14;
+            while (*p && *p != '/') p++;
+            size_t len = (size_t)(p - path);
+            if (len > 0 && len < sizeof(s_bt_adapter_path)) {
+                pthread_mutex_lock(&s_mutex);
+                memcpy(s_bt_adapter_path, path, len);
+                s_bt_adapter_path[len] = '\0';
+                pthread_mutex_unlock(&s_mutex);
+            }
+        }
+    }
     if (iface && (strstr(iface, "bluez") != NULL || strstr(iface, "Bluetooth") != NULL)) is_bt = true;
     if (sender && strstr(sender, "bluez") != NULL) is_bt = true;
 
@@ -478,11 +493,67 @@ void mizu_dbus_monitor_trigger_mpris_refresh(void) {
     pthread_mutex_unlock(&s_mutex);
 }
 
+void mizu_dbus_monitor_start_bt_discovery(void) {
+    pthread_mutex_lock(&s_mutex);
+    if (!s_system_conn || s_bt_discovering) {
+        pthread_mutex_unlock(&s_mutex);
+        return;
+    }
+    DBusMessage *msg = dbus_message_new_method_call(
+        "org.bluez",
+        s_bt_adapter_path,
+        "org.bluez.Adapter1",
+        "StartDiscovery"
+    );
+    if (msg) {
+        dbus_connection_send(s_system_conn, msg, NULL);
+        dbus_message_unref(msg);
+        dbus_connection_flush(s_system_conn);
+        s_bt_discovering = 1;
+    }
+    pthread_mutex_unlock(&s_mutex);
+}
+
+void mizu_dbus_monitor_stop_bt_discovery(void) {
+    pthread_mutex_lock(&s_mutex);
+    if (!s_system_conn || !s_bt_discovering) {
+        pthread_mutex_unlock(&s_mutex);
+        return;
+    }
+    DBusMessage *msg = dbus_message_new_method_call(
+        "org.bluez",
+        s_bt_adapter_path,
+        "org.bluez.Adapter1",
+        "StopDiscovery"
+    );
+    if (msg) {
+        dbus_connection_send(s_system_conn, msg, NULL);
+        dbus_message_unref(msg);
+        dbus_connection_flush(s_system_conn);
+        s_bt_discovering = 0;
+    }
+    pthread_mutex_unlock(&s_mutex);
+}
+
 void mizu_dbus_monitor_deinit(void) {
     pthread_mutex_lock(&s_mutex);
     if (!s_running) {
         pthread_mutex_unlock(&s_mutex);
         return;
+    }
+    if (s_bt_discovering && s_system_conn) {
+        DBusMessage *msg = dbus_message_new_method_call(
+            "org.bluez",
+            s_bt_adapter_path,
+            "org.bluez.Adapter1",
+            "StopDiscovery"
+        );
+        if (msg) {
+            dbus_connection_send(s_system_conn, msg, NULL);
+            dbus_message_unref(msg);
+            dbus_connection_flush(s_system_conn);
+        }
+        s_bt_discovering = 0;
     }
     s_running = 0;
     if (s_shutdown_pipe[1] >= 0) {

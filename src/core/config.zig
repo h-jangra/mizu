@@ -133,6 +133,9 @@ pub const Config = struct {
     // Wallpaper configuration
     wallpaper: ?[]const u8 = null,
 
+    // Terminal command override (defaults to $TERMINAL or detected system terminal)
+    terminal: ?[]const u8 = null,
+
     // Optional local iCalendar file for holidays. Relative paths resolve
     // against the Mizu config directory (~/.config/mizu).
     calendar_file: ?[]const u8 = null,
@@ -169,6 +172,10 @@ pub const Config = struct {
         if (self.wallpaper) |w| {
             allocator.free(w);
             self.wallpaper = null;
+        }
+        if (self.terminal) |t| {
+            allocator.free(t);
+            self.terminal = null;
         }
         if (self.calendar_file) |path| {
             allocator.free(path);
@@ -315,6 +322,9 @@ pub const Config = struct {
                 } else if (std.mem.eql(u8, key, "calendar_file")) {
                     if (cfg.calendar_file) |old| allocator.free(old);
                     cfg.calendar_file = if (val.len > 0) allocator.dupe(u8, val) catch null else null;
+                } else if (std.mem.eql(u8, key, "terminal")) {
+                    if (cfg.terminal) |old| allocator.free(old);
+                    cfg.terminal = if (val.len > 0) allocator.dupe(u8, val) catch null else null;
                 } else if (std.mem.eql(u8, key, "font_family")) {
                     cfg.theme.font_family = allocator.dupe(u8, val) catch cfg.theme.font_family;
                 } else if (std.mem.eql(u8, key, "ui")) {

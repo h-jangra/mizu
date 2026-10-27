@@ -702,6 +702,9 @@ fn runBar(allocator: std.mem.Allocator, cfg: config.Config) !void {
     try app.connect();
     defer app.deinit();
 
+    // Restore persistent display and night light session settings
+    quicksettings_module.restoreSessionSettings();
+
     var bar = try bar_module.Bar.init(allocator, cfg);
     defer bar.deinit();
 
@@ -1014,10 +1017,13 @@ fn runMemoryMonitor(allocator: std.mem.Allocator, cfg: config.Config) !void {
 }
 
 fn runQuickSettings(allocator: std.mem.Allocator, cfg: config.Config) !void {
+    quicksettings_module.restoreSessionSettings();
+
     var qs = try quicksettings_module.QuickSettings.init(allocator, cfg);
     defer qs.deinit();
     qs.triggerWifiScan();
     qs.triggerBtScan();
+    qs.triggerAudioScan();
 
     var app = wayland.WaylandApp.init(cfg);
     try app.connect();

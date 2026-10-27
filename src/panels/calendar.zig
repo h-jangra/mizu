@@ -99,7 +99,7 @@ pub const Calendar = struct {
         const m: u32 = @intCast(tm.tm_mon + 1);
         const d: u32 = @intCast(tm.tm_mday);
 
-        const is_dnd = (c.access("/tmp/mizu-dnd", c.F_OK) == 0);
+        const is_dnd = isDndActive();
 
         var cal: Calendar = .{
             .allocator = allocator,
@@ -139,7 +139,7 @@ pub const Calendar = struct {
 
     pub fn tick(self: *Calendar) bool {
         var changed = false;
-        const is_dnd = (c.access("/tmp/mizu-dnd", c.F_OK) == 0);
+        const is_dnd = isDndActive();
         if (is_dnd != self.dnd_enabled) {
             self.dnd_enabled = is_dnd;
             changed = true;
@@ -227,14 +227,37 @@ pub const Calendar = struct {
 
     pub fn toggleDnd(self: *Calendar) void {
         self.dnd_enabled = !self.dnd_enabled;
+        const home = c.getenv("HOME");
+        var path_buf: [256]u8 = undefined;
         if (self.dnd_enabled) {
+            if (home) |h| {
+                if (std.fmt.bufPrintZ(&path_buf, "{s}/.cache/mizu/dnd", .{std.mem.span(h)})) |p| {
+                    if (c.fopen(p.ptr, "wb")) |f| _ = c.fclose(f);
+                } else |_| {}
+            }
             if (c.fopen("/tmp/mizu-dnd", "w")) |f| {
                 _ = c.fclose(f);
             }
         } else {
+            if (home) |h| {
+                if (std.fmt.bufPrintZ(&path_buf, "{s}/.cache/mizu/dnd", .{std.mem.span(h)})) |p| {
+                    _ = c.unlink(p.ptr);
+                } else |_| {}
+            }
             _ = c.unlink("/tmp/mizu-dnd");
         }
         sys_status.spawnCmd("dunstctl set-paused toggle 2>/dev/null || makoctl mode -t dnd 2>/dev/null || true");
+    }
+
+    fn isDndActive() bool {
+        const home = c.getenv("HOME");
+        if (home) |h| {
+            var path_buf: [256]u8 = undefined;
+            if (std.fmt.bufPrintZ(&path_buf, "{s}/.cache/mizu/dnd", .{std.mem.span(h)})) |p| {
+                if (c.access(p.ptr, c.F_OK) == 0) return true;
+            } else |_| {}
+        }
+        return (c.access("/tmp/mizu-dnd", c.F_OK) == 0);
     }
 
     pub fn isAreaHovered(self: *const Calendar, x: i32, y: i32, w: u32, h: u32) bool {

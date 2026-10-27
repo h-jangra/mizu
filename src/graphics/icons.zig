@@ -899,7 +899,7 @@ test "getIcon returns null for missing asset" {
 
 test "SVG assets rasterize to visible alpha and are cached" {
     const allocator = std.testing.allocator;
-    const names = [_][]const u8{ "wifi-high", "bell", "volume", "palette", "keys/ctrl", "keys/shift", "keys/enter" };
+    const names = [_][]const u8{ "wifi-high", "bell", "volume", "palette", "power", "lock", "moon" };
     for (names) |name| {
         const icon = getIcon(allocator, name, 24, 1) orelse {
             std.debug.print("failed to load SVG asset: {s}\n", .{name});

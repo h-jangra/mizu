@@ -104,11 +104,10 @@ pub const ThemeKind = enum(u8) {
     nord = 1,
     catppuccin = 2,
     tokyo_night = 3,
-    gruvbox = 4,
-    rose_pine = 5,
+    rose_pine = 4,
 
     pub const default_theme = ThemeKind.frosted_neumorphic;
-    pub const count: u8 = 6;
+    pub const count: u8 = 5;
 
     // Backward compatibility aliases
     pub const mizu = ThemeKind.frosted_neumorphic;
@@ -116,6 +115,7 @@ pub const ThemeKind = enum(u8) {
     pub const frost = ThemeKind.frosted_neumorphic;
     pub const noctalia = ThemeKind.tokyo_night;
     pub const material_you = ThemeKind.catppuccin;
+    pub const gruvbox = ThemeKind.rose_pine;
 
     pub fn name(self: ThemeKind) []const u8 {
         return switch (self) {
@@ -123,7 +123,6 @@ pub const ThemeKind = enum(u8) {
             .nord => "Nord Frost",
             .catppuccin => "Catppuccin Mocha",
             .tokyo_night => "Tokyo Night",
-            .gruvbox => "Gruvbox Material",
             .rose_pine => "Rosé Pine",
         };
     }
@@ -134,7 +133,6 @@ pub const ThemeKind = enum(u8) {
             .nord => "󰜗",
             .catppuccin => "󰄛",
             .tokyo_night => "󰛓",
-            .gruvbox => "󰚢",
             .rose_pine => "󱎂",
         };
     }
@@ -190,19 +188,17 @@ pub const ThemeKind = enum(u8) {
         {
             return .tokyo_night;
         }
-        if (std.ascii.eqlIgnoreCase(str, "gruvbox") or
-            std.ascii.eqlIgnoreCase(str, "gruvbox material") or
-            std.ascii.eqlIgnoreCase(str, "gruvbox_material") or
-            std.ascii.eqlIgnoreCase(str, "gruvbox-material"))
-        {
-            return .gruvbox;
-        }
         if (std.ascii.eqlIgnoreCase(str, "rose_pine") or
             std.ascii.eqlIgnoreCase(str, "rose pine") or
             std.ascii.eqlIgnoreCase(str, "rosé pine") or
             std.ascii.eqlIgnoreCase(str, "rosepine") or
             std.ascii.eqlIgnoreCase(str, "rose-pine") or
-            std.ascii.eqlIgnoreCase(str, "rose"))
+            std.ascii.eqlIgnoreCase(str, "rose") or
+            std.ascii.eqlIgnoreCase(str, "gruvbox") or
+            std.ascii.eqlIgnoreCase(str, "gruvbox material") or
+            std.ascii.eqlIgnoreCase(str, "gruvbox_material") or
+            std.ascii.eqlIgnoreCase(str, "gruvbox-material") or
+            std.ascii.eqlIgnoreCase(str, "gruvbox_dark"))
         {
             return .rose_pine;
         }
@@ -215,7 +211,6 @@ pub const ThemeKind = enum(u8) {
             .nord => nordTheme(),
             .catppuccin => catppuccinTheme(),
             .tokyo_night => tokyoNightTheme(),
-            .gruvbox => gruvboxTheme(),
             .rose_pine => rosePineTheme(),
         };
     }
@@ -551,26 +546,7 @@ pub fn tokyoNightTheme() Theme {
     );
 }
 
-// 4. Gruvbox Material
-// Base #282828, Surface #32302F, Elevated #45403D, Accent #A9B665, Orange #E78A4E, Text #D4BE98
-pub fn gruvboxTheme() Theme {
-    return makeTheme(
-        .gruvbox,
-        Color.hex(0x282828), // Base
-        Color.hex(0x32302F), // Surface
-        Color.hex(0x45403D), // Elevated
-        Color.hex(0xA9B665), // Accent (Greenish Aqua)
-        Color.hex(0x282828), // Accent FG
-        Color.hex(0xE78A4E), // Orange / Secondary
-        Color.hex(0xD4BE98), // Text
-        Color.hex(0xA89984), // Text Muted
-        Color.hex(0xEA6962), // Semantic Error (Red)
-        Color.hex(0xD8A657), // Semantic Warning (Yellow)
-        Color.hex(0xA9B665), // Semantic Success (Green)
-    );
-}
-
-// 5. Rosé Pine
+// 4. Rosé Pine
 // Base #191724, Surface #1F1D2E, Elevated #26233A, Accent #C4A7E7, Foam #9CCFD8, Text #E0DEF4
 pub fn rosePineTheme() Theme {
     return makeTheme(
@@ -957,8 +933,7 @@ pub fn loadSavedTheme() ?ThemeKind {
 test "ThemeKind cycle and parse" {
     try std.testing.expectEqual(ThemeKind.catppuccin, ThemeKind.nord.next());
     try std.testing.expectEqual(ThemeKind.tokyo_night, ThemeKind.catppuccin.next());
-    try std.testing.expectEqual(ThemeKind.gruvbox, ThemeKind.tokyo_night.next());
-    try std.testing.expectEqual(ThemeKind.rose_pine, ThemeKind.gruvbox.next());
+    try std.testing.expectEqual(ThemeKind.rose_pine, ThemeKind.tokyo_night.next());
     try std.testing.expectEqual(ThemeKind.frosted_neumorphic, ThemeKind.rose_pine.next());
     try std.testing.expectEqual(ThemeKind.nord, ThemeKind.frosted_neumorphic.next());
 
@@ -975,10 +950,10 @@ test "ThemeKind cycle and parse" {
     try std.testing.expectEqual(ThemeKind.catppuccin, ThemeKind.fromString("Catppuccin Mocha").?);
     try std.testing.expectEqual(ThemeKind.tokyo_night, ThemeKind.fromString("tokyo_night").?);
     try std.testing.expectEqual(ThemeKind.tokyo_night, ThemeKind.fromString("Tokyo Night").?);
-    try std.testing.expectEqual(ThemeKind.gruvbox, ThemeKind.fromString("gruvbox").?);
-    try std.testing.expectEqual(ThemeKind.gruvbox, ThemeKind.fromString("Gruvbox Material").?);
     try std.testing.expectEqual(ThemeKind.rose_pine, ThemeKind.fromString("rose_pine").?);
     try std.testing.expectEqual(ThemeKind.rose_pine, ThemeKind.fromString("Rosé Pine").?);
+    try std.testing.expectEqual(ThemeKind.rose_pine, ThemeKind.fromString("gruvbox").?);
+    try std.testing.expectEqual(ThemeKind.rose_pine, ThemeKind.fromString("Gruvbox Material").?);
 
     const frosted = ThemeKind.frosted_neumorphic.toTheme();
     try std.testing.expectEqual(ThemeKind.frosted_neumorphic, frosted.kind);

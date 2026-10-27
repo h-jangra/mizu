@@ -1,7 +1,6 @@
 const std = @import("std");
 const c = @import("../c.zig").c;
 const config = @import("../core/config.zig");
-const icons = @import("../graphics/icons.zig");
 const renderer = @import("../core/renderer.zig");
 const theme = @import("../core/theme.zig");
 const ui_mod = @import("../core/ui.zig");
@@ -19,12 +18,11 @@ pub const KeyItem = struct {
     timestamp_ms: i64,
 };
 
-pub const SegmentKind = enum { icon, text };
+pub const SegmentKind = enum { text };
 
 pub const Segment = struct {
-    kind: SegmentKind,
+    kind: SegmentKind = .text,
     text: []const u8 = "",
-    icon: []const u8 = "",
 };
 
 pub const max_segments = 6;
@@ -85,8 +83,8 @@ pub const KeyOverlay = struct {
             }
         }
 
-        const width: u32 = 460;
-        const height: u32 = @max(44, font_size + 26);
+        const width: u32 = 640;
+        const height: u32 = @max(48, font_size + 26);
 
         return .{
             .allocator = allocator,
@@ -159,7 +157,7 @@ pub const KeyOverlay = struct {
 
             // Ignore keys we cannot describe (unknown keycodes, pure modifier
             // variants, etc.) instead of leaving an empty keycap behind.
-            if (keyText(code, self.mods.shift).len == 0 and keyIcon(code) == null) continue;
+            if (keyText(code, self.mods.shift).len == 0 and keyIcon(code, self.mods.shift) == null) continue;
 
             const now = getNowMs();
             if (self.history.items.len >= 4) {
@@ -197,55 +195,34 @@ pub const KeyOverlay = struct {
         var n: usize = 0;
 
         if (item.mods.super) {
-            out[n] = .{ .kind = .text, .text = "Super" };
+            out[n] = .{ .text = "󰘵" }; // Super
             n += 1;
         }
         if (item.mods.ctrl) {
-            out[n] = .{ .kind = .icon, .icon = "ctrl" };
+            out[n] = .{ .text = "ctrl" };
             n += 1;
         }
         if (item.mods.alt) {
-            out[n] = .{ .kind = .icon, .icon = "alt" };
+            out[n] = .{ .text = "alt" };
             n += 1;
         }
         if (item.mods.shift and !isCharacterKey(item.code)) {
-            out[n] = .{ .kind = .icon, .icon = "shift" };
+            out[n] = .{ .text = "󰘶" }; // Shift
             n += 1;
         }
 
-        if (keyIcon(item.code)) |name| {
-            out[n] = .{ .kind = .icon, .icon = name };
+        if (keyIcon(item.code, item.mods.shift)) |icon_text| {
+            out[n] = .{ .text = icon_text };
             n += 1;
         } else {
             const text = keyText(item.code, item.mods.shift);
             if (text.len > 0) {
-                out[n] = .{ .kind = .text, .text = text };
+                out[n] = .{ .text = text };
                 n += 1;
             }
         }
 
         return n;
-    }
-
-    fn iconAsset(name: []const u8) []const u8 {
-        const map = [_][2][]const u8{
-            .{ "escape", "keys/esc" },
-            .{ "backspace", "keys/backspace" },
-            .{ "enter", "keys/enter" },
-            .{ "ctrl", "keys/ctrl" },
-            .{ "shift", "keys/shift" },
-            .{ "alt", "keys/alt" },
-            .{ "caps-lock", "keys/caps-lock" },
-            .{ "up", "keys/up" },
-            .{ "left", "keys/left" },
-            .{ "right", "keys/right" },
-            .{ "down", "keys/down" },
-            .{ "super", "keys/super" },
-        };
-        for (map) |pair| {
-            if (std.mem.eql(u8, name, pair[0])) return pair[1];
-        }
-        return name;
     }
 
     pub fn render(self: *KeyOverlay, target: renderer.Renderer, scale: u32) !void {
@@ -254,14 +231,22 @@ pub const KeyOverlay = struct {
 
         const s: i32 = @intCast(scale);
         const font_size: u32 = self.font_size * scale;
-        const icon_size: u32 = if (font_size > 2 * scale) font_size - 2 * scale else @max(10, font_size);
-        const cap_pad_x: i32 = 7 * s;
-        const cap_h: i32 = @as(i32, @intCast(font_size)) + 10 * s;
-        const seg_gap: i32 = 5 * s;
-        const item_gap: i32 = 12 * s;
-        const box_pad: i32 = 12 * s;
+
+        // Logical spacing tokens (Clay will scale with ui.su)
+        const box_pad_l: u32 = 7;
+        const item_gap_l: u32 = 7;
+        const seg_gap_l: u32 = 3;
+        const cap_pad_x_l: u32 = 6;
+
+        // Physical spacing tokens for exact target measurements and squircle drawing
+        const box_pad: i32 = @as(i32, @intCast(box_pad_l)) * s;
+        const item_gap: i32 = @as(i32, @intCast(item_gap_l)) * s;
+        const seg_gap: i32 = @as(i32, @intCast(seg_gap_l)) * s;
+        const cap_pad_x: i32 = @as(i32, @intCast(cap_pad_x_l)) * s;
+
         const phys_w: i32 = @intCast(target.width);
         const phys_h: i32 = @intCast(target.height);
+        const cap_h: i32 = @as(i32, @intCast(font_size)) + 10 * s;
 
         var segs: [4][max_segments]Segment = undefined;
         var seg_counts: [4]usize = [_]usize{0} ** 4;
@@ -276,11 +261,10 @@ pub const KeyOverlay = struct {
             var item_w: i32 = 0;
             for (0..seg_counts[i]) |j| {
                 const seg = segs[i][j];
-                const content_w: i32 = switch (seg.kind) {
-                    .icon => @intCast(icon_size),
-                    .text => @as(i32, @intCast(target.measureTextWithSize(&self.font, seg.text, font_size))),
-                };
-                const w = content_w + cap_pad_x * 2;
+                const content_w: i32 = @as(i32, @intCast(target.measureTextWithSize(&self.font, seg.text, font_size)));
+                // Provide a square minimum width for single glyphs so standard keycaps look uniform
+                const min_w = cap_h;
+                const w = @max(min_w, content_w + cap_pad_x * 2);
                 width_sets[i][j] = w;
                 item_w += w;
                 if (j + 1 < seg_counts[i]) item_w += seg_gap;
@@ -290,23 +274,30 @@ pub const KeyOverlay = struct {
             if (i + 1 < count) total_content += item_gap;
         }
 
-        // Drop the oldest entries if a large configured font would overflow the
-        // overlay surface, so keycaps never spill past the allocated width.
+        // Drop the oldest entries if they would overflow the overlay surface,
+        // so keycaps never spill past the allocated width.
         var first: usize = 0;
-        while (first + 1 < count and total_content + box_pad * 2 > phys_w) {
-            total_content -= item_widths[first] + item_gap;
+        while (first < count and total_content + box_pad * 2 > phys_w) {
+            total_content -= item_widths[first];
+            if (first + 1 < count) {
+                total_content -= item_gap;
+            }
             first += 1;
         }
+        if (first >= count and count > 0) {
+            first = count - 1;
+            total_content = @min(item_widths[first], phys_w - box_pad * 2);
+        }
 
-        const box_w = total_content + box_pad * 2;
-        const box_h = phys_h - 8 * s;
-        const box_x = @divTrunc(phys_w - box_w, 2);
-        const box_y: i32 = 4 * s;
+        const box_w = @min(phys_w, total_content + box_pad * 2);
+        const box_h = phys_h - 6 * s;
+        const box_x = @max(0, @divTrunc(phys_w - box_w, 2));
+        const box_y: i32 = 3 * s;
 
         // The glass panel and its border are direct draws so the backdrop blur
         // and squircle silhouette stay intact; the keycaps themselves are Clay.
-        target.fillGlassSquircle(box_x, box_y, @intCast(@max(1, box_w)), @intCast(@max(1, box_h)), 12 * scale, self.cfg.theme.panel_bg);
-        target.drawSquircleBorder(box_x, box_y, @intCast(@max(1, box_w)), @intCast(@max(1, box_h)), 12 * scale, @max(1, scale), self.cfg.theme.panel_border);
+        target.fillGlassSquircle(box_x, box_y, @intCast(@max(1, box_w)), @intCast(@max(1, box_h)), 10 * scale, self.cfg.theme.panel_bg);
+        target.drawSquircleBorder(box_x, box_y, @intCast(@max(1, box_w)), @intCast(@max(1, box_h)), 10 * scale, @max(1, scale), self.cfg.theme.panel_border);
 
         var ui = try ui_mod.Ui.begin(
             self.allocator,
@@ -331,9 +322,9 @@ pub const KeyOverlay = struct {
             .width = .{ .fixed = @floatFromInt(@max(1, box_w)) },
             .height = .{ .fixed = @floatFromInt(@max(1, box_h)) },
             .direction = .row,
-            .padding = .all(ui.su(@intCast(box_pad))),
-            .gap = ui.su(@intCast(item_gap)),
-            .align_x = .left,
+            .padding = .all(ui.su(box_pad_l)),
+            .gap = ui.su(item_gap_l),
+            .align_x = .center,
             .align_y = .center,
         });
 
@@ -342,7 +333,7 @@ pub const KeyOverlay = struct {
                 .width = .fit,
                 .height = .{ .fixed = @floatFromInt(@max(1, cap_h)) },
                 .direction = .row,
-                .gap = ui.su(@intCast(seg_gap)),
+                .gap = ui.su(seg_gap_l),
                 .align_y = .center,
             });
             for (0..seg_counts[i]) |j| {
@@ -353,19 +344,16 @@ pub const KeyOverlay = struct {
                     .height = .{ .fixed = @floatFromInt(@max(1, cap_h)) },
                     .bg = self.cfg.theme.elevated,
                     .radius = ui.f(6),
-                    .border = ui.su(@max(1, scale)),
+                    .border = ui.su(1),
                     .border_color = self.cfg.theme.border_focused,
                     .align_x = .center,
                     .align_y = .center,
                 });
-                switch (seg.kind) {
-                    .icon => ui.icon(iconAsset(seg.icon), icon_size, self.cfg.theme.text_bright, 0),
-                    .text => ui.text(seg.text, .{
-                        .size = font_size,
-                        .color = self.cfg.theme.text_bright,
-                        .line_height = @intCast(cap_h),
-                    }),
-                }
+                ui.text(seg.text, .{
+                    .size = font_size,
+                    .color = self.cfg.theme.text_bright,
+                    .line_height = @intCast(cap_h),
+                });
                 ui.close();
             }
             ui.close();
@@ -387,32 +375,27 @@ fn isCharacterKey(code: u16) bool {
     };
 }
 
-pub fn keyIcon(code: u16) ?[]const u8 {
+pub fn keyIcon(code: u16, shift: bool) ?[]const u8 {
     return switch (code) {
-        1 => "escape",
-        14 => "backspace",
-        28 => "enter",
-        29 => "ctrl",
-        42 => "shift",
-        54 => "shift",
-        56 => "alt",
-        58 => "caps-lock",
-        96 => "enter",
-        97 => "ctrl",
-        100 => "alt",
-        103 => "up",
-        105 => "left",
-        106 => "right",
-        108 => "down",
-        125 => "super",
-        126 => "super",
+        1 => "esc",
+        14 => "󰭜",
+        15 => if (shift) "󰌥" else "󰌒",
+        28, 96 => "⏎",
+        57 => "󱁐",
+        58 => "󰌎",
+        99 => "",
+        103 => "",
+        105 => "",
+        106 => "",
+        108 => "",
+        111 => "󰹿",
         else => null,
     };
 }
 
 pub fn keyText(code: u16, shift: bool) []const u8 {
     return switch (code) {
-        1 => "Esc",
+        1 => "esc",
         2 => if (shift) "!" else "1",
         3 => if (shift) "@" else "2",
         4 => if (shift) "#" else "3",
@@ -425,8 +408,8 @@ pub fn keyText(code: u16, shift: bool) []const u8 {
         11 => if (shift) ")" else "0",
         12 => if (shift) "_" else "-",
         13 => if (shift) "+" else "=",
-        14 => "Backspace",
-        15 => "Tab",
+        14 => "󰭜",
+        15 => if (shift) "󰌥" else "󰌒",
         16 => if (shift) "Q" else "q",
         17 => if (shift) "W" else "w",
         18 => if (shift) "E" else "e",
@@ -439,7 +422,7 @@ pub fn keyText(code: u16, shift: bool) []const u8 {
         25 => if (shift) "P" else "p",
         26 => if (shift) "{" else "[",
         27 => if (shift) "}" else "]",
-        28 => "Enter",
+        28 => "⏎",
         30 => if (shift) "A" else "a",
         31 => if (shift) "S" else "s",
         32 => if (shift) "D" else "d",
@@ -464,8 +447,8 @@ pub fn keyText(code: u16, shift: bool) []const u8 {
         52 => if (shift) ">" else ".",
         53 => if (shift) "?" else "/",
         55 => "*",
-        57 => "Space",
-        58 => "Caps",
+        57 => "󱁐",
+        58 => "󰌎",
         59 => "F1",
         60 => "F2",
         61 => "F3",
@@ -480,19 +463,19 @@ pub fn keyText(code: u16, shift: bool) []const u8 {
         70 => "Scroll",
         87 => "F11",
         88 => "F12",
-        96 => "Enter",
+        96 => "⏎",
         98 => "/",
-        99 => "PrtSc",
+        99 => "",
         102 => "Home",
-        103 => "Up",
+        103 => "",
         104 => "PgUp",
-        105 => "Left",
-        106 => "Right",
+        105 => "",
+        106 => "",
         107 => "End",
-        108 => "Down",
+        108 => "",
         109 => "PgDn",
         110 => "Ins",
-        111 => "Del",
+        111 => "󰹿",
         119 => "Pause",
         else => "",
     };
@@ -514,22 +497,30 @@ test "shift is folded into character keys but kept for named keys" {
     const shift_tab = KeyItem{ .code = 15, .mods = .{ .shift = true }, .timestamp_ms = 0 };
     const n2 = KeyOverlay.buildSegments(shift_tab, &segs);
     try std.testing.expectEqual(@as(usize, 2), n2);
-    try std.testing.expectEqual(SegmentKind.icon, segs[0].kind);
-    try std.testing.expectEqualStrings("shift", segs[0].icon);
-    try std.testing.expectEqualStrings("Tab", segs[1].text);
+    try std.testing.expectEqual(SegmentKind.text, segs[0].kind);
+    try std.testing.expectEqualStrings("󰘶", segs[0].text);
+    try std.testing.expectEqualStrings("󰌥", segs[1].text);
 }
 
-test "ctrl and alt use svg keycap assets" {
+test "ctrl and alt use text keycap labels" {
     var segs: [max_segments]Segment = undefined;
     const ctrl_c = KeyItem{ .code = 46, .mods = .{ .ctrl = true }, .timestamp_ms = 0 };
     const n = KeyOverlay.buildSegments(ctrl_c, &segs);
     try std.testing.expectEqual(@as(usize, 2), n);
-    try std.testing.expectEqualStrings("ctrl", segs[0].icon);
+    try std.testing.expectEqualStrings("ctrl", segs[0].text);
     try std.testing.expectEqualStrings("c", segs[1].text);
 }
 
-test "special keys resolve to svg icons" {
-    try std.testing.expectEqualStrings("enter", keyIcon(28).?);
-    try std.testing.expectEqualStrings("backspace", keyIcon(14).?);
-    try std.testing.expectEqualStrings("escape", keyIcon(1).?);
+test "special keys resolve to nerdfont icons" {
+    try std.testing.expectEqualStrings("⏎", keyIcon(28, false).?);
+    try std.testing.expectEqualStrings("󰭜", keyIcon(14, false).?);
+    try std.testing.expectEqualStrings("esc", keyIcon(1, false).?);
+    try std.testing.expectEqualStrings("󰌒", keyIcon(15, false).?);
+    try std.testing.expectEqualStrings("󰌥", keyIcon(15, true).?);
+    try std.testing.expectEqualStrings("󰌎", keyIcon(58, false).?);
+    try std.testing.expectEqualStrings("󰹿", keyIcon(111, false).?);
+    try std.testing.expectEqualStrings("", keyIcon(103, false).?);
+    try std.testing.expectEqualStrings("", keyIcon(108, false).?);
+    try std.testing.expectEqualStrings("", keyIcon(105, false).?);
+    try std.testing.expectEqualStrings("", keyIcon(106, false).?);
 }

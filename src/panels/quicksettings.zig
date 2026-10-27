@@ -339,6 +339,8 @@ pub const QuickSettings = struct {
     bt_connect_worker: BtConnectWorker = .{},
     bt_failed_mac: [32]u8 = [_]u8{0} ** 32,
     bt_failed_mac_len: usize = 0,
+    bt_error_msg: [128]u8 = [_]u8{0} ** 128,
+    bt_error_len: usize = 0,
     audio_scan_worker: AudioScanWorker = .{},
     pointer_x: i32 = -1,
     pointer_y: i32 = -1,
@@ -371,7 +373,7 @@ pub const QuickSettings = struct {
                 }
                 break :blk h;
             },
-            .display_menu => 520,
+            .display_menu => 550,
             .wifi_menu, .bluetooth_menu => 480,
             .audio_menu => 510,
             .notifications_menu => 460,
@@ -411,20 +413,19 @@ pub const QuickSettings = struct {
             .wifi_input = text_input.TextInput.init(allocator, "Enter Wi-Fi password...", true),
             .notif_store = notification_module.NotificationStore.init(allocator),
             .caffeine_enabled = isCaffeineActive(),
-            .dnd_enabled = (c.access("/tmp/mizu-dnd", c.F_OK) == 0),
-            .eye_comfort_enabled = isEyeComfortActive(),
+            .dnd_enabled = loadDnd(),
+            .eye_comfort_enabled = loadEyeComfort() or isEyeComfortActive(),
             .wake_fd = wake_fd,
-            .audio_scan_status = .loading,
+            .audio_scan_status = .idle,
         };
+
+        if (self_val.eye_comfort_enabled and !isEyeComfortActive()) {
+            setEyeComfort(true);
+        }
 
         self_val.queryDisplaySettings();
-
-        // Enumerate audio devices off the UI thread so the panel opens
-        // immediately and populates when PipeWire responds.
         self_val.audio_scan_worker.wake_fd = wake_fd;
-        _ = async.spawnTask(AudioScanWorker, &self_val.audio_scan_worker, wake_fd) catch {
-            self_val.audio_scan_status = async.OpStatus.failed;
-        };
+        self_val.scanAudioDevices();
 
         // Register wake_fd with D-Bus event monitor so MPRIS, NetworkManager,
         // and BlueZ signals wake the quicksettings loop with zero latency.
@@ -439,6 +440,7 @@ pub const QuickSettings = struct {
     }
 
     pub fn deinit(self: *QuickSettings) void {
+        sys_status.dbus_monitor.mizu_dbus_monitor_stop_bt_discovery();
         sys_status.dbus_monitor.mizu_dbus_monitor_set_wake_fd(-1);
         if (self.mpris_cover_img) |img| {
             img.destroy();
@@ -471,13 +473,13 @@ pub const QuickSettings = struct {
             needs_redraw = true;
         }
 
-        const dnd_active = (c.access("/tmp/mizu-dnd", c.F_OK) == 0);
+        const dnd_active = loadDnd();
         if (dnd_active != self.dnd_enabled) {
             self.dnd_enabled = dnd_active;
             needs_redraw = true;
         }
 
-        const eye_active = isEyeComfortActive();
+        const eye_active = loadEyeComfort() or isEyeComfortActive();
         if (eye_active != self.eye_comfort_enabled) {
             self.eye_comfort_enabled = eye_active;
             needs_redraw = true;
@@ -515,7 +517,7 @@ pub const QuickSettings = struct {
 
         if (self.view_mode == .bluetooth_menu) {
             if (!self.bt_scan_worker.running.load(.acquire) and !self.bt_connect_worker.running.load(.acquire)) {
-                if (bt_dirty or (now - self.last_bt_auto_scan >= 5000)) {
+                if (bt_dirty or (now - self.last_bt_auto_scan >= 2000)) {
                     self.last_bt_auto_scan = now;
                     self.triggerBtScan();
                 }
@@ -684,11 +686,14 @@ pub const QuickSettings = struct {
                     .toggle_bluetooth => {
                         self.sys.toggleBluetooth();
                         if (self.sys.bluetooth_enabled) {
-                            if (self.bt_items.items.len == 0) self.scanBluetooth();
+                            if (self.view_mode == .bluetooth_menu) {
+                                sys_status.dbus_monitor.mizu_dbus_monitor_start_bt_discovery();
+                            }
                             self.is_scanning = true;
                             self.scan_ticks = 45;
                             self.triggerBtScan();
                         } else {
+                            sys_status.dbus_monitor.mizu_dbus_monitor_stop_bt_discovery();
                             self.bt_items.clearRetainingCapacity();
                         }
                         return true;
@@ -714,7 +719,7 @@ pub const QuickSettings = struct {
                     .open_bluetooth_menu => {
                         self.view_mode = .bluetooth_menu;
                         self.scroll_offset = 0;
-                        if (self.bt_items.items.len == 0) self.scanBluetooth();
+                        sys_status.dbus_monitor.mizu_dbus_monitor_start_bt_discovery();
                         self.is_scanning = true;
                         self.scan_ticks = 45;
                         self.triggerBtScan();
@@ -723,6 +728,9 @@ pub const QuickSettings = struct {
                     .open_audio_menu => {
                         self.view_mode = .audio_menu;
                         self.scroll_offset = 0;
+                        if (self.sink_items.items.len == 0 and self.source_items.items.len == 0) {
+                            self.scanAudioDevices();
+                        }
                         self.triggerAudioScan();
                         return true;
                     },
@@ -741,6 +749,9 @@ pub const QuickSettings = struct {
                         return true;
                     },
                     .back_to_main => {
+                        if (self.view_mode == .bluetooth_menu) {
+                            sys_status.dbus_monitor.mizu_dbus_monitor_stop_bt_discovery();
+                        }
                         self.view_mode = .main;
                         self.scroll_offset = 0;
                         return true;
@@ -823,6 +834,7 @@ pub const QuickSettings = struct {
                                 self.triggerWifiScan();
                             },
                             .bluetooth_menu => {
+                                sys_status.dbus_monitor.mizu_dbus_monitor_start_bt_discovery();
                                 self.is_scanning = true;
                                 self.scan_ticks = 45;
                                 self.triggerBtScan();
@@ -1127,17 +1139,20 @@ pub const QuickSettings = struct {
                     .set_display_scale => |s_val| {
                         self.display_scale_pct = s_val;
                         applyDisplayScale(s_val);
+                        saveDisplayScale(s_val);
                         return true;
                     },
                     .set_display_refresh => |r_val| {
                         self.display_refresh_rate = r_val;
                         applyDisplayRefresh(r_val);
+                        saveDisplayRefresh(r_val);
                         return true;
                     },
                     .set_display_resolution => |res_idx| {
                         if (res_idx < display_resolutions.len) {
                             self.display_resolution_idx = res_idx;
                             applyDisplayResolution(display_resolutions[res_idx]);
+                            saveDisplayResolution(display_resolutions[res_idx]);
                         }
                         return true;
                     },
@@ -1393,10 +1408,15 @@ pub const QuickSettings = struct {
 
             if (c.popen("bluetoothctl devices Connected 2>/dev/null", "r")) |pipe| {
                 defer _ = c.pclose(pipe);
-                var buf: [2048]u8 = undefined;
-                const n = c.fread(&buf, 1, buf.len - 1, pipe);
-                buf[n] = 0;
-                var line_it = std.mem.splitScalar(u8, buf[0..n], '\n');
+                var buf: [4096]u8 = undefined;
+                var total: usize = 0;
+                while (total < buf.len - 1) {
+                    const n = c.fread(buf[total..].ptr, 1, buf.len - 1 - total, pipe);
+                    if (n == 0) break;
+                    total += n;
+                }
+                buf[total] = 0;
+                var line_it = std.mem.splitScalar(u8, buf[0..total], '\n');
                 while (line_it.next()) |raw_line| {
                     const line = std.mem.trim(u8, raw_line, " \t\r");
                     if (std.mem.startsWith(u8, line, "Device ")) {
@@ -1412,17 +1432,35 @@ pub const QuickSettings = struct {
 
             if (c.popen("bluetoothctl devices 2>/dev/null", "r")) |pipe| {
                 defer _ = c.pclose(pipe);
-                var buf: [4096]u8 = undefined;
-                const n = c.fread(&buf, 1, buf.len - 1, pipe);
-                buf[n] = 0;
-                var line_it = std.mem.splitScalar(u8, buf[0..n], '\n');
+                var buf: [8192]u8 = undefined;
+                var total: usize = 0;
+                while (total < buf.len - 1) {
+                    const n = c.fread(buf[total..].ptr, 1, buf.len - 1 - total, pipe);
+                    if (n == 0) break;
+                    total += n;
+                }
+                buf[total] = 0;
+                var line_it = std.mem.splitScalar(u8, buf[0..total], '\n');
                 while (line_it.next()) |raw_line| {
                     const line = std.mem.trim(u8, raw_line, " \t\r");
                     if (std.mem.startsWith(u8, line, "Device ")) {
                         const after = line[7..];
-                        if (after.len > 18) {
+                        if (after.len >= 17) {
                             const mac_str = after[0..17];
-                            const name_str = std.mem.trim(u8, after[18..], " \t");
+                            var name_str = if (after.len > 18) std.mem.trim(u8, after[18..], " \t") else "";
+                            if (name_str.len == 0) {
+                                name_str = mac_str;
+                            }
+
+                            // Avoid duplicate devices
+                            var already_added = false;
+                            for (local_items[0..local_count]) |exist| {
+                                if (exist.mac_len == mac_str.len and std.mem.eql(u8, exist.mac[0..exist.mac_len], mac_str)) {
+                                    already_added = true;
+                                    break;
+                                }
+                            }
+                            if (already_added) continue;
 
                             var is_connected = false;
                             for (connected_macs[0..connected_count]) |cmac| {
@@ -1443,7 +1481,9 @@ pub const QuickSettings = struct {
                                 std.mem.indexOf(u8, lower_name, "headphone") != null or
                                 std.mem.indexOf(u8, lower_name, "headset") != null or
                                 std.mem.indexOf(u8, lower_name, "earphone") != null or
-                                std.mem.indexOf(u8, lower_name, "airpods") != null)
+                                std.mem.indexOf(u8, lower_name, "airpods") != null or
+                                std.mem.indexOf(u8, lower_name, "pixel buds") != null or
+                                std.mem.indexOf(u8, lower_name, "audio") != null)
                             {
                                 dev_icon = "󰋋";
                             } else if (std.mem.indexOf(u8, lower_name, "keyboard") != null or
@@ -1513,36 +1553,75 @@ pub const QuickSettings = struct {
             worker.status.store(if (worker.connect) .connecting else .disconnecting, .release);
             worker.running.store(true, .release);
 
-            var cmd_buf: [128]u8 = undefined;
+            const mac = worker.mac[0..worker.mac_len];
+            var cmd_buf: [512]u8 = undefined;
             const cmd = if (worker.connect)
-                std.fmt.bufPrint(&cmd_buf, "bluetoothctl connect {s} 2>&1", .{ worker.mac[0..worker.mac_len] }) catch ""
+                std.fmt.bufPrint(&cmd_buf, "bluetoothctl default-agent 2>/dev/null; bluetoothctl --timeout 5 trust {0s} 2>/dev/null; bluetoothctl --timeout 15 pair {0s} 2>/dev/null; bluetoothctl --timeout 15 connect {0s} 2>&1", .{mac}) catch ""
             else
-                std.fmt.bufPrint(&cmd_buf, "bluetoothctl disconnect {s} 2>&1", .{ worker.mac[0..worker.mac_len] }) catch "";
+                std.fmt.bufPrint(&cmd_buf, "bluetoothctl --timeout 8 disconnect {s} 2>&1", .{mac}) catch "";
 
             var success = false;
+            var out_buf: [4096]u8 = undefined;
+            var total_read: usize = 0;
+
             if (cmd.len > 0) {
                 const pipe = c.popen(cmd.ptr, "r");
                 if (pipe) |p| {
-                    // Read any output to avoid blocking the pipe, then check exit status via pclose.
-                    var tmp_buf: [256]u8 = undefined;
-                    const bytes_read = c.fread(&tmp_buf, 1, tmp_buf.len - 1, p);
-                    const status = c.pclose(p);
-                    const exit_code = (status >> 8) & 0xff;
-                    success = (exit_code == 0);
-                    if (!success and bytes_read > 0) {
-                        tmp_buf[bytes_read] = 0;
-                        const trimmed = std.mem.trim(u8, tmp_buf[0..bytes_read], " \t\r\n");
-                        if (std.mem.indexOf(u8, trimmed, "Failed to connect") != null or
-                            std.mem.indexOf(u8, trimmed, "not available") != null or
-                            std.mem.indexOf(u8, trimmed, "Host is down") != null or
-                            std.mem.indexOf(u8, trimmed, "br-connection") != null)
-                        {
-                            const err_text = "Device offline or unreachable";
-                            const clen = @min(err_text.len, worker.error_msg.len);
-                            @memcpy(worker.error_msg[0..clen], err_text[0..clen]);
-                            worker.error_len = clen;
-                        }
+                    while (total_read < out_buf.len - 1) {
+                        const n = c.fread(out_buf[total_read..].ptr, 1, out_buf.len - 1 - total_read, p);
+                        if (n == 0) break;
+                        total_read += n;
                     }
+                    out_buf[total_read] = 0;
+                    _ = c.pclose(p);
+                }
+            }
+
+            // Verify actual connection status via bluez info
+            var check_buf: [128]u8 = undefined;
+            const check_cmd = std.fmt.bufPrint(&check_buf, "bluetoothctl info {s} 2>/dev/null | grep -q 'Connected: yes'", .{mac}) catch "";
+            if (check_cmd.len > 0) {
+                const check_res = c.system(check_cmd.ptr);
+                const check_exit = (check_res >> 8) & 0xff;
+                if (worker.connect) {
+                    success = (check_exit == 0);
+                } else {
+                    success = (check_exit != 0);
+                }
+            } else {
+                if (worker.connect) {
+                    success = (std.mem.indexOf(u8, out_buf[0..total_read], "Connection successful") != null or
+                        std.mem.indexOf(u8, out_buf[0..total_read], "Connected: yes") != null);
+                } else {
+                    success = (std.mem.indexOf(u8, out_buf[0..total_read], "Successful disconnected") != null or
+                        std.mem.indexOf(u8, out_buf[0..total_read], "Connected: no") != null);
+                }
+            }
+
+            if (!success and total_read > 0) {
+                const trimmed = std.mem.trim(u8, out_buf[0..total_read], " \t\r\n");
+                if (std.mem.indexOf(u8, trimmed, "not available") != null or
+                    std.mem.indexOf(u8, trimmed, "Host is down") != null or
+                    std.mem.indexOf(u8, trimmed, "unreachable") != null)
+                {
+                    const err_text = "Device offline or unreachable";
+                    const clen = @min(err_text.len, worker.error_msg.len);
+                    @memcpy(worker.error_msg[0..clen], err_text[0..clen]);
+                    worker.error_len = clen;
+                } else if (std.mem.indexOf(u8, trimmed, "Authentication") != null or
+                    std.mem.indexOf(u8, trimmed, "Failed to pair") != null)
+                {
+                    const err_text = "Pairing failed. Put device in pairing mode";
+                    const clen = @min(err_text.len, worker.error_msg.len);
+                    @memcpy(worker.error_msg[0..clen], err_text[0..clen]);
+                    worker.error_len = clen;
+                } else if (std.mem.indexOf(u8, trimmed, "br-connection") != null or
+                    std.mem.indexOf(u8, trimmed, "profile-unavailable") != null)
+                {
+                    const err_text = "Audio profile unavailable";
+                    const clen = @min(err_text.len, worker.error_msg.len);
+                    @memcpy(worker.error_msg[0..clen], err_text[0..clen]);
+                    worker.error_len = clen;
                 }
             }
 
@@ -2019,18 +2098,39 @@ pub const QuickSettings = struct {
         self.bt_connect_status = st;
         if (st == .success) {
             const mac = self.bt_connect_mac[0..self.bt_connect_mac_len];
+            var connected_name: [64]u8 = [_]u8{0} ** 64;
+            var connected_name_len: usize = 0;
             for (self.bt_items.items) |*it| {
                 if (it.mac_len == mac.len and std.mem.eql(u8, it.mac[0..it.mac_len], mac)) {
                     it.connected = self.bt_connect_worker.connect;
+                    if (self.bt_connect_worker.connect) {
+                        connected_name_len = it.name_len;
+                        @memcpy(connected_name[0..it.name_len], it.name[0..it.name_len]);
+                    }
+                }
+            }
+            if (self.bt_connect_worker.connect and connected_name_len > 0) {
+                if (self.sys.earbud_safety_enabled and sys_status.SysStatus.isHeadphoneOrEarbud(connected_name[0..connected_name_len])) {
+                    if (self.sys.volume_percent > 20) {
+                        sys_status.spawnCmd("wpctl set-volume -l 2.0 @DEFAULT_AUDIO_SINK@ 20% 2>/dev/null || pactl set-sink-volume @DEFAULT_SINK@ 20% 2>/dev/null || true");
+                        self.sys.volume_percent = 20;
+                        self.sys.volume_muted = false;
+                        self.sys.updateVolume();
+                    }
                 }
             }
             self.bt_connect_mac_len = 0;
             self.bt_failed_mac_len = 0;
+            self.bt_error_len = 0;
             self.triggerBtScan();
+            self.triggerAudioScan();
         } else {
             const flen = @min(self.bt_connect_worker.mac_len, self.bt_failed_mac.len);
             @memcpy(self.bt_failed_mac[0..flen], self.bt_connect_worker.mac[0..flen]);
             self.bt_failed_mac_len = flen;
+            const elen = @min(self.bt_connect_worker.error_len, self.bt_error_msg.len);
+            @memcpy(self.bt_error_msg[0..elen], self.bt_connect_worker.error_msg[0..elen]);
+            self.bt_error_len = elen;
             self.bt_connect_mac_len = 0;
         }
         self.bt_connect_worker.done.store(false, .release);
@@ -2231,10 +2331,15 @@ pub const QuickSettings = struct {
 
         if (c.popen("bluetoothctl devices Connected 2>/dev/null", "r")) |pipe| {
             defer _ = c.pclose(pipe);
-            var buf: [2048]u8 = undefined;
-            const n = c.fread(&buf, 1, buf.len - 1, pipe);
-            buf[n] = 0;
-            var line_it = std.mem.splitScalar(u8, buf[0..n], '\n');
+            var buf: [4096]u8 = undefined;
+            var total: usize = 0;
+            while (total < buf.len - 1) {
+                const n = c.fread(buf[total..].ptr, 1, buf.len - 1 - total, pipe);
+                if (n == 0) break;
+                total += n;
+            }
+            buf[total] = 0;
+            var line_it = std.mem.splitScalar(u8, buf[0..total], '\n');
             while (line_it.next()) |raw_line| {
                 const line = std.mem.trim(u8, raw_line, " \t\r");
                 if (std.mem.startsWith(u8, line, "Device ")) {
@@ -2251,17 +2356,35 @@ pub const QuickSettings = struct {
         // 2. Get all paired/known devices
         if (c.popen("bluetoothctl devices 2>/dev/null", "r")) |pipe| {
             defer _ = c.pclose(pipe);
-            var buf: [4096]u8 = undefined;
-            const n = c.fread(&buf, 1, buf.len - 1, pipe);
-            buf[n] = 0;
-            var line_it = std.mem.splitScalar(u8, buf[0..n], '\n');
+            var buf: [8192]u8 = undefined;
+            var total: usize = 0;
+            while (total < buf.len - 1) {
+                const n = c.fread(buf[total..].ptr, 1, buf.len - 1 - total, pipe);
+                if (n == 0) break;
+                total += n;
+            }
+            buf[total] = 0;
+            var line_it = std.mem.splitScalar(u8, buf[0..total], '\n');
             while (line_it.next()) |raw_line| {
                 const line = std.mem.trim(u8, raw_line, " \t\r");
                 if (std.mem.startsWith(u8, line, "Device ")) {
                     const after = line[7..];
-                    if (after.len > 18) {
+                    if (after.len >= 17) {
                         const mac_str = after[0..17];
-                        const name_str = std.mem.trim(u8, after[18..], " \t");
+                        var name_str = if (after.len > 18) std.mem.trim(u8, after[18..], " \t") else "";
+                        if (name_str.len == 0) {
+                            name_str = mac_str;
+                        }
+
+                        // Avoid duplicate devices
+                        var already_added = false;
+                        for (self.bt_items.items) |exist| {
+                            if (exist.mac_len == mac_str.len and std.mem.eql(u8, exist.mac[0..exist.mac_len], mac_str)) {
+                                already_added = true;
+                                break;
+                            }
+                        }
+                        if (already_added) continue;
 
                         var is_connected = false;
                         for (connected_macs.items) |cmac| {
@@ -2283,7 +2406,9 @@ pub const QuickSettings = struct {
                             std.mem.indexOf(u8, lower_name, "headphone") != null or
                             std.mem.indexOf(u8, lower_name, "headset") != null or
                             std.mem.indexOf(u8, lower_name, "earphone") != null or
-                            std.mem.indexOf(u8, lower_name, "airpods") != null)
+                            std.mem.indexOf(u8, lower_name, "airpods") != null or
+                            std.mem.indexOf(u8, lower_name, "pixel buds") != null or
+                            std.mem.indexOf(u8, lower_name, "audio") != null)
                         {
                             dev_icon = "󰋋";
                         } else if (std.mem.indexOf(u8, lower_name, "keyboard") != null or
@@ -2889,7 +3014,18 @@ pub const QuickSettings = struct {
             self.cfg.theme.error_color
         else
             self.cfg.theme.text_bright;
-        const bat_svg = if (plugged or is_charging) "battery-charging" else if (bat_pct <= 10) "battery-empty" else if (bat_pct >= 90) "battery-full" else if (bat_pct >= 60) "battery-high" else if (bat_pct >= 30) "battery-medium" else "battery-low";
+        const bat_svg = if (plugged or is_charging)
+            "battery-charging"
+        else if (bat_pct <= 20)
+            "battery-empty"
+        else if (bat_pct <= 50)
+            "battery-low"
+        else if (bat_pct <= 80)
+            "battery-middle"
+        else if (bat_pct <= 90)
+            "battery-high"
+        else
+            "battery-full";
 
         var bat_buf: [64]u8 = undefined;
         const bat_str = blk: {
@@ -3200,8 +3336,6 @@ pub const QuickSettings = struct {
         }
         ui.close(); // header
 
-        ui.rect(.{ .grow = .{} }, .{ .fixed = ui.s(1) }, self.cfg.theme.separator_fg, 0, .{});
-
         _ = ui.open(.{
             .width = .{ .grow = .{} },
             .height = .{ .grow = .{} },
@@ -3393,13 +3527,13 @@ pub const QuickSettings = struct {
                                 .width = .{ .grow = .{} },
                                 .height = .{ .grow = .{} },
                                 .direction = .column,
-                                .gap = 0,
+                                .gap = ui.su(2),
                                 .align_y = .center,
                                 .clip_horizontal = true,
                             });
                             var name_buf: [64]u8 = undefined;
                             const trunc_name = truncateText(target, &self.font, item.ssid[0..item.ssid_len], content_w -| 150 * scale, sub_sz, &name_buf);
-                            ui.text(trunc_name, .{ .size = sub_sz, .color = self.cfg.theme.text_bright, .line_height = @intCast(sub_sz + 1) });
+                            ui.text(trunc_name, .{ .size = sub_sz, .color = self.cfg.theme.text_bright });
                             var sub_buf: [64]u8 = undefined;
                             const sec_str = if (item.security_len > 0) item.security[0..item.security_len] else "Open";
                             const sub_str = if (is_connecting_this)
@@ -3420,7 +3554,6 @@ pub const QuickSettings = struct {
                                     self.cfg.theme.accent
                                 else
                                     self.cfg.theme.text_muted,
-                                .line_height = @intCast(sec_sz + 1),
                             });
                             ui.close();
 
@@ -3552,20 +3685,20 @@ pub const QuickSettings = struct {
                             .width = .{ .grow = .{} },
                             .height = .{ .grow = .{} },
                             .direction = .column,
-                            .gap = 0,
+                            .gap = ui.su(2),
                             .align_y = .center,
                             .clip_horizontal = true,
                         });
                         var name_buf: [64]u8 = undefined;
                         const trunc_name = truncateText(target, &self.font, item.name[0..item.name_len], content_w -| 150 * scale, sub_sz, &name_buf);
-                        ui.text(trunc_name, .{ .size = sub_sz, .color = self.cfg.theme.text_bright, .line_height = @intCast(sub_sz + 1) });
+                        ui.text(trunc_name, .{ .size = sub_sz, .color = self.cfg.theme.text_bright });
 
                         const sub_str = if (is_connecting_this)
                             "Connecting..."
                         else if (is_disconnecting_this)
                             "Disconnecting..."
                         else if (is_failed_this)
-                            "Offline • Failed to connect"
+                            (if (self.bt_error_len > 0) self.bt_error_msg[0..self.bt_error_len] else "Offline • Failed to connect")
                         else if (item.connected)
                             "Connected"
                         else
@@ -3583,7 +3716,6 @@ pub const QuickSettings = struct {
                         ui.text(sub_str, .{
                             .size = sec_sz,
                             .color = sub_color,
-                            .line_height = @intCast(sec_sz + 1),
                         });
                         ui.close();
 
@@ -3658,14 +3790,14 @@ pub const QuickSettings = struct {
                     _ = ui.open(.{
                         .id = "qs-earbud-safety",
                         .width = .{ .grow = .{} },
-                        .height = .{ .fixed = ui.s(44) },
+                        .height = .{ .fixed = ui.s(48) },
                         .direction = .row,
-                        .padding = .{ .left = ui.su(10), .right = ui.su(10) },
+                        .padding = .{ .left = ui.su(12), .right = ui.su(12) },
                         .gap = ui.su(10),
-                        .bg = if (hov) self.cfg.theme.btn_raised_hover else self.cfg.theme.surface,
-                        .radius = ui.f(self.cfg.theme.radius_button),
+                        .bg = if (is_enabled) self.cfg.theme.elevated else if (hov) self.cfg.theme.card_hover_bg else self.cfg.theme.card_bg,
+                        .radius = ui.f(10),
                         .border = ui.su(1),
-                        .border_color = if (is_enabled) self.cfg.theme.accent else self.cfg.theme.border,
+                        .border_color = if (is_enabled) self.cfg.theme.accent else if (hov) self.cfg.theme.border_focused else self.cfg.theme.border,
                         .align_y = .center,
                     });
 
@@ -3686,12 +3818,12 @@ pub const QuickSettings = struct {
                         .width = .{ .grow = .{} },
                         .height = .{ .grow = .{} },
                         .direction = .column,
-                        .gap = 0,
+                        .gap = ui.su(2),
                         .align_y = .center,
                         .clip_horizontal = true,
                     });
-                    ui.text("Earphone Safety Volume", .{ .size = sub_sz, .color = self.cfg.theme.text_bright, .line_height = @intCast(sub_sz + 1) });
-                    ui.text("Limit to 20% when earphones connect", .{ .size = sec_sz, .color = if (is_enabled) self.cfg.theme.accent else self.cfg.theme.text_muted, .line_height = @intCast(sec_sz + 1) });
+                    ui.text("Earphone Safety Volume", .{ .size = sub_sz, .color = self.cfg.theme.text_bright });
+                    ui.text("Limit to 20% on connect", .{ .size = sec_sz, .color = if (is_enabled) self.cfg.theme.accent else self.cfg.theme.text_muted });
                     ui.close();
 
                     // Switch pill
@@ -3719,10 +3851,14 @@ pub const QuickSettings = struct {
 
                 _ = ui.open(.{
                     .width = .{ .grow = .{} },
-                    .height = .{ .fixed = ui.s(32) },
+                    .height = .{ .fixed = ui.s(36) },
                     .direction = .row,
-                    .bg = self.cfg.theme.slider_track,
-                    .radius = ui.f(8),
+                    .padding = .all(ui.su(3)),
+                    .gap = ui.su(4),
+                    .bg = self.cfg.theme.surface,
+                    .radius = ui.f(10),
+                    .border = ui.su(1),
+                    .border_color = self.cfg.theme.border,
                 });
                 const tab_labels = [_][]const u8{ "Output Devices", "Input Devices" };
                 inline for (0..2) |tab_idx| {
@@ -3732,14 +3868,16 @@ pub const QuickSettings = struct {
                         .id = if (tab_idx == 0) "qs-audio-out" else "qs-audio-in",
                         .width = .{ .percent = 0.5 },
                         .height = .{ .grow = .{} },
-                        .bg = if (selected) self.cfg.theme.btn_raised_bg else if (tab_hov) self.cfg.theme.card_hover_bg else null,
+                        .bg = if (selected) self.cfg.theme.elevated else if (tab_hov) self.cfg.theme.card_hover_bg else null,
                         .radius = ui.f(8),
+                        .border = if (selected) ui.su(1) else 0,
+                        .border_color = if (selected) self.cfg.theme.border_focused else null,
                         .align_x = .center,
                         .align_y = .center,
                     });
                     ui.text(tab_labels[tab_idx], .{
                         .size = sub_sz,
-                        .color = if (selected) self.cfg.theme.text_main else self.cfg.theme.text_muted,
+                        .color = if (selected) self.cfg.theme.text_bright else self.cfg.theme.text_muted,
                     });
                     ui.close();
                 }
@@ -3756,20 +3894,18 @@ pub const QuickSettings = struct {
                     const end_idx = @min(items.len, start_idx + max_visible);
                     for (items[start_idx..end_idx], start_idx..) |item, actual_idx| {
                         const hov = ui.hovered("qs-audio-item", @intCast(actual_idx));
-                        var bg = if (item.is_default) self.cfg.theme.elevated else self.cfg.theme.surface;
-                        if (hov) bg = self.cfg.theme.btn_raised_hover;
                         _ = ui.open(.{
                             .id = "qs-audio-item",
                             .index = @intCast(actual_idx),
                             .width = .{ .grow = .{} },
-                            .height = .{ .fixed = @floatFromInt(row_h_u) },
+                            .height = .{ .fixed = ui.s(48) },
                             .direction = .row,
-                            .padding = .{ .left = ui.su(10), .right = ui.su(10) },
+                            .padding = .{ .left = ui.su(12), .right = ui.su(12) },
                             .gap = ui.su(10),
-                            .bg = bg,
-                            .radius = ui.f(self.cfg.theme.radius_button),
+                            .bg = if (item.is_default) self.cfg.theme.elevated else if (hov) self.cfg.theme.card_hover_bg else self.cfg.theme.card_bg,
+                            .radius = ui.f(10),
                             .border = ui.su(1),
-                            .border_color = if (item.is_default) self.cfg.theme.accent else self.cfg.theme.border,
+                            .border_color = if (item.is_default) self.cfg.theme.accent else if (hov) self.cfg.theme.border_focused else self.cfg.theme.border,
                             .align_y = .center,
                         });
                         _ = ui.open(.{
@@ -3789,13 +3925,13 @@ pub const QuickSettings = struct {
                             .width = .{ .grow = .{} },
                             .height = .{ .grow = .{} },
                             .direction = .column,
-                            .gap = 0,
+                            .gap = ui.su(2),
                             .align_y = .center,
                             .clip_horizontal = true,
                         });
                         var name_buf: [96]u8 = undefined;
                         const trunc_name = truncateText(target, &self.font, item.name[0..item.name_len], content_w -| 90 * scale, sub_sz, &name_buf);
-                        ui.text(trunc_name, .{ .size = sub_sz, .color = self.cfg.theme.text_bright, .line_height = @intCast(sub_sz + 1) });
+                        ui.text(trunc_name, .{ .size = sub_sz, .color = self.cfg.theme.text_bright });
                         var sub_buf: [64]u8 = undefined;
                         const sub_str = if (item.is_default)
                             std.fmt.bufPrint(&sub_buf, "Default • {d}%", .{item.volume_pct}) catch "Default"
@@ -3804,7 +3940,6 @@ pub const QuickSettings = struct {
                         ui.text(sub_str, .{
                             .size = sec_sz,
                             .color = if (item.is_default) self.cfg.theme.accent else self.cfg.theme.text_muted,
-                            .line_height = @intCast(sec_sz + 1),
                         });
                         ui.close();
 
@@ -4005,12 +4140,12 @@ pub const QuickSettings = struct {
                 _ = ui.open(.{
                     .width = .{ .grow = .{} },
                     .direction = .column,
-                    .gap = ui.su(6),
+                    .gap = ui.su(8),
                 });
                 ui.text("Display Scaling", .{ .size = sub_sz, .color = self.cfg.theme.text_bright });
                 _ = ui.open(.{
                     .width = .{ .grow = .{} },
-                    .height = .{ .fixed = ui.s(36) },
+                    .height = .{ .fixed = ui.s(40) },
                     .direction = .row,
                     .gap = ui.su(8),
                 });
@@ -4024,8 +4159,8 @@ pub const QuickSettings = struct {
                         .index = s_idx,
                         .width = .{ .grow = .{} },
                         .height = .{ .grow = .{} },
-                        .bg = if (sel) self.cfg.theme.accent else if (hov) self.cfg.theme.card_hover_bg else self.cfg.theme.card_bg,
-                        .radius = ui.f(8),
+                        .bg = if (sel) self.cfg.theme.elevated else if (hov) self.cfg.theme.card_hover_bg else self.cfg.theme.card_bg,
+                        .radius = ui.f(10),
                         .border = ui.su(1),
                         .border_color = if (sel) self.cfg.theme.accent else if (hov) self.cfg.theme.border_focused else self.cfg.theme.border,
                         .align_x = .center,
@@ -4033,7 +4168,7 @@ pub const QuickSettings = struct {
                     });
                     ui.text(s_lbl, .{
                         .size = btn_sz,
-                        .color = if (sel) self.cfg.theme.accent_fg else self.cfg.theme.text_bright,
+                        .color = if (sel) self.cfg.theme.accent else self.cfg.theme.text_bright,
                     });
                     ui.close();
                 }
@@ -4044,12 +4179,12 @@ pub const QuickSettings = struct {
                 _ = ui.open(.{
                     .width = .{ .grow = .{} },
                     .direction = .column,
-                    .gap = ui.su(6),
+                    .gap = ui.su(8),
                 });
                 ui.text("Refresh Rate", .{ .size = sub_sz, .color = self.cfg.theme.text_bright });
                 _ = ui.open(.{
                     .width = .{ .grow = .{} },
-                    .height = .{ .fixed = ui.s(36) },
+                    .height = .{ .fixed = ui.s(40) },
                     .direction = .row,
                     .gap = ui.su(8),
                 });
@@ -4063,8 +4198,8 @@ pub const QuickSettings = struct {
                         .index = r_idx,
                         .width = .{ .grow = .{} },
                         .height = .{ .grow = .{} },
-                        .bg = if (sel) self.cfg.theme.accent else if (hov) self.cfg.theme.card_hover_bg else self.cfg.theme.card_bg,
-                        .radius = ui.f(8),
+                        .bg = if (sel) self.cfg.theme.elevated else if (hov) self.cfg.theme.card_hover_bg else self.cfg.theme.card_bg,
+                        .radius = ui.f(10),
                         .border = ui.su(1),
                         .border_color = if (sel) self.cfg.theme.accent else if (hov) self.cfg.theme.border_focused else self.cfg.theme.border,
                         .align_x = .center,
@@ -4072,7 +4207,7 @@ pub const QuickSettings = struct {
                     });
                     ui.text(r_lbl, .{
                         .size = btn_sz,
-                        .color = if (sel) self.cfg.theme.accent_fg else self.cfg.theme.text_bright,
+                        .color = if (sel) self.cfg.theme.accent else self.cfg.theme.text_bright,
                     });
                     ui.close();
                 }
@@ -4083,13 +4218,13 @@ pub const QuickSettings = struct {
                 _ = ui.open(.{
                     .width = .{ .grow = .{} },
                     .direction = .column,
-                    .gap = ui.su(6),
+                    .gap = ui.su(8),
                 });
                 ui.text("Resolution", .{ .size = sub_sz, .color = self.cfg.theme.text_bright });
                 _ = ui.open(.{
                     .width = .{ .grow = .{} },
                     .direction = .column,
-                    .gap = ui.su(6),
+                    .gap = ui.su(8),
                 });
                 const res_labels = [_][]const u8{
                     "1920x1080 (16:9 Full HD)",
@@ -4104,20 +4239,21 @@ pub const QuickSettings = struct {
                         .id = "qs-disp-res",
                         .index = @intCast(res_idx),
                         .width = .{ .grow = .{} },
-                        .height = .{ .fixed = ui.s(36) },
+                        .height = .{ .fixed = ui.s(42) },
                         .direction = .row,
                         .padding = .{ .left = ui.su(12), .right = ui.su(12) },
+                        .gap = ui.su(10),
                         .bg = if (sel) self.cfg.theme.elevated else if (hov) self.cfg.theme.card_hover_bg else self.cfg.theme.card_bg,
-                        .radius = ui.f(8),
+                        .radius = ui.f(10),
                         .border = ui.su(1),
                         .border_color = if (sel) self.cfg.theme.accent else if (hov) self.cfg.theme.border_focused else self.cfg.theme.border,
                         .align_y = .center,
                     });
-                    ui.icon("monitor", 16 * scale, if (sel) self.cfg.theme.accent else self.cfg.theme.text_muted, 0);
+                    ui.icon("monitor", 18 * scale, if (sel) self.cfg.theme.accent else self.cfg.theme.text_bright, 0);
                     _ = ui.open(.{
                         .width = .{ .grow = .{} },
                         .height = .{ .grow = .{} },
-                        .padding = .{ .left = ui.su(8) },
+                        .padding = .{ .left = ui.su(6) },
                         .align_y = .center,
                     });
                     ui.text(res_lbl, .{
@@ -4139,7 +4275,7 @@ pub const QuickSettings = struct {
                     _ = ui.open(.{
                         .id = "qs-disp-eye-comfort",
                         .width = .{ .grow = .{} },
-                        .height = .{ .fixed = ui.s(42) },
+                        .height = .{ .fixed = ui.s(48) },
                         .direction = .row,
                         .padding = .{ .left = ui.su(12), .right = ui.su(12) },
                         .gap = ui.su(10),
@@ -4232,16 +4368,16 @@ pub const QuickSettings = struct {
                     self.cfg.theme.text_bright;
                 const bat_svg = if (plugged or is_charging)
                     "battery-charging"
-                else if (bat_pct <= 10)
+                else if (bat_pct <= 20)
                     "battery-empty"
-                else if (bat_pct >= 90)
-                    "battery-full"
-                else if (bat_pct >= 60)
+                else if (bat_pct <= 50)
+                    "battery-low"
+                else if (bat_pct <= 80)
+                    "battery-middle"
+                else if (bat_pct <= 90)
                     "battery-high"
-                else if (bat_pct >= 30)
-                    "battery-medium"
                 else
-                    "battery-low";
+                    "battery-full";
 
                 var bat_buf: [64]u8 = undefined;
                 const bat_str = blk: {
@@ -4498,13 +4634,7 @@ pub const QuickSettings = struct {
 
     pub fn toggleDnd(self: *QuickSettings) void {
         self.dnd_enabled = !self.dnd_enabled;
-        if (self.dnd_enabled) {
-            if (c.fopen("/tmp/mizu-dnd", "w")) |f| {
-                _ = c.fclose(f);
-            }
-        } else {
-            _ = c.unlink("/tmp/mizu-dnd");
-        }
+        saveDnd(self.dnd_enabled);
         sys_status.spawnCmd("dunstctl set-paused toggle 2>/dev/null || makoctl mode -t dnd 2>/dev/null || true");
     }
 
@@ -4549,7 +4679,17 @@ pub const QuickSettings = struct {
     }
 
     pub fn queryDisplaySettings(self: *QuickSettings) void {
-        const pipe = c.popen("wlr-randr 2>/dev/null", "r") orelse return;
+        if (loadDisplayScale()) |saved_scale| {
+            self.display_scale_pct = saved_scale;
+        }
+        if (loadDisplayRefresh()) |saved_hz| {
+            self.display_refresh_rate = saved_hz;
+        }
+        if (loadDisplayResolutionIdx()) |saved_idx| {
+            self.display_resolution_idx = saved_idx;
+        }
+
+        const pipe = c.popen("export PATH=\"$PATH:/usr/sbin:/sbin:/usr/local/bin:/usr/bin:$HOME/.local/bin\"; wlr-randr 2>/dev/null", "r") orelse return;
         defer _ = c.pclose(pipe);
 
         var buf: [512]u8 = undefined;
@@ -4720,6 +4860,150 @@ fn setCaffeine(enabled: bool) void {
 const eye_comfort_file = "/tmp/mizu-eye-comfort";
 const eye_comfort_pid = "/tmp/mizu-eye-comfort.pid";
 
+fn ensureCacheDir() void {
+    const home = c.getenv("HOME") orelse return;
+    var dir_buf: [256]u8 = undefined;
+    const dir = std.fmt.bufPrintZ(&dir_buf, "{s}/.cache/mizu", .{std.mem.span(home)}) catch return;
+    _ = c.mkdir(dir.ptr, 0o755);
+}
+
+pub fn saveDisplayScale(scale_pct: u32) void {
+    ensureCacheDir();
+    const home = c.getenv("HOME") orelse return;
+    var path_buf: [256]u8 = undefined;
+    const path = std.fmt.bufPrintZ(&path_buf, "{s}/.cache/mizu/display_scale", .{std.mem.span(home)}) catch return;
+    const f = c.fopen(path.ptr, "wb") orelse return;
+    defer _ = c.fclose(f);
+    var buf: [16]u8 = undefined;
+    const s = std.fmt.bufPrint(&buf, "{d}\n", .{scale_pct}) catch return;
+    _ = c.fwrite(s.ptr, 1, s.len, f);
+}
+
+pub fn loadDisplayScale() ?u32 {
+    const home = c.getenv("HOME") orelse return null;
+    var path_buf: [256]u8 = undefined;
+    const path = std.fmt.bufPrintZ(&path_buf, "{s}/.cache/mizu/display_scale", .{std.mem.span(home)}) catch return null;
+    const f = c.fopen(path.ptr, "rb") orelse return null;
+    defer _ = c.fclose(f);
+    var buf: [16]u8 = undefined;
+    const n = c.fread(&buf, 1, buf.len - 1, f);
+    if (n == 0) return null;
+    buf[n] = 0;
+    const s = std.mem.trim(u8, buf[0..n], " \t\r\n");
+    return std.fmt.parseInt(u32, s, 10) catch null;
+}
+
+pub fn saveDisplayRefresh(hz: u32) void {
+    ensureCacheDir();
+    const home = c.getenv("HOME") orelse return;
+    var path_buf: [256]u8 = undefined;
+    const path = std.fmt.bufPrintZ(&path_buf, "{s}/.cache/mizu/display_refresh", .{std.mem.span(home)}) catch return;
+    const f = c.fopen(path.ptr, "wb") orelse return;
+    defer _ = c.fclose(f);
+    var buf: [16]u8 = undefined;
+    const s = std.fmt.bufPrint(&buf, "{d}\n", .{hz}) catch return;
+    _ = c.fwrite(s.ptr, 1, s.len, f);
+}
+
+pub fn loadDisplayRefresh() ?u32 {
+    const home = c.getenv("HOME") orelse return null;
+    var path_buf: [256]u8 = undefined;
+    const path = std.fmt.bufPrintZ(&path_buf, "{s}/.cache/mizu/display_refresh", .{std.mem.span(home)}) catch return null;
+    const f = c.fopen(path.ptr, "rb") orelse return null;
+    defer _ = c.fclose(f);
+    var buf: [16]u8 = undefined;
+    const n = c.fread(&buf, 1, buf.len - 1, f);
+    if (n == 0) return null;
+    buf[n] = 0;
+    const s = std.mem.trim(u8, buf[0..n], " \t\r\n");
+    return std.fmt.parseInt(u32, s, 10) catch null;
+}
+
+pub fn saveDisplayResolution(res: []const u8) void {
+    ensureCacheDir();
+    const home = c.getenv("HOME") orelse return;
+    var path_buf: [256]u8 = undefined;
+    const path = std.fmt.bufPrintZ(&path_buf, "{s}/.cache/mizu/display_resolution", .{std.mem.span(home)}) catch return;
+    const f = c.fopen(path.ptr, "wb") orelse return;
+    defer _ = c.fclose(f);
+    _ = c.fwrite(res.ptr, 1, res.len, f);
+    _ = c.fwrite("\n", 1, 1, f);
+}
+
+pub fn loadDisplayResolution(buf: *[64]u8) ?[]const u8 {
+    const home = c.getenv("HOME") orelse return null;
+    var path_buf: [256]u8 = undefined;
+    const path = std.fmt.bufPrintZ(&path_buf, "{s}/.cache/mizu/display_resolution", .{std.mem.span(home)}) catch return null;
+    const f = c.fopen(path.ptr, "rb") orelse return null;
+    defer _ = c.fclose(f);
+    const n = c.fread(buf, 1, buf.len - 1, f);
+    if (n == 0) return null;
+    buf[n] = 0;
+    const s = std.mem.trim(u8, buf[0..n], " \t\r\n");
+    if (s.len == 0) return null;
+    return s;
+}
+
+pub fn loadDisplayResolutionIdx() ?usize {
+    var buf: [64]u8 = undefined;
+    const res = loadDisplayResolution(&buf) orelse return null;
+    for (display_resolutions, 0..) |r, i| {
+        if (std.mem.eql(u8, r, res)) return i;
+    }
+    return null;
+}
+
+pub fn saveEyeComfort(enabled: bool) void {
+    ensureCacheDir();
+    const home = c.getenv("HOME") orelse return;
+    var path_buf: [256]u8 = undefined;
+    const path = std.fmt.bufPrintZ(&path_buf, "{s}/.cache/mizu/eye_comfort", .{std.mem.span(home)}) catch return;
+    if (enabled) {
+        const f = c.fopen(path.ptr, "wb") orelse return;
+        defer _ = c.fclose(f);
+        _ = c.fwrite("1\n", 1, 2, f);
+    } else {
+        _ = c.unlink(path.ptr);
+    }
+}
+
+pub fn loadEyeComfort() bool {
+    const home = c.getenv("HOME") orelse return false;
+    var path_buf: [256]u8 = undefined;
+    const path = std.fmt.bufPrintZ(&path_buf, "{s}/.cache/mizu/eye_comfort", .{std.mem.span(home)}) catch return false;
+    return c.access(path.ptr, c.F_OK) == 0;
+}
+
+pub fn saveDnd(enabled: bool) void {
+    ensureCacheDir();
+    const home = c.getenv("HOME") orelse return;
+    var path_buf: [256]u8 = undefined;
+    const path = std.fmt.bufPrintZ(&path_buf, "{s}/.cache/mizu/dnd", .{std.mem.span(home)}) catch return;
+    if (enabled) {
+        if (c.fopen(path.ptr, "wb")) |f| {
+            _ = c.fwrite("1\n", 1, 2, f);
+            _ = c.fclose(f);
+        }
+        if (c.fopen("/tmp/mizu-dnd", "w")) |tf| {
+            _ = c.fclose(tf);
+        }
+    } else {
+        _ = c.unlink(path.ptr);
+        _ = c.unlink("/tmp/mizu-dnd");
+    }
+}
+
+pub fn loadDnd() bool {
+    const home = c.getenv("HOME");
+    if (home) |h| {
+        var path_buf: [256]u8 = undefined;
+        if (std.fmt.bufPrintZ(&path_buf, "{s}/.cache/mizu/dnd", .{std.mem.span(h)})) |path| {
+            if (c.access(path.ptr, c.F_OK) == 0) return true;
+        } else |_| {}
+    }
+    return c.access("/tmp/mizu-dnd", c.F_OK) == 0;
+}
+
 fn readEyeComfortPid() ?i32 {
     const f = c.fopen(eye_comfort_pid, "rb") orelse return null;
     defer _ = c.fclose(f);
@@ -4732,7 +5016,7 @@ fn readEyeComfortPid() ?i32 {
     return pid;
 }
 
-fn isEyeComfortActive() bool {
+pub fn isEyeComfortActive() bool {
     if (readEyeComfortPid()) |pid| {
         if (c.kill(pid, 0) == 0) return true;
         _ = c.unlink(eye_comfort_pid);
@@ -4740,12 +5024,13 @@ fn isEyeComfortActive() bool {
     return c.access(eye_comfort_file, c.F_OK) == 0;
 }
 
-fn setEyeComfort(enabled: bool) void {
+pub fn setEyeComfort(enabled: bool) void {
+    saveEyeComfort(enabled);
     if (enabled) {
         if (c.fopen(eye_comfort_file, "w")) |f| {
             _ = c.fclose(f);
         }
-        sys_status.spawnCmd("(which wlsunset >/dev/null 2>&1 && (wlsunset -t 4500 -T 6500 & echo $! > " ++ eye_comfort_pid ++ ")) || (which hyprsunset >/dev/null 2>&1 && (hyprsunset --temperature 4500 & echo $! > " ++ eye_comfort_pid ++ ")) || true");
+        sys_status.spawnCmd("export PATH=\"$PATH:/usr/sbin:/sbin:/usr/local/bin:/usr/bin:$HOME/.local/bin\"; (which wlsunset >/dev/null 2>&1 && (wlsunset -t 4500 -T 4501 & echo $! > " ++ eye_comfort_pid ++ ")) || (which hyprsunset >/dev/null 2>&1 && (hyprsunset --temperature 4500 & echo $! > " ++ eye_comfort_pid ++ ")) || true");
     } else {
         if (readEyeComfortPid()) |pid| {
             _ = c.kill(pid, c.SIGTERM);
@@ -4756,23 +5041,56 @@ fn setEyeComfort(enabled: bool) void {
     }
 }
 
-fn applyDisplayScale(scale_pct: u32) void {
-    var cmd_buf: [256]u8 = undefined;
+pub fn applyDisplayScale(scale_pct: u32) void {
+    var cmd_buf: [512]u8 = undefined;
     const scale_flt: f32 = @as(f32, @floatFromInt(scale_pct)) / 100.0;
-    const cmd = std.fmt.bufPrintZ(&cmd_buf, "out=$(wlr-randr 2>/dev/null | awk '/^[a-zA-Z0-9-]+/ {{print $1; exit}}'); if [ -n \"$out\" ]; then wlr-randr --output \"$out\" --scale {d:.2} 2>/dev/null || true; fi", .{scale_flt}) catch return;
+    const cmd = std.fmt.bufPrintZ(&cmd_buf, "export PATH=\"$PATH:/usr/sbin:/sbin:/usr/local/bin:/usr/bin:$HOME/.local/bin\"; for out in $(wlr-randr 2>/dev/null | awk '/^[a-zA-Z0-9-]+/ {{print $1}}'); do wlr-randr --output \"$out\" --scale {d:.2} 2>/dev/null || true; done", .{scale_flt}) catch return;
     sys_status.spawnCmd(cmd);
 }
 
-fn applyDisplayRefresh(hz: u32) void {
-    var cmd_buf: [256]u8 = undefined;
-    const cmd = std.fmt.bufPrintZ(&cmd_buf, "out=$(wlr-randr 2>/dev/null | awk '/^[a-zA-Z0-9-]+/ {{print $1; exit}}'); if [ -n \"$out\" ]; then wlr-randr --output \"$out\" --mode $(wlr-randr | awk -v h=\"{d}\" '/px,/ && $3 ~ (\"^\" h) {{print $1; exit}}') 2>/dev/null || true; fi", .{hz}) catch return;
+pub fn applyDisplayRefresh(hz: u32) void {
+    var cmd_buf: [512]u8 = undefined;
+    const cmd = std.fmt.bufPrintZ(&cmd_buf, "export PATH=\"$PATH:/usr/sbin:/sbin:/usr/local/bin:/usr/bin:$HOME/.local/bin\"; for out in $(wlr-randr 2>/dev/null | awk '/^[a-zA-Z0-9-]+/ {{print $1}}'); do mode=$(wlr-randr 2>/dev/null | awk -v h=\"{d}\" '/px,/ && $3 ~ (\"^\" h) {{print $1 \"@\" $3 \"Hz\"; exit}}'); if [ -n \"$mode\" ]; then wlr-randr --output \"$out\" --mode \"$mode\" 2>/dev/null || true; fi; done", .{hz}) catch return;
     sys_status.spawnCmd(cmd);
 }
 
-fn applyDisplayResolution(res: []const u8) void {
-    var cmd_buf: [256]u8 = undefined;
-    const cmd = std.fmt.bufPrintZ(&cmd_buf, "out=$(wlr-randr 2>/dev/null | awk '/^[a-zA-Z0-9-]+/ {{print $1; exit}}'); if [ -n \"$out\" ]; then wlr-randr --output \"$out\" --mode {s} 2>/dev/null || true; fi", .{res}) catch return;
+pub fn applyDisplayResolution(res: []const u8) void {
+    var cmd_buf: [512]u8 = undefined;
+    const cmd = std.fmt.bufPrintZ(&cmd_buf, "export PATH=\"$PATH:/usr/sbin:/sbin:/usr/local/bin:/usr/bin:$HOME/.local/bin\"; for out in $(wlr-randr 2>/dev/null | awk '/^[a-zA-Z0-9-]+/ {{print $1}}'); do wlr-randr --output \"$out\" --mode {s} 2>/dev/null || true; done", .{res}) catch return;
     sys_status.spawnCmd(cmd);
+}
+
+pub fn restoreSessionSettings() void {
+    // 1. Display scale
+    if (loadDisplayScale()) |saved_scale| {
+        applyDisplayScale(saved_scale);
+    }
+
+    // 2. Display refresh rate
+    if (loadDisplayRefresh()) |saved_hz| {
+        applyDisplayRefresh(saved_hz);
+    }
+
+    // 3. Display resolution
+    var res_buf: [64]u8 = undefined;
+    if (loadDisplayResolution(&res_buf)) |saved_res| {
+        applyDisplayResolution(saved_res);
+    }
+
+    // 4. Eye comfort
+    if (loadEyeComfort()) {
+        if (!isEyeComfortActive()) {
+            setEyeComfort(true);
+        }
+    }
+
+    // 5. DND
+    if (loadDnd()) {
+        if (c.fopen("/tmp/mizu-dnd", "w")) |tf| {
+            _ = c.fclose(tf);
+        }
+        sys_status.spawnCmd("dunstctl set-paused true 2>/dev/null || makoctl mode -a dnd 2>/dev/null || true");
+    }
 }
 
 test "QuickSettings calculateSliderPercent" {
@@ -4815,6 +5133,38 @@ test "QuickSettings queryDisplaySettings and display settings state" {
     try std.testing.expect(valid_hz);
 
     try std.testing.expect(qs.display_resolution_idx < display_resolutions.len);
+}
+
+test "QuickSettings persistence of display scale, refresh, resolution, eye comfort, and dnd" {
+    // Test scale
+    saveDisplayScale(125);
+    try std.testing.expectEqual(@as(?u32, 125), loadDisplayScale());
+    saveDisplayScale(100);
+    try std.testing.expectEqual(@as(?u32, 100), loadDisplayScale());
+
+    // Test refresh
+    saveDisplayRefresh(144);
+    try std.testing.expectEqual(@as(?u32, 144), loadDisplayRefresh());
+
+    // Test resolution
+    saveDisplayResolution("1920x1080");
+    var res_buf: [64]u8 = undefined;
+    const res = loadDisplayResolution(&res_buf);
+    try std.testing.expect(res != null);
+    try std.testing.expectEqualStrings("1920x1080", res.?);
+    try std.testing.expectEqual(@as(?usize, 0), loadDisplayResolutionIdx());
+
+    // Test eye comfort
+    saveEyeComfort(true);
+    try std.testing.expect(loadEyeComfort());
+    saveEyeComfort(false);
+    try std.testing.expect(!loadEyeComfort());
+
+    // Test DND
+    saveDnd(true);
+    try std.testing.expect(loadDnd());
+    saveDnd(false);
+    try std.testing.expect(!loadDnd());
 }
 
 test "QuickSettings handlePointerAxis scrolling" {
@@ -5094,12 +5444,16 @@ test "QuickSettings saved wifi connection and bluetooth offline UX transitions" 
     qs.bt_connect_mac_len = bt_mac.len;
     @memcpy(qs.bt_connect_worker.mac[0..bt_mac.len], bt_mac);
     qs.bt_connect_worker.mac_len = bt_mac.len;
+    const test_err = "Device offline or unreachable";
+    @memcpy(qs.bt_connect_worker.error_msg[0..test_err.len], test_err);
+    qs.bt_connect_worker.error_len = test_err.len;
     qs.bt_connect_worker.status.store(.failed, .release);
     qs.bt_connect_worker.done.store(true, .release);
 
     try std.testing.expect(qs.checkBtConnectStatus());
     try std.testing.expectEqual(async.OpStatus.failed, qs.bt_connect_status);
     try std.testing.expectEqualStrings(bt_mac, qs.bt_failed_mac[0..qs.bt_failed_mac_len]);
+    try std.testing.expectEqualStrings(test_err, qs.bt_error_msg[0..qs.bt_error_len]);
 }
 
 test "QuickSettings live scan functions" {

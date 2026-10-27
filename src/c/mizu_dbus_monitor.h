@@ -42,6 +42,12 @@ bool mizu_dbus_monitor_check_bluetooth_dirty(void);
 // Asynchronously request a refresh of active MPRIS players.
 void mizu_dbus_monitor_trigger_mpris_refresh(void);
 
+// Start active Bluetooth discovery on BlueZ.
+void mizu_dbus_monitor_start_bt_discovery(void);
+
+// Stop active Bluetooth discovery on BlueZ.
+void mizu_dbus_monitor_stop_bt_discovery(void);
+
 // Cleanly stop the background monitor thread and close D-Bus connections.
 void mizu_dbus_monitor_deinit(void);
 
