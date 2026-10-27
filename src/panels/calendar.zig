@@ -154,6 +154,10 @@ pub const Calendar = struct {
             changed = true;
         }
 
+        if (self.holiday_store) |*store| {
+            if (store.refreshIfChanged()) changed = true;
+        }
+
         return changed;
     }
 
@@ -418,13 +422,6 @@ pub const Calendar = struct {
         }
     }
 
-    /// Y position of the bottom of the header (weekday labels baseline).
-    pub fn headerBottomY(self: *const Calendar) i32 {
-        const scale_i = @as(i32, @intCast(self.cfg.typography.calendar_heading * 1));
-        const pad_i = @as(i32, @intCast(Layout.pad));
-        return pad_i + 40 + scale_i + 8; // header icon area + heading + gap to weekdays
-    }
-
     pub fn render(self: *Calendar, target: renderer.Renderer, scale: u32) !void {
         self.hit_areas.clearRetainingCapacity();
 
@@ -434,6 +431,7 @@ pub const Calendar = struct {
         const head_sz = self.cfg.typography.calendar_heading * scale;
         const sec_sz = self.cfg.typography.secondary * scale;
         const day_sz = self.cfg.typography.calendar_text * scale;
+        const weekday_sz = sec_sz + 2 * scale;
         const radius = self.cfg.theme.radius_panel * scale;
 
         target.clear(theme.Color.transparent);
@@ -513,11 +511,11 @@ pub const Calendar = struct {
         ui.close();
 
         // Weekday header (starts on Sunday)
-        const weekdays = [_][]const u8{ "Su", "Mo", "Tu", "We", "Th", "Fr", "Sa" };
-        _ = ui.open(.{ .width = .{ .grow = .{} }, .height = .{ .fixed = ui.s(22) }, .direction = .row, .gap = 0 });
+        const weekdays = [_][]const u8{ "Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat" };
+        _ = ui.open(.{ .width = .{ .grow = .{} }, .height = .{ .fixed = ui.s(24) }, .direction = .row, .gap = 0 });
         for (weekdays) |day_name| {
             _ = ui.open(.{ .width = .{ .percent = 1.0 / 7.0 }, .height = .{ .grow = .{} }, .align_x = .center, .align_y = .center });
-            ui.text(day_name, .{ .size = sec_sz, .color = self.cfg.theme.text_muted });
+            ui.text(day_name, .{ .size = weekday_sz, .color = self.cfg.theme.text_muted });
             ui.close();
         }
         ui.close();
@@ -593,7 +591,7 @@ pub const Calendar = struct {
                 else
                     self.cfg.theme.text_main;
                 ui.text(num_str, .{
-                    .size = day_sz * 3 / 2,
+                    .size = (day_sz * 9) / 8,
                     .color = num_color,
                 });
                 ui.close();
@@ -713,18 +711,63 @@ pub const Calendar = struct {
         });
         ui.close(); // day card
 
-        // Holiday info below date
-        const sel_hol = if (self.holiday_store) |store| store.find(self.selected_year, self.selected_month, self.selected_day) else null;
-        if (sel_hol) |hld| {
+        // Holiday info: selected day holiday or monthly list.
+        const current_day_holiday = if (self.holiday_store) |store| (
+            if (self.selected_year == self.view_year and self.selected_month == self.view_month)
+                store.find(self.selected_year, self.selected_month, self.selected_day)
+            else
+                null
+        ) else null;
+
+        if (current_day_holiday) |hld| {
             _ = ui.open(.{
                 .width = .{ .grow = .{} },
-                .bg = self.cfg.theme.surface,
-                .radius = ui.f(8),
-                .padding = .xy(ui.su(8), ui.su(6)),
+                .height = .{ .grow = .{} },
+                .direction = .column,
+                .align_x = .center,
+                .align_y = .center,
+                .bg = self.cfg.theme.card_bg,
+                .radius = ui.f(10),
+                .padding = .xy(ui.su(12), ui.su(10)),
             });
             var hbuf: [128]u8 = undefined;
             const hstr = std.fmt.bufPrint(&hbuf, "{s}", .{hld.summarySlice()}) catch "";
-            ui.text(hstr, .{ .size = head_sz, .color = self.cfg.theme.secondary });
+            var trunc_buf: [128]u8 = undefined;
+            const disp_str = truncateText(target, &self.font, hstr, 210 * scale, &trunc_buf, head_sz);
+            ui.text(disp_str, .{ .size = head_sz, .color = self.cfg.theme.secondary });
+            ui.close();
+        } else {
+            _ = ui.open(.{
+                .width = .{ .grow = .{} },
+                .height = .{ .grow = .{} },
+                .direction = .column,
+                .gap = ui.su(6),
+                .bg = self.cfg.theme.card_bg,
+                .radius = ui.f(10),
+                .padding = .xy(ui.su(12), ui.su(10)),
+            });
+            var count: usize = 0;
+            if (self.holiday_store) |store| {
+                for (store.items.items) |hol| {
+                    if (@as(u32, hol.year) == self.view_year and @as(u32, hol.month) == self.view_month) {
+                        var hbuf: [160]u8 = undefined;
+                        const hstr = std.fmt.bufPrint(&hbuf, "{d} - {s}", .{ hol.day, hol.summarySlice() }) catch "";
+                        var trunc_buf: [160]u8 = undefined;
+                        const disp_str = truncateText(target, &self.font, hstr, 210 * scale, &trunc_buf, sec_sz + 1);
+                        ui.text(disp_str, .{
+                            .size = sec_sz + 1,
+                            .color = self.cfg.theme.text_bright,
+                        });
+                        count += 1;
+                    }
+                }
+            }
+            if (count == 0) {
+                ui.text("No holidays this month", .{
+                    .size = sec_sz,
+                    .color = self.cfg.theme.text_muted,
+                });
+            }
             ui.close();
         }
 

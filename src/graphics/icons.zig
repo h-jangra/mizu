@@ -461,13 +461,9 @@ pub fn drawTrash(target: renderer.Renderer, x: i32, y: i32, size: u32, color: th
     target.fillCircle(cx, cy, s * 0.35, color);
 }
 
-// ========================================================================
-// NanoSVG-backed raster icon subsystem (primary icon asset format)
-// ========================================================================
+// --- NanoSVG icon rasterizer ---
 
-/// A rasterized icon: an alpha (coverage) bitmap at a specific physical size.
-/// Tinted at draw time with a foreground color. Transparent background is
-/// preserved (alpha = 0 = fully transparent).
+/// Rasterized alpha icon tinted with foreground color at draw time.
 pub const RasterIcon = struct {
     width: u32,
     height: u32,
@@ -489,9 +485,7 @@ pub const RasterIcon = struct {
     }
 };
 
-// Icons are rasterized on demand and kept in a small bounded cache. Drawing
-// used to allocate (and never free) one rasterized bitmap per icon per frame,
-// which leaked memory and re-parsed SVGs continuously.
+// Bounded cache for on-demand rasterized icons.
 const icon_allocator = std.heap.c_allocator;
 const max_cached_icons = 64;
 const max_icon_name = 48;
@@ -508,14 +502,6 @@ const CacheEntry = struct {
 
 var g_cache: [max_cached_icons]CacheEntry = [_]CacheEntry{.{}} ** max_cached_icons;
 var g_cache_seq: u64 = 0;
-
-var g_icon_dir: []const u8 = "assets";
-var g_icon_dir_override = false;
-
-pub fn setIconDir(dir: []const u8) void {
-    g_icon_dir = dir;
-    g_icon_dir_override = true;
-}
 
 fn fileExists(path: []const u8) bool {
     if (path.len == 0 or path.len >= 512) return false;
@@ -556,20 +542,13 @@ fn tryRelative(allocator: std.mem.Allocator, base: []const u8, suffix: []const u
     return existingPath(allocator, dir, name);
 }
 
-/// Resolve an SVG asset path for `name`. Returns an allocated path (caller
-/// frees). Searches the configured/asset directory, then paths relative to
-/// the executable, then the user/system data directories. This keeps icons
-/// visible regardless of the process working directory.
+/// Resolve an SVG asset path for `name` (caller frees).
 pub fn resolveIconPath(allocator: std.mem.Allocator, name: []const u8) ![]u8 {
     if (c.getenv("MIZU_ICON_DIR")) |raw| {
         const dir = std.mem.span(raw);
         if (tryDir(allocator, dir, name)) |path| return path;
     }
-    if (g_icon_dir_override) {
-        if (tryDir(allocator, g_icon_dir, name)) |path| return path;
-    } else {
-        if (tryDir(allocator, "assets", name)) |path| return path;
-    }
+    if (tryDir(allocator, "assets", name)) |path| return path;
 
     var exe_buf: [4096]u8 = undefined;
     if (exeDir(&exe_buf)) |base| {
@@ -603,9 +582,7 @@ pub fn resolveIconPath(allocator: std.mem.Allocator, name: []const u8) ![]u8 {
     return try std.fmt.allocPrint(allocator, "assets/{s}.svg", .{name});
 }
 
-/// Load and rasterize an SVG asset at the given physical size. The returned
-/// icon owns its pixel and name buffers; call `deinit` and free the containing
-/// allocation when it is no longer needed.
+/// Load and rasterize an SVG asset at the given physical size.
 pub fn loadSvgIcon(allocator: std.mem.Allocator, name: []const u8, size_px: u32, scale: u32) ?RasterIcon {
     if (size_px == 0) return null;
     const path = resolveIconPath(allocator, name) catch return null;
@@ -745,40 +722,7 @@ pub fn drawSvgIcon(
     drawIconRaster(target, icon, cx, cy, color);
 }
 
-/// Draw an SVG icon at top-left (x, y). `size_px` is the physical pixel size.
-pub fn drawSvgIconAt(
-    target: renderer.Renderer,
-    allocator: std.mem.Allocator,
-    name: []const u8,
-    size_px: u32,
-    scale: u32,
-    x: i32,
-    y: i32,
-    color: theme.Color,
-) void {
-    const icon = getIcon(allocator, name, size_px, scale) orelse return;
-    drawIconRasterAt(target, icon, x, y, color);
-}
-
-/// Draw an SVG icon centered at (cx, cy) with rotation, tinted with `color`.
-/// `angle` is in radians.
-pub fn drawSvgIconRotated(
-    target: renderer.Renderer,
-    allocator: std.mem.Allocator,
-    name: []const u8,
-    size_px: u32,
-    scale: u32,
-    cx: i32,
-    cy: i32,
-    angle: f32,
-    color: theme.Color,
-) void {
-    const icon = getIcon(allocator, name, size_px, scale) orelse return;
-    drawIconRasterRotated(target, icon, cx, cy, angle, color);
-}
-
-/// Draw a rasterized SVG icon centered at (cx, cy) with rotation, tinted with `color`.
-/// `angle` is in radians.
+/// Draw rasterized SVG icon centered at (cx, cy) with rotation.
 pub fn drawIconRasterRotated(
     target: renderer.Renderer,
     icon: *const RasterIcon,
@@ -887,9 +831,7 @@ fn blendOver(dst_pixel: u32, src: theme.Color) u32 {
     return (a_val << 24) | (r_val << 16) | (g_val << 8) | b_val;
 }
 
-// ========================================================================
-// Unit tests
-// ========================================================================
+// --- Unit tests ---
 
 test "getIcon returns null for missing asset" {
     const allocator = std.testing.allocator;

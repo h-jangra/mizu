@@ -45,14 +45,7 @@ pub const Easing = struct {
     }
 };
 
-/// A single time-based animation.
-///
-/// `value` is interpolated from `from` to `to` over `duration_ms` using `easing`.
-/// `update(dt_ms)` advances the animation and returns true while `value` is
-/// still changing. When complete, `active` becomes false and `on_complete` is
-/// invoked once.
-///
-/// No heap allocation is performed; animations are stack- or struct-embedded.
+/// Time-based animation interpolating a value using easing curves.
 pub const Animation = struct {
     from: f32 = 0.0,
     to: f32 = 0.0,
@@ -85,11 +78,7 @@ pub const Animation = struct {
         self.elapsed_ms = 0;
     }
 
-    /// Advance the animation by `dt_ms` milliseconds.
-    ///
-    /// Returns true if `value` changed (a redraw is warranted). When the
-    /// animation reaches its target, `active` is set to false and `on_complete`
-    /// is invoked once.
+    /// Advance animation by dt_ms. Returns true if value changed.
     pub fn update(self: *Animation, dt_ms: u32) bool {
         if (!self.active or self.duration_ms == 0) return false;
 
@@ -121,10 +110,7 @@ pub const Animation = struct {
     }
 };
 
-/// A small pool of concurrent animations for a single panel or component.
-///
-/// `updateAll(dt_ms)` advances every active animation and returns true if any
-/// changed. `anyActive()` reports whether at least one animation is running.
+/// Pool of concurrent animations for a panel or component.
 pub const AnimationGroup = struct {
     items: [8]Animation = [_]Animation{ .{}, .{}, .{}, .{}, .{}, .{}, .{}, .{} },
     count: usize = 0,

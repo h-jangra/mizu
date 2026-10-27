@@ -32,7 +32,7 @@ pub const Geometry = struct {
         }
     }
 
-    /// Inset a rect by padding on all sides. Returns empty rect if padding exceeds dims.
+    /// Inset rect by padding on all sides.
     pub fn inset(r: Rect, pad: u32) Rect {
         if (pad * 2 >= r.w or pad * 2 >= r.h) return Rect.init(r.x, r.y, 0, 0);
         return Rect.init(
@@ -75,8 +75,7 @@ pub const Geometry = struct {
 
 pub const Align = enum { left, center, right, top, bottom };
 
-/// Manual row cursor for repetitive horizontal layouts.
-/// Caller controls every position; this is just a cursor bookkeeper.
+/// Row cursor for incremental horizontal positioning.
 pub const RowCursor = struct {
     x: i32,
     y: i32,

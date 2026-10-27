@@ -47,10 +47,7 @@ pub const HolidayStore = struct {
     pub fn init(allocator: std.mem.Allocator, calendar_file: ?[]const u8) HolidayStore {
         var self = initEmpty(allocator);
         if (builtin.is_test) return self;
-        // Explicit file path takes precedence. Otherwise scan the config
-        // directory for any *.ics and use the first found — there is no
-        // hardcoded filename. Multiple files are intentionally ignored so any
-        // single .ics is consumed as-is.
+        // Use explicit path or first *.ics found in config dir.
         if (calendar_file) |raw| {
             if (self.setCustomPath(raw)) {
                 self.loadCache();

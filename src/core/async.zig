@@ -1,11 +1,7 @@
 const std = @import("std");
 const c = @import("../c.zig").c;
 
-/// Lifecycle of an asynchronous system operation.
-///
-/// Every potentially slow system operation (D-Bus, subprocess, sysfs polling)
-/// progresses through these states so the UI can show a consistent loading /
-/// success / failed experience instead of mutating shared state ad-hoc.
+/// Lifecycle states of an asynchronous system operation.
 pub const OpStatus = enum(u8) {
     idle,
     /// Operation is in progress (generic loading).
@@ -39,13 +35,7 @@ pub const OpStatus = enum(u8) {
     }
 };
 
-/// Spawn `Worker.run(ctx)` on a detached background thread.
-///
-/// The thread is detached immediately so the caller never blocks on it.
-/// Each worker is responsible for signaling its own `wake_fd` (an eventfd, if
-/// >= 0) when it finishes, so the UI event loop can drain results without
-/// polling. The caller sets the operation status to `.loading`/`.scanning`
-/// before calling and to `.success`/`.failed` inside `Worker.run`.
+/// Spawn Worker.run(ctx) on a detached background thread.
 pub fn spawnTask(comptime Worker: type, ctx: *Worker, wake_fd: c_int) !void {
     const thread = try std.Thread.spawn(.{}, Worker.run, .{ctx});
     thread.detach();

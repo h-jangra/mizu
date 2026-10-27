@@ -433,8 +433,7 @@ fn makeTheme(
     };
 }
 
-// 0. Frosted Neumorphic (Default Desktop UI matching Reference Images)
-// Pastel gradient background blending cool blue (#DBEAFE), lavender (#EDE9FE), and pale pink (#FCE7F3)
+// Frosted Neumorphic theme.
 pub fn frostedNeumorphicTheme() Theme {
     const base = Color.init(220, 240, 244, 252);
     const surface = Color.init(235, 255, 255, 255);
@@ -489,8 +488,7 @@ pub fn frostedNeumorphicTheme() Theme {
     return th;
 }
 
-// 1. Nord Frost
-// Base #2E3440, Surface #3B4252, Elevated #434C5E, Accent #88C0D0, Blue #81A1C1, Text #ECEFF4
+// Nord Frost theme.
 pub fn nordTheme() Theme {
     return makeTheme(
         .nord,
@@ -508,8 +506,7 @@ pub fn nordTheme() Theme {
     );
 }
 
-// 2. Catppuccin Mocha
-// Base #1E1E2E, Surface #313244, Accent #CBA6F7, Blue #89B4FA, Text #CDD6F4
+// Catppuccin Mocha theme.
 pub fn catppuccinTheme() Theme {
     return makeTheme(
         .catppuccin,
@@ -527,8 +524,7 @@ pub fn catppuccinTheme() Theme {
     );
 }
 
-// 3. Tokyo Night
-// Base #1A1B26, Surface #24283B, Accent #7AA2F7, Cyan #7DCFFF, Text #C0CAF5
+// Tokyo Night theme.
 pub fn tokyoNightTheme() Theme {
     return makeTheme(
         .tokyo_night,
@@ -546,8 +542,7 @@ pub fn tokyoNightTheme() Theme {
     );
 }
 
-// 4. Rosé Pine
-// Base #191724, Surface #1F1D2E, Elevated #26233A, Accent #C4A7E7, Foam #9CCFD8, Text #E0DEF4
+// Rosé Pine theme.
 pub fn rosePineTheme() Theme {
     return makeTheme(
         .rose_pine,

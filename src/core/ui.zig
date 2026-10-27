@@ -563,18 +563,14 @@ fn drawBorderSides(target: renderer.Renderer, rect: Rect, radius: u32, w: c.Clay
     if (w.right > 0) target.fillRect(rect.x + @as(i32, @intCast(rect.w)) - w.right, rect.y, w.right, rect.h, col);
 }
 
-// One global arena is reused across frames. It is reset in place with
-// retain_capacity, so steady-state rendering performs no heap allocation for
-// custom render payloads.
+// Global arena reused across frames with retain_capacity.
 var global_arena: std.heap.ArenaAllocator = undefined;
 var global_arena_ready = false;
 var frame_active = false;
 
 fn maybeResetArena(_: std.mem.Allocator) void {
     if (!global_arena_ready) {
-        // The frame arena lives for the whole process. Back it with the page
-        // allocator so it never depends on a caller-owned allocator (tests
-        // create and destroy testing allocators between frames).
+        // Process-lifetime frame arena backed by page allocator.
         global_arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
         global_arena_ready = true;
     } else if (!frame_active) {

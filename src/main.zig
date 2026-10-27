@@ -18,7 +18,6 @@ const power_module = @import("panels/powermenu.zig");
 const notification_module = @import("panels/notifications.zig");
 const exec = @import("core/exec.zig");
 const caffeine_module = @import("services/caffeine.zig");
-pub const desktop_entry = @import("services/desktop_entries.zig");
 
 test {
     _ = @import("services/desktop_entries.zig");
@@ -72,7 +71,6 @@ pub const notify_dbus = struct {
     pub extern "c" fn mizu_dbus_notify_init(callback: MizuNotifyCallback, userdata: ?*anyopaque) c_int;
     pub extern "c" fn mizu_dbus_notify_dispatch(timeout_ms: c_int) c_int;
     pub extern "c" fn mizu_dbus_notify_deinit() void;
-    pub extern "c" fn mizu_dbus_notify_send(summary: [*c]const u8, body: [*c]const u8, app_name: [*c]const u8, timeout_ms: c_int) c_int;
 };
 
 const tray_dbus = struct {
@@ -419,9 +417,7 @@ pub fn main(init: std.process.Init.Minimal) u8 {
     _ = c.signal(c.SIGCHLD, c.SIG_IGN);
     _ = c.signal(c.SIGUSR1, sigUsr1Handler);
 
-    // Block SIGUSR1 early so all worker threads inherit the blocked mask.
-    // The bar main thread can still consume it via signalfd, while preventing
-    // any process or thread from terminating with "User defined signal 1".
+    // Block SIGUSR1 for worker threads; consumed via signalfd.
     var init_sig_mask: c.sigset_t = undefined;
     _ = c.sigemptyset(&init_sig_mask);
     _ = c.sigaddset(&init_sig_mask, c.SIGUSR1);
@@ -848,7 +844,7 @@ fn runBar(allocator: std.mem.Allocator, cfg: config.Config) !void {
     global_bar_app = &app;
     defer global_bar_app = null;
 
-    // Start D-Bus StatusNotifierWatcher service for system tray (org.kde.StatusNotifierWatcher)
+    // StatusNotifierWatcher for system tray (org.kde.StatusNotifierWatcher)
     const tray_init_res = tray_dbus.mizu_tray_dbus_init(onTrayUpdate, null);
     if (tray_init_res == 0) {
         std.debug.print("Mizu StatusNotifierWatcher active on org.kde.StatusNotifierWatcher\n", .{});
@@ -1132,7 +1128,7 @@ fn runQuickSettings(allocator: std.mem.Allocator, cfg: config.Config) !void {
     _ = c.wl_display_flush(app.display.?);
     app.needs_redraw = false;
 
-    // Dynamic timerfd: 50ms initially for first async status refresh, then 1500ms when idle, 200ms when scanning or typing
+    // Dynamic timerfd: 50ms initial refresh, 1500ms idle, 200ms active
     const timer_fd = c.timerfd_create(c.CLOCK_MONOTONIC, c.TFD_CLOEXEC | c.TFD_NONBLOCK);
     if (timer_fd >= 0) {
         rearmTimer(timer_fd, 50);
@@ -1662,9 +1658,7 @@ fn runOsd(allocator: std.mem.Allocator, cfg: config.Config, kind: osd_module.Osd
         return error.SocketListenFailed;
     }
 
-    // Detach the popup server so `mizu notify` returns immediately instead of
-    // blocking for the lifetime of the toast. The parent leaves the bound
-    // socket to the child and skips the cleanup defers.
+    // Fork popup server so `mizu notify` returns immediately.
     const daemon_pid = c.fork();
     if (daemon_pid < 0) return error.ForkFailed;
     if (daemon_pid > 0) {

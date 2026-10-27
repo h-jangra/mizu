@@ -377,9 +377,7 @@ pub const Font = struct {
         return self.measureTextWithSize(text, self.size_px);
     }
 
-    /// Approximate ascender for an arbitrary pixel size using the metrics of
-    /// the face at its initialized size. Keeps text vertically centered
-    /// without mutating the FreeType face during layout.
+    /// Approximate ascender for a given pixel size using face metrics.
     pub fn ascentForSize(self: *const Font, size_px: u32) i32 {
         if (self.size_px == 0) return 0;
         return @divTrunc(self.ascender_px * @as(i32, @intCast(size_px)), @as(i32, @intCast(self.size_px)));
@@ -410,9 +408,7 @@ pub const Font = struct {
         return if (total_advance > 0) @intCast(total_advance) else 0;
     }
 
-    /// Visual ink bounds of the rendered glyphs, relative to the text origin.
-    /// This ignores advance-side bearings so icons can be centered by their
-    /// visible shape rather than their typographic advance width.
+    /// Visual ink bounds of rendered glyphs relative to text origin.
     pub fn measureInk(self: *Font, text: []const u8, size_px: u32) InkExtents {
         var pen_x: i32 = 0;
         var min_left: i32 = std.math.maxInt(i32);
@@ -441,8 +437,7 @@ pub const Font = struct {
     }
 };
 
-/// Return the longest prefix of `text` that fits `max_w` when suffixed with
-/// an ellipsis. Runs in one pass over the glyphs and reuses the glyph cache.
+/// Truncate text to fit max_w with an ellipsis.
 pub fn truncateText(font: *Font, text: []const u8, max_w: u32, size_px: u32, buf: []u8) []const u8 {
     if (text.len == 0) return text;
     const ellipsis = "...";
@@ -660,8 +655,6 @@ pub const Image = struct {
         if (std.mem.indexOf(u8, msg_str, "Extra compressed data") != null) {
             return;
         }
-        // Log other warnings (optional)
-        // std.debug.print("libpng warning: {s}\n", .{msg_str});
     }
 
     pub fn loadPngFromMemory(allocator: std.mem.Allocator, data: []const u8) !?*Image {
@@ -1164,7 +1157,7 @@ pub const Renderer = struct {
         self.fillRoundedRect(x, y, w, h, radius, color);
     }
 
-    /// Clean glassmorphic squircle with subtle top-inner specular bevel highlight for depth
+    /// Glassmorphic squircle with top-inner bevel highlight.
     pub fn fillGlassSquircle(self: Renderer, x: i32, y: i32, w: u32, h: u32, radius: u32, base_color: Color) void {
         self.fillSquircle(x, y, w, h, radius, base_color);
         if (h > 6 and w > 12) {
@@ -1172,7 +1165,7 @@ pub const Renderer = struct {
         }
     }
 
-    /// Delicate 1px specular highlight along top edge creating physical glass depth
+    /// 1px specular highlight along top edge.
     pub fn drawTopBevelHighlight(self: Renderer, x: i32, y: i32, w: u32, radius: u32) void {
         const highlight_color = Color.init(28, 255, 255, 255);
         const r_inset = @min(radius, w / 4);
@@ -1183,7 +1176,7 @@ pub const Renderer = struct {
         }
     }
 
-    /// Soft elevated drop shadow with natural quadratic falloff and ambient contact occlusion
+    /// Soft elevated drop shadow with quadratic falloff.
     pub fn drawDropShadow(self: Renderer, x: i32, y: i32, w: u32, h: u32, radius: u32, blur: u32, shadow_color: Color) void {
         const y_off = @as(i32, @intCast(@max(1, (blur + 1) / 2)));
         self.drawSoftShadow(x, y, w, h, radius, blur, y_off, shadow_color);
@@ -1216,7 +1209,7 @@ pub const Renderer = struct {
         }
     }
 
-    /// Smooth pastel gradient inside a continuous-curvature squircle blending col_start (top-left), col_mid (center), and col_end (bottom-right)
+    /// Linear gradient squircle blending col_start, col_mid, and col_end.
     pub fn fillPastelGradientSquircle(
         self: Renderer,
         x: i32,
@@ -1463,7 +1456,7 @@ pub const Renderer = struct {
         }
     }
 
-    /// GNOME-inspired elevated card with soft ambient drop shadow, clean surface fill, and 1px border
+    /// Elevated card with drop shadow and border.
     pub fn drawNeumorphicCard(
         self: Renderer,
         x: i32,
@@ -1483,7 +1476,7 @@ pub const Renderer = struct {
         }
     }
 
-    /// Circular button with subtle shadow, crisp background fill, and optional border
+    /// Circular button with shadow and optional border.
     pub fn drawNeumorphicCircleButton(
         self: Renderer,
         cx: f64,
@@ -1503,7 +1496,7 @@ pub const Renderer = struct {
         }
     }
 
-    /// GNOME Adwaita-style pill slider with smooth track, filled progress, and circular white thumb knob handle
+    /// Pill slider with track, progress fill, and circular thumb.
     pub fn drawPillSlider(
         self: Renderer,
         x: i32,
@@ -1550,7 +1543,7 @@ pub const Renderer = struct {
         self.drawCircleBorder(thumb_cx, thumb_cy, thumb_r, 0.75, Color.init(40, 0, 0, 0));
     }
 
-    /// Modern iOS/macOS-style pill toggle switch with tactile raised circular knob
+    /// Pill toggle switch with circular thumb.
     pub fn drawToggleSwitch(
         self: Renderer,
         x: i32,
@@ -1578,7 +1571,7 @@ pub const Renderer = struct {
         self.fillCircle(knob_cx, knob_cy, knob_r, thumb_color);
     }
 
-    /// Neumorphic segmented control with inset pill track and raised white selected segment
+    /// Segmented control with pill track and selected segment pill.
     pub fn drawSegmentedControl(
         self: Renderer,
         font: *Font,
@@ -1925,8 +1918,7 @@ pub const Renderer = struct {
         self.drawImage(img_surf, dest_x, dest_y, dest_w, dest_h);
     }
 
-    /// Draw an image multiplied by a tint color. Used by Clay image commands
-    /// that carry a non-zero backgroundColor.
+    /// Draw image tinted by color.
     pub fn drawImageTinted(
         self: Renderer,
         img: *const Image,
@@ -1977,9 +1969,7 @@ pub const Renderer = struct {
         }
     }
 
-    /// Draw a rasterized alpha (coverage) icon tinted with `color`. The icon's
-    /// alpha channel controls coverage; fully transparent pixels are skipped.
-    /// Coordinates are in physical pixels; no resampling is performed.
+    /// Draw rasterized alpha coverage icon tinted with color.
     pub fn drawIconAlpha(
         self: Renderer,
         width: u32,

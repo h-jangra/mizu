@@ -47,16 +47,6 @@ pub const Mode = enum {
             .files => "Search files or browse (/path)...",
         };
     }
-
-    pub fn badgeText(self: Mode) []const u8 {
-        return switch (self) {
-            .app => "APPS",
-            .action => "ACTION",
-            .command => "CMD",
-            .calc => "CALC",
-            .files => "FILES",
-        };
-    }
 };
 
 pub const ActionType = enum {
@@ -506,8 +496,7 @@ fn copyToClipboard(text: []const u8) void {
     }
 }
 
-/// Map the legacy Nerd Font symbols used by built-in commands to SVG assets.
-/// User application icons are file-path based and bypass this mapping.
+/// Map built-in glyph symbols to SVG asset names.
 fn builtinSvgIcon(icon: []const u8) ?[]const u8 {
     const glyph = std.mem.trim(u8, icon, " ");
     if (std.mem.eql(u8, glyph, "\u{f03d8}")) return "palette";
@@ -709,6 +698,8 @@ pub const Launcher = struct {
     width: u32 = 680,
     height: u32 = 520,
 
+    grid_cols: usize = 5,
+    grid_rows: usize = 4,
     list_rows: usize = 7,
 
     running: bool = true,
@@ -719,6 +710,12 @@ pub const Launcher = struct {
     pub const ROW_H: u32 = 52;
     pub const ROW_GAP: i32 = 6;
     pub const CORNER_RADIUS: u32 = 16;
+    pub const GRID_COLS: usize = 5;
+    pub const GRID_ROW_H: u32 = 96;
+    pub const GRID_GAP: i32 = 10;
+    pub const GRID_ICON_SIZE: u32 = 48;
+
+    pub const CardRect = struct { x: i32, y: i32, w: u32, h: u32 };
 
     pub fn init(allocator: std.mem.Allocator, cfg: config.Config) !Launcher {
         const font = try renderer.Font.init(allocator, cfg.theme.font_family, cfg.typography.ui);
@@ -767,7 +764,7 @@ pub const Launcher = struct {
         self.font.deinit();
     }
 
-    pub fn getTrashRect(self: *const Launcher, row: usize) struct { x: i32, y: i32, w: u32, h: u32 } {
+    pub fn getTrashRect(self: *const Launcher, row: usize) CardRect {
         const card = self.getListCardRect(row);
         const sz: u32 = 28;
         const x = card.x + @as(i32, @intCast(card.w)) - 10 - @as(i32, @intCast(sz));
@@ -868,6 +865,18 @@ pub const Launcher = struct {
         self.hover_trash = false;
     }
 
+    pub fn isGridView(self: *const Launcher) bool {
+        return self.effectiveMode() == .app;
+    }
+
+    pub fn getItemsPerPage(self: *const Launcher) usize {
+        if (self.isGridView()) {
+            return self.grid_cols * self.grid_rows;
+        } else {
+            return self.list_rows;
+        }
+    }
+
     pub fn updateDimensions(self: *Launcher, output_w: u32, output_h: u32) void {
         if (output_w > 0 and output_h > 0) {
             const max_w = @min(@as(u32, 760), if (output_w > 40) output_w - 40 else output_w);
@@ -880,10 +889,22 @@ pub const Launcher = struct {
         }
 
         const top_used: u32 = @as(u32, @intCast(OUTER_PAD)) + INPUT_H + @as(u32, @intCast(INPUT_GAP));
-        const bottom_used: u32 = 34;
+        const bottom_used: u32 = 20;
         const avail_h = if (self.height > top_used + bottom_used) self.height - top_used - bottom_used else ROW_H;
         const row_step: u32 = ROW_H + @as(u32, @intCast(ROW_GAP));
-        self.list_rows = @max(1, avail_h / row_step);
+        self.list_rows = @max(1, (avail_h + @as(u32, @intCast(ROW_GAP))) / row_step);
+
+        const grid_step: u32 = GRID_ROW_H + @as(u32, @intCast(GRID_GAP));
+        self.grid_rows = @max(1, (avail_h + @as(u32, @intCast(GRID_GAP))) / grid_step);
+
+        const avail_w = if (self.width > @as(u32, @intCast(OUTER_PAD * 2))) self.width - @as(u32, @intCast(OUTER_PAD * 2)) else self.width;
+        if (avail_w >= 580) {
+            self.grid_cols = 5;
+        } else if (avail_w >= 440) {
+            self.grid_cols = 4;
+        } else {
+            self.grid_cols = 3;
+        }
     }
 
     fn clearItems(self: *Launcher) void {
@@ -994,8 +1015,9 @@ pub const Launcher = struct {
 
     pub fn preloadVisibleIcons(self: *Launcher) void {
         const page_offset = self.getPageOffset();
+        const page_size = self.getItemsPerPage();
         var i: usize = 0;
-        while (i < self.list_rows) : (i += 1) {
+        while (i < page_size) : (i += 1) {
             const idx = page_offset + i;
             if (idx >= self.items.items.len) break;
             const item = &self.items.items[idx];
@@ -1397,9 +1419,65 @@ pub const Launcher = struct {
 
         const old_page = self.getPageOffset();
         if (delta > 0) {
-            self.selected_index = (self.selected_index + 1) % total;
+            const u_delta: usize = @intCast(delta);
+            self.selected_index = (self.selected_index + u_delta) % total;
         } else if (delta < 0) {
-            self.selected_index = if (self.selected_index == 0) total - 1 else self.selected_index - 1;
+            const u_delta: usize = @intCast(-delta);
+            if (self.selected_index >= u_delta) {
+                self.selected_index -= u_delta;
+            } else {
+                const rem = u_delta % total;
+                self.selected_index = (self.selected_index + total - rem) % total;
+            }
+        }
+
+        if (self.getPageOffset() != old_page) {
+            self.preloadVisibleIcons();
+        }
+    }
+
+    pub fn moveSelectionGrid(self: *Launcher, dir_row: i32, dir_col: i32) void {
+        const total = self.items.items.len;
+        if (total == 0) return;
+
+        const old_page = self.getPageOffset();
+        const cols = @max(1, self.grid_cols);
+
+        if (total <= cols) {
+            const delta = if (dir_col != 0) dir_col else dir_row;
+            if (delta > 0) {
+                self.selected_index = (self.selected_index + 1) % total;
+            } else if (delta < 0) {
+                self.selected_index = if (self.selected_index == 0) total - 1 else self.selected_index - 1;
+            }
+        } else {
+            if (dir_col > 0) {
+                self.selected_index = (self.selected_index + 1) % total;
+            } else if (dir_col < 0) {
+                self.selected_index = if (self.selected_index == 0) total - 1 else self.selected_index - 1;
+            } else if (dir_row > 0) {
+                if (self.selected_index + cols < total) {
+                    self.selected_index += cols;
+                } else {
+                    const cur_row = self.selected_index / cols;
+                    const max_row = (total - 1) / cols;
+                    if (cur_row < max_row) {
+                        self.selected_index = total - 1;
+                    } else {
+                        const col = self.selected_index % cols;
+                        self.selected_index = col;
+                    }
+                }
+            } else if (dir_row < 0) {
+                if (self.selected_index >= cols) {
+                    self.selected_index -= cols;
+                } else {
+                    const col = self.selected_index % cols;
+                    const max_row = (total - 1) / cols;
+                    const target_idx = max_row * cols + col;
+                    self.selected_index = if (target_idx < total) target_idx else total - 1;
+                }
+            }
         }
 
         if (self.getPageOffset() != old_page) {
@@ -1412,7 +1490,8 @@ pub const Launcher = struct {
         if (total == 0) return;
 
         const old_page = self.getPageOffset();
-        const delta = delta_pages * @as(i32, @intCast(self.list_rows));
+        const page_size = self.getItemsPerPage();
+        const delta = delta_pages * @as(i32, @intCast(page_size));
         const cur = @as(i32, @intCast(self.selected_index));
         const new_val = cur + delta;
 
@@ -1435,17 +1514,32 @@ pub const Launcher = struct {
         const total = self.items.items.len;
         if (total == 0) return false;
 
-        if (delta > 0) {
-            self.moveSelection(1);
-            return true;
-        } else if (delta < 0) {
-            self.moveSelection(-1);
-            return true;
+        if (self.isGridView()) {
+            if (delta > 0) {
+                self.moveSelectionGrid(1, 0);
+                return true;
+            } else if (delta < 0) {
+                self.moveSelectionGrid(-1, 0);
+                return true;
+            }
+        } else {
+            if (delta > 0) {
+                self.moveSelection(1);
+                return true;
+            } else if (delta < 0) {
+                self.moveSelection(-1);
+                return true;
+            }
         }
         return false;
     }
 
+    pub fn recordAppUsage(self: *Launcher, app_id: []const u8) void {
+        desktop_entry.recordAppUsage(self.apps.items, app_id);
+    }
+
     pub fn launchApp(self: *Launcher, app: *const desktop_entry.DesktopApp) void {
+        self.recordAppUsage(app.id);
         const term = resolveTerminal(&self.cfg);
         parseAndSpawnApp(self.allocator, app.exec, app.terminal, term);
     }
@@ -1496,6 +1590,7 @@ pub const Launcher = struct {
                 if (item.app) |app| {
                     self.launchApp(app);
                 } else {
+                    self.recordAppUsage(item.action_data);
                     parseAndSpawnApp(self.allocator, item.action_data, false, term);
                 }
             },
@@ -1562,7 +1657,7 @@ pub const Launcher = struct {
         return .{ .x = input_x, .y = input_y, .w = input_w, .h = INPUT_H };
     }
 
-    pub fn getListCardRect(self: *const Launcher, row: usize) struct { x: i32, y: i32, w: u32, h: u32 } {
+    pub fn getListCardRect(self: *const Launcher, row: usize) CardRect {
         const start_x: i32 = OUTER_PAD;
         const start_y: i32 = OUTER_PAD + @as(i32, @intCast(INPUT_H)) + INPUT_GAP;
         const total_pad = @as(u32, @intCast(OUTER_PAD * 2));
@@ -1572,10 +1667,42 @@ pub const Launcher = struct {
         return .{ .x = start_x, .y = y, .w = card_w, .h = ROW_H };
     }
 
+    pub fn getGridCardRect(self: *const Launcher, cell_idx: usize) CardRect {
+        const start_x: i32 = OUTER_PAD;
+        const start_y: i32 = OUTER_PAD + @as(i32, @intCast(INPUT_H)) + INPUT_GAP;
+        const total_pad = @as(u32, @intCast(OUTER_PAD * 2));
+        const avail_w: u32 = if (self.width > total_pad) self.width - total_pad else self.width;
+
+        const cols = @max(1, self.grid_cols);
+        const total_gap_w = @as(u32, @intCast((cols - 1) * @as(usize, @intCast(GRID_GAP))));
+        const cell_w = if (avail_w > total_gap_w) (avail_w - total_gap_w) / @as(u32, @intCast(cols)) else 100;
+
+        const col = cell_idx % cols;
+        const row = cell_idx / cols;
+
+        const col_step: i32 = @as(i32, @intCast(cell_w)) + GRID_GAP;
+        const row_step: i32 = @as(i32, @intCast(GRID_ROW_H)) + GRID_GAP;
+
+        const x = start_x + @as(i32, @intCast(col)) * col_step;
+        const y = start_y + @as(i32, @intCast(row)) * row_step;
+
+        return .{ .x = x, .y = y, .w = cell_w, .h = GRID_ROW_H };
+    }
+
+    pub fn getCardRect(self: *const Launcher, page_idx: usize) CardRect {
+        if (self.isGridView()) {
+            return self.getGridCardRect(page_idx);
+        } else {
+            return self.getListCardRect(page_idx);
+        }
+    }
+
     pub fn getPageOffset(self: *const Launcher) usize {
         const total = self.items.items.len;
         if (total == 0) return 0;
-        return (self.selected_index / self.list_rows) * self.list_rows;
+        const page_size = self.getItemsPerPage();
+        if (page_size == 0) return 0;
+        return (self.selected_index / page_size) * page_size;
     }
 
     fn getTextOriginX(self: *Launcher) i32 {
@@ -1591,12 +1718,13 @@ pub const Launcher = struct {
         if (total == 0) return null;
 
         const page_offset = self.getPageOffset();
-        var r: usize = 0;
-        while (r < self.list_rows) : (r += 1) {
-            const item_idx = page_offset + r;
+        const page_size = self.getItemsPerPage();
+        var i: usize = 0;
+        while (i < page_size) : (i += 1) {
+            const item_idx = page_offset + i;
             if (item_idx >= total) break;
 
-            const rect = self.getListCardRect(r);
+            const rect = self.getCardRect(i);
             if (x >= rect.x and x < rect.x + @as(i32, @intCast(rect.w)) and
                 y >= rect.y and y < rect.y + @as(i32, @intCast(rect.h)))
             {
@@ -1619,12 +1747,14 @@ pub const Launcher = struct {
 
         self.hover_trash = false;
         if (self.hover_index) |idx| {
-            const page_offset = self.getPageOffset();
-            if (idx >= page_offset and idx < page_offset + self.list_rows and idx < self.items.items.len) {
-                const r = idx - page_offset;
-                const item = self.items.items[idx];
-                if (item.is_history and self.isTrashAt(r, x, y)) {
-                    self.hover_trash = true;
+            if (!self.isGridView()) {
+                const page_offset = self.getPageOffset();
+                if (idx >= page_offset and idx < page_offset + self.list_rows and idx < self.items.items.len) {
+                    const r = idx - page_offset;
+                    const item = self.items.items[idx];
+                    if (item.is_history and self.isTrashAt(r, x, y)) {
+                        self.hover_trash = true;
+                    }
                 }
             }
         }
@@ -1659,13 +1789,15 @@ pub const Launcher = struct {
         }
 
         if (self.getItemAt(x, y)) |item_idx| {
-            const page_offset = self.getPageOffset();
-            if (item_idx >= page_offset and item_idx < page_offset + self.list_rows and item_idx < self.items.items.len) {
-                const r = item_idx - page_offset;
-                const item = self.items.items[item_idx];
-                if (item.is_history and self.isTrashAt(r, x, y)) {
-                    self.removeFromHistory(item_idx) catch {};
-                    return true;
+            if (!self.isGridView()) {
+                const page_offset = self.getPageOffset();
+                if (item_idx >= page_offset and item_idx < page_offset + self.list_rows and item_idx < self.items.items.len) {
+                    const r = item_idx - page_offset;
+                    const item = self.items.items[item_idx];
+                    if (item.is_history and self.isTrashAt(r, x, y)) {
+                        self.removeFromHistory(item_idx) catch {};
+                        return true;
+                    }
                 }
             }
             self.selected_index = item_idx;
@@ -1710,11 +1842,27 @@ pub const Launcher = struct {
             return true;
         } else if (sym == c.XKB_KEY_Up) {
             self.confirm_index = null;
-            self.moveSelection(-1);
+            if (self.isGridView()) {
+                self.moveSelectionGrid(-1, 0);
+            } else {
+                self.moveSelection(-1);
+            }
             return true;
         } else if (sym == c.XKB_KEY_Down) {
             self.confirm_index = null;
-            self.moveSelection(1);
+            if (self.isGridView()) {
+                self.moveSelectionGrid(1, 0);
+            } else {
+                self.moveSelection(1);
+            }
+            return true;
+        } else if (sym == c.XKB_KEY_Left and self.isGridView() and self.input.getText().len == 0 and !ctrl) {
+            self.confirm_index = null;
+            self.moveSelectionGrid(0, -1);
+            return true;
+        } else if (sym == c.XKB_KEY_Right and self.isGridView() and self.input.getText().len == 0 and !ctrl) {
+            self.confirm_index = null;
+            self.moveSelectionGrid(0, 1);
             return true;
         } else if (sym == c.XKB_KEY_Page_Up) {
             self.confirm_index = null;
@@ -1933,6 +2081,118 @@ pub const Launcher = struct {
                 .color = self.cfg.theme.text_muted,
             });
             ui.close();
+        } else if (self.isGridView()) {
+            const page_offset = self.getPageOffset();
+            const grid_icon_s: u32 = GRID_ICON_SIZE * scale;
+
+            const avail_w = if (self.width > @as(u32, @intCast(OUTER_PAD * 2))) self.width - @as(u32, @intCast(OUTER_PAD * 2)) else self.width;
+            const cols = @max(1, self.grid_cols);
+            const total_gap_w = @as(u32, @intCast((cols - 1) * @as(usize, @intCast(GRID_GAP))));
+            const cell_w = if (avail_w > total_gap_w) (avail_w - total_gap_w) / @as(u32, @intCast(cols)) else 100;
+            const max_text_w = if (cell_w > 12) (cell_w - 12) * scale else cell_w * scale;
+
+            var row_idx: usize = 0;
+            while (row_idx < self.grid_rows) : (row_idx += 1) {
+                _ = ui.open(.{
+                    .width = .{ .grow = .{} },
+                    .height = .{ .fixed = ui.s(GRID_ROW_H) },
+                    .direction = .row,
+                    .gap = ui.su(@intCast(GRID_GAP)),
+                    .align_y = .center,
+                });
+
+                var col_idx: usize = 0;
+                while (col_idx < cols) : (col_idx += 1) {
+                    const cell_idx = row_idx * cols + col_idx;
+                    const item_idx = page_offset + cell_idx;
+
+                    if (item_idx < total) {
+                        const item = self.items.items[item_idx];
+                        const is_selected = (item_idx == self.selected_index);
+                        const is_hovered = (self.hover_index != null and item_idx == self.hover_index.?);
+
+                        _ = ui.open(.{
+                            .width = .{ .fixed = ui.s(cell_w) },
+                            .height = .{ .fixed = ui.s(GRID_ROW_H) },
+                            .direction = .column,
+                            .padding = .{ .left = ui.su(6), .right = ui.su(6), .top = ui.su(8), .bottom = ui.su(8) },
+                            .gap = ui.su(6),
+                            .bg = if (is_selected)
+                                self.cfg.theme.card_selected_bg
+                            else if (is_hovered)
+                                self.cfg.theme.card_hover_bg
+                            else
+                                null,
+                            .radius = ui.f(self.cfg.theme.radius_button),
+                            .border = if (is_selected or is_hovered) ui.su(1) else 0,
+                            .border_color = if (is_selected) self.cfg.theme.accent else if (is_hovered) self.cfg.theme.border else null,
+                            .align_x = .center,
+                            .align_y = .center,
+                        });
+
+                        if (item.action_type == .launch_app and item.icon != null) {
+                            if (self.icon_cache.getCachedOnly(item.icon)) |surf| {
+                                ui.image(surf, .{ .fixed = @floatFromInt(grid_icon_s) }, .{ .fixed = @floatFromInt(grid_icon_s) }, null, 0);
+                            } else {
+                                _ = ui.open(.{
+                                    .width = .{ .fixed = @floatFromInt(grid_icon_s) },
+                                    .height = .{ .fixed = @floatFromInt(grid_icon_s) },
+                                    .bg = getAppToneColor(self.cfg.theme, item.title),
+                                    .radius = ui.f(10),
+                                    .border = ui.su(1),
+                                    .border_color = self.cfg.theme.border,
+                                    .align_x = .center,
+                                    .align_y = .center,
+                                });
+                                ui.text(initialFor(item.title), .{
+                                    .size = self.cfg.typography.title * scale,
+                                    .color = self.cfg.theme.text_bright,
+                                });
+                                ui.close();
+                            }
+                        } else {
+                            _ = ui.open(.{
+                                .width = .{ .fixed = @floatFromInt(grid_icon_s) },
+                                .height = .{ .fixed = @floatFromInt(grid_icon_s) },
+                                .bg = self.cfg.theme.elevated,
+                                .radius = ui.f(10),
+                                .border = ui.su(1),
+                                .border_color = self.cfg.theme.border,
+                                .align_x = .center,
+                                .align_y = .center,
+                            });
+                            const icon_str = item.icon orelse "•";
+                            if (builtinSvgIcon(icon_str)) |svg_name| {
+                                ui.icon(svg_name, 24 * scale, self.cfg.theme.accent, 0);
+                            } else {
+                                ui.text(icon_str, .{
+                                    .size = 24 * scale,
+                                    .color = self.cfg.theme.accent,
+                                });
+                            }
+                            ui.close();
+                        }
+
+                        var title_trunc: [128]u8 = undefined;
+                        const title_label = truncateText(target, &self.font, item.title, max_text_w, panel_font_size, &title_trunc);
+                        ui.text(title_label, .{
+                            .size = panel_font_size,
+                            .color = if (is_selected) self.cfg.theme.card_selected_fg else self.cfg.theme.text_bright,
+                            .text_align = .center,
+                        });
+
+                        ui.close(); // cell card
+                    } else {
+                        _ = ui.open(.{
+                            .width = .{ .fixed = ui.s(cell_w) },
+                            .height = .{ .fixed = ui.s(GRID_ROW_H) },
+                        });
+                        ui.close();
+                    }
+                }
+
+                ui.close(); // grid row
+            }
         } else {
             const page_offset = self.getPageOffset();
             const badge_font_size = self.cfg.typography.secondary * scale;
@@ -2102,7 +2362,7 @@ pub const Launcher = struct {
 
 };
 
-// ======================== Unit Tests ========================
+// --- Unit Tests ---
 
 test "Launcher hybrid routing and four providers" {
     const allocator = std.testing.allocator;
@@ -2277,7 +2537,7 @@ test "Launcher hybrid routing and four providers" {
     _ = launcher.handleKey(c.XKB_KEY_Up, "", false, false);
     try std.testing.expectEqual(@as(usize, 0), launcher.selected_index);
 
-    // 8. Tab to switch mode in series: app -> command (>) -> action (:) -> files (/) -> calc (=) -> app
+    // Cycle modes with Tab.
     launcher.input.clear();
     launcher.setMode(.app);
     try std.testing.expectEqual(Mode.app, launcher.mode);
@@ -2350,6 +2610,122 @@ test "Launcher hybrid routing and four providers" {
     launcher.running = true;
     launcher.launchSelected();
     try std.testing.expect(launcher.running); // did not exit/run
+}
+
+test "Launcher grid view for apps and list view for other modules" {
+    const allocator = std.testing.allocator;
+    var cfg = config.Config.init(allocator);
+    defer cfg.deinit(allocator);
+
+    var launcher = Launcher{
+        .allocator = allocator,
+        .cfg = cfg,
+        .font = undefined,
+        .icon_cache = IconCache.init(allocator),
+        .apps = std.ArrayList(desktop_entry.DesktopApp).empty,
+        .results = std.ArrayList(desktop_entry.SearchResult).empty,
+        .items = std.ArrayList(GenericItem).empty,
+        .cmd_history = std.ArrayList([]const u8).empty,
+        .calc_history = std.ArrayList([]const u8).empty,
+        .hover_trash = false,
+        .input = text_input.TextInput.init(allocator, Mode.app.placeholder(), false),
+    };
+    defer {
+        launcher.clearItems();
+        launcher.items.deinit(allocator);
+        launcher.calc_history.deinit(allocator);
+        launcher.cmd_history.deinit(allocator);
+        launcher.input.deinit();
+        launcher.results.deinit(allocator);
+        launcher.apps.deinit(allocator);
+        launcher.icon_cache.deinit();
+    }
+
+    launcher.updateDimensions(0, 0);
+
+    // 1. In app mode: isGridView is true
+    launcher.setMode(.app);
+    try std.testing.expect(launcher.isGridView());
+    try std.testing.expectEqual(launcher.grid_cols * launcher.grid_rows, launcher.getItemsPerPage());
+
+    // 2. In command mode: isGridView is false (list view)
+    launcher.setMode(.command);
+    try std.testing.expect(!launcher.isGridView());
+    try std.testing.expectEqual(launcher.list_rows, launcher.getItemsPerPage());
+
+    // 3. In action mode: isGridView is false (list view)
+    launcher.setMode(.action);
+    try std.testing.expect(!launcher.isGridView());
+    try std.testing.expectEqual(launcher.list_rows, launcher.getItemsPerPage());
+
+    // 4. In calc mode: isGridView is false (list view)
+    launcher.setMode(.calc);
+    try std.testing.expect(!launcher.isGridView());
+    try std.testing.expectEqual(launcher.list_rows, launcher.getItemsPerPage());
+
+    // 5. In files mode: isGridView is false (list view)
+    launcher.setMode(.files);
+    try std.testing.expect(!launcher.isGridView());
+    try std.testing.expectEqual(launcher.list_rows, launcher.getItemsPerPage());
+
+    // 6. Test grid cell geometry and card rects
+    launcher.setMode(.app);
+    const rect0 = launcher.getCardRect(0);
+    const rect1 = launcher.getCardRect(1);
+    const rect5 = launcher.getCardRect(5); // row 1 col 0 with 5 columns
+
+    // rect1 must be to the right of rect0
+    try std.testing.expect(rect1.x > rect0.x);
+    try std.testing.expectEqual(rect0.y, rect1.y);
+    try std.testing.expectEqual(rect0.w, rect1.w);
+    try std.testing.expectEqual(rect0.h, rect1.h);
+
+    // rect5 must be below rect0 in the same column
+    try std.testing.expectEqual(rect0.x, rect5.x);
+    try std.testing.expect(rect5.y > rect0.y);
+    try std.testing.expectEqual(rect0.w, rect5.w);
+    try std.testing.expectEqual(rect0.h, rect5.h);
+
+    // 7. Test multi-row 2D grid keyboard navigation (Left, Right, Up, Down)
+    // Add 12 dummy app items to form a 5-column grid across 3 rows
+    var i: usize = 0;
+    while (i < 12) : (i += 1) {
+        try launcher.items.append(allocator, .{
+            .title = "App",
+            .description = "",
+            .action_data = "app",
+            .action_type = .launch_app,
+            .owns_strings = false,
+        });
+    }
+
+    launcher.selected_index = 0;
+    // Right moves to 1
+    _ = launcher.handleKey(c.XKB_KEY_Right, "", false, false);
+    try std.testing.expectEqual(@as(usize, 1), launcher.selected_index);
+    // Left moves back to 0
+    _ = launcher.handleKey(c.XKB_KEY_Left, "", false, false);
+    try std.testing.expectEqual(@as(usize, 0), launcher.selected_index);
+    // Down moves down a row (+5) to index 5
+    _ = launcher.handleKey(c.XKB_KEY_Down, "", false, false);
+    try std.testing.expectEqual(@as(usize, 5), launcher.selected_index);
+    // Down moves to index 10
+    _ = launcher.handleKey(c.XKB_KEY_Down, "", false, false);
+    try std.testing.expectEqual(@as(usize, 10), launcher.selected_index);
+    // Up moves up a row (-5) to index 5
+    _ = launcher.handleKey(c.XKB_KEY_Up, "", false, false);
+    try std.testing.expectEqual(@as(usize, 5), launcher.selected_index);
+    // Up moves to index 0
+    _ = launcher.handleKey(c.XKB_KEY_Up, "", false, false);
+    try std.testing.expectEqual(@as(usize, 0), launcher.selected_index);
+
+    // 8. Test mouse hit test in grid view
+    const hit0 = launcher.getItemAt(rect0.x + 10, rect0.y + 10);
+    try std.testing.expectEqual(@as(?usize, 0), hit0);
+    const hit1 = launcher.getItemAt(rect1.x + 10, rect1.y + 10);
+    try std.testing.expectEqual(@as(?usize, 1), hit1);
+    const hit5 = launcher.getItemAt(rect5.x + 10, rect5.y + 10);
+    try std.testing.expectEqual(@as(?usize, 5), hit5);
 }
 
 test "Launcher performance latency measurements" {

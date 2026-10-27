@@ -748,7 +748,7 @@ pub const SysStatus = struct {
             }
         }
 
-        // 1. Try UPower telemetry first (provides kernel event smoothed moving-average time estimates)
+        // Try UPower telemetry first for battery time estimates.
         var telem: c.MizuBatteryTelemetry = undefined;
         if (c.mizu_upower_get_telemetry(&telem) == 0 and telem.has_battery != 0) {
             self.has_battery = true;

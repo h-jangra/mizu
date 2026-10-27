@@ -37,7 +37,7 @@ pub const ClipItem = struct {
     }
 };
 
-/// Pure in-memory first line extractor from preview without any subprocess or popen calls.
+/// Extract first preview line in-memory.
 pub fn loadItemFirstLine(item: *ClipItem) void {
     if (item.first_line_loaded) return;
     item.first_line_loaded = true;
@@ -281,9 +281,7 @@ pub const ImageCache = struct {
     }
 };
 
-/// Nearest-neighbour downscale used for preview thumbnails of oversized
-/// clipboard images. The caller owns the returned image and must free the
-/// original separately.
+/// Downscale oversized image to thumbnail (caller owns return).
 fn makeThumbnail(allocator: std.mem.Allocator, src: *renderer.Image, max_dim: u32) !*renderer.Image {
     const sw = src.width;
     const sh = src.height;
@@ -368,7 +366,6 @@ pub const Condition = struct {
 };
 
 /// Ref-counted context shared between UI thread and detached background workers.
-/// Ensures background threads never access freed panel memory or block the UI thread on exit.
 pub const SharedWorkerContext = struct {
     ref_count: std.atomic.Value(u32),
     allocator: std.mem.Allocator,
@@ -384,8 +381,7 @@ pub const SharedWorkerContext = struct {
     decode_cond: Condition,
     decode_req_id: ?u64 = null,
     decode_res_id: u64 = 0,
-    // Dynamically sized so large screenshots are not truncated. Grown by the
-    // decode worker and released with the shared context.
+    // Staging buffer for clipboard decode payload.
     decode_res_buf: []u8 = &.{},
     decode_res_len: usize = 0,
     decode_res_ready: bool = false,
@@ -527,6 +523,7 @@ pub const ClipboardPanel = struct {
     pointer_y: i32 = -1,
 
     hit_areas: std.ArrayList(ClipHitArea),
+    search_rect: renderer.Rect = .{ .x = 24, .y = 56, .w = 480, .h = 48 },
 
     history_loading: bool = true,
     decode_cache: DecodedCache = .{},
@@ -562,7 +559,7 @@ pub const ClipboardPanel = struct {
         self.filtered_indices.ensureTotalCapacity(allocator, 500) catch {};
         self.hit_areas.ensureTotalCapacity(allocator, 64) catch {};
 
-        // If session cache is present, populate immediately for 0ms instant display
+        // Preload session cache for instant display.
         if (session_has_cache and session_cached_count > 0) {
             for (session_cached_items[0..session_cached_count]) |item| {
                 self.items.append(allocator, item) catch break;
@@ -572,7 +569,7 @@ pub const ClipboardPanel = struct {
             self.requestDecodeSelected();
         }
 
-        // Spawn background workers immediately (no delayed polling or timer sleep)
+        // Spawn background workers.
         shared.acquire();
         self.history_thread = std.Thread.spawn(.{}, historyWorker, .{shared}) catch |err| blk: {
             shared.release();
@@ -591,7 +588,7 @@ pub const ClipboardPanel = struct {
     }
 
     pub fn deinit(self: *ClipboardPanel) void {
-        // Signal background workers to stop and detach them. Never block the UI thread with joins!
+        // Signal background workers to stop and detach them.
         self.shared.stop.store(true, .release);
         self.shared.decode_lock.lock();
         self.shared.decode_cond.signal();
@@ -606,7 +603,7 @@ pub const ClipboardPanel = struct {
             self.history_thread = null;
         }
 
-        // Drop panel's reference to shared context. Workers hold their own refs and cleanup on finish.
+        // Release panel reference to shared context.
         self.shared.release();
 
         self.image_cache.deinit();
@@ -626,7 +623,7 @@ pub const ClipboardPanel = struct {
         self.input.toggleCaret();
     }
 
-    /// Process updates from background workers. Returns true if UI redraw is required.
+    /// Process background worker updates. Returns true if redraw needed.
     pub fn tick(self: *ClipboardPanel) bool {
         var changed = false;
 
@@ -692,12 +689,7 @@ pub const ClipboardPanel = struct {
                             }
                         }
 
-                        // Bound preview memory while still showing large
-                        // images: downscale oversized bitmaps to a thumbnail
-                        // before putting them in the cache. Previously images
-                        // whose decoded buffers exceeded the cache limit were
-                        // discarded entirely, so large screenshots showed no
-                        // preview at all.
+                        // Downscale oversized images for preview cache.
                         const max_preview_dim: u32 = 1600;
                         var stored_img = decoded_img;
                         if (orig_w > max_preview_dim or orig_h > max_preview_dim) {
@@ -715,7 +707,7 @@ pub const ClipboardPanel = struct {
             }
             self.shared.decode_lock.unlock();
 
-            // Discard stale decode results: only trigger redraw if currently selected item is res_id
+            // Redraw only if decoded result matches currently selected item.
             if (self.getSelectedId()) |sel_id| {
                 if (sel_id == res_id) {
                     changed = true;
@@ -779,10 +771,7 @@ pub const ClipboardPanel = struct {
             ctx.decode_req_id = null;
             ctx.decode_lock.unlock();
 
-            // Large clipboard images (screenshots, photos) can be tens of
-            // megabytes. Read into a heap buffer instead of the old 1 MiB
-            // stack buffer, otherwise the payload was truncated and the image
-            // silently failed to decode.
+            // Read large images into heap buffer to prevent truncation.
             const max_decoded_bytes: usize = 64 * 1024 * 1024;
             const result = ctx.allocator.alloc(u8, max_decoded_bytes) catch return;
             defer ctx.allocator.free(result);
@@ -807,8 +796,7 @@ pub const ClipboardPanel = struct {
 
             ctx.decode_lock.lock();
             if (!ctx.stop.load(.acquire) and result_len > ctx.decode_res_buf.len) {
-                // Grow the shared staging buffer outside the lock so the UI is
-                // never blocked by a (potentially large) allocation.
+                // Grow staging buffer outside lock.
                 ctx.decode_lock.unlock();
                 const grown = ctx.allocator.alloc(u8, result_len) catch return;
                 ctx.decode_lock.lock();
@@ -867,7 +855,7 @@ pub const ClipboardPanel = struct {
                     "";
                 if (content.len == 0) continue;
 
-                // Check if this is an image entry (cliphist marks images with [[ binary data ... ]])
+                // Check if entry contains cliphist binary image marker.
                 const is_image = std.mem.startsWith(u8, content, "[[ binary data") or std.mem.startsWith(u8, content, "[[ binary data ");
 
                 var item = ClipItem{ .id = id, .clip_type = if (is_image) .image else .text };
@@ -959,7 +947,7 @@ pub const ClipboardPanel = struct {
         if (actual_idx >= self.items.items.len) return;
         const item = self.items.items[actual_idx];
 
-        // Decode directly from cliphist to preserve complete unstripped multi-line content
+        // Decode from cliphist to preserve full multi-line content.
         var cmd_buf: [256]u8 = undefined;
         const cmd = std.fmt.bufPrintZ(&cmd_buf, "export PATH=\"$PATH:/usr/sbin:/sbin:/usr/local/bin:/usr/bin:$HOME/.local/bin\"; cliphist decode {d} | wl-copy", .{item.id}) catch return;
         sys_status.spawnCmd(cmd);
@@ -1010,8 +998,7 @@ pub const ClipboardPanel = struct {
         self.pointer_y = y;
 
         if (self.input.drag_active) {
-            const sc: i32 = @intCast(self.ui_scale);
-            const text_ox = (24 + 40) * sc;
+            const text_ox = self.search_rect.x + 40;
             _ = self.input.handlePointerMotion(x, text_ox, &self.font);
             return true;
         }
@@ -1028,15 +1015,9 @@ pub const ClipboardPanel = struct {
     pub fn handlePointerButton(self: *ClipboardPanel, x: i32, y: i32, button: u32, is_pressed: bool) bool {
         if (button != 272) return false; // BTN_LEFT
 
-        const sc: i32 = @intCast(self.ui_scale);
-        const pad_x: i32 = 24 * sc;
-        const col1_w: u32 = 480 * self.ui_scale;
-        const search_y: i32 = (20 + 36) * sc;
-        const search_h: u32 = 48 * self.ui_scale;
-        const text_ox = (24 + 40) * sc;
-
         if (is_pressed) {
-            if (self.input.handlePointerDown(x, y, pad_x, search_y, col1_w, search_h, text_ox, &self.font)) {
+            const text_ox = self.search_rect.x + 40;
+            if (self.input.handlePointerDown(x, y, self.search_rect.x, self.search_rect.y, self.search_rect.w, self.search_rect.h, text_ox, &self.font)) {
                 return true;
             }
 
@@ -1216,7 +1197,6 @@ pub const ClipboardPanel = struct {
         target.drawDropShadow(0, 0, w, h, radius, 10 * scale, self.cfg.theme.shadow_dark);
 
         const icon_sz = self.cfg.typography.bar_icon * scale;
-        const sec_sz = self.cfg.typography.secondary * scale;
         const title_sz = self.cfg.typography.title * scale;
         const button_sz = self.cfg.typography.button_text * scale;
         const ui_sz = self.cfg.typography.ui * scale;
@@ -1280,11 +1260,10 @@ pub const ClipboardPanel = struct {
         });
         ui.icon("clipboard", icon_sz, self.cfg.theme.accent, 0);
         ui.close();
-        ui.text("Clipboard", .{ .size = title_sz, .color = self.cfg.theme.text_bright });
 
         var count_buf: [32]u8 = undefined;
         const count_str = if (self.history_loading) "..." else (std.fmt.bufPrint(&count_buf, "{d}", .{self.items.items.len}) catch "");
-        ui.text(count_str, .{ .size = sec_sz, .color = self.cfg.theme.text_muted });
+        ui.text(count_str, .{ .size = title_sz, .color = self.cfg.theme.text_bright });
 
         ui.spacerSized(.{ .grow = .{} }, .{ .fixed = 0 });
 
@@ -1308,6 +1287,7 @@ pub const ClipboardPanel = struct {
         // Search field.
         const is_query_active = self.input.getText().len > 0 or self.input.focused;
         _ = ui.open(.{
+            .id = "clip-search",
             .width = .{ .grow = .{} },
             .height = .{ .fixed = @floatFromInt(48 * scale) },
             .direction = .row,
@@ -1412,10 +1392,6 @@ pub const ClipboardPanel = struct {
                     .align_y = .center,
                 });
 
-                if (is_selected) {
-                    ui.rect(.{ .fixed = @floatFromInt(4 * scale) }, .{ .fixed = @floatFromInt(36 * scale) }, self.cfg.theme.accent, ui.f(2), .{});
-                }
-
                 _ = ui.open(.{
                     .width = .{ .grow = .{} },
                     .height = .{ .grow = .{} },
@@ -1462,6 +1438,14 @@ pub const ClipboardPanel = struct {
 
         const commands = ui.endLayout();
         const iscale: i32 = @intCast(scale);
+        if (ui.rectOf("clip-search", 0)) |rect| {
+            self.search_rect = .{
+                .x = @divTrunc(rect.x, iscale),
+                .y = @divTrunc(rect.y, iscale),
+                .w = @intCast(@divTrunc(@as(i32, @intCast(rect.w)) + iscale - 1, iscale)),
+                .h = @intCast(@divTrunc(@as(i32, @intCast(rect.h)) + iscale - 1, iscale)),
+            };
+        }
         if (ui.rectOf("clip-clear", 0)) |rect| {
             try self.appendHitRect(rect, iscale, .clear_all);
         }
@@ -1585,11 +1569,6 @@ pub const ClipboardPanel = struct {
 
                 // Draw image thumbnail
                 target.drawImage(img, @as(f64, @floatFromInt(thumb_x)), @as(f64, @floatFromInt(thumb_y)), @as(f64, @floatFromInt(thumb_w)), @as(f64, @floatFromInt(thumb_h)));
-
-                // Image info below thumbnail
-                var info_buf: [64]u8 = undefined;
-                const info_str = std.fmt.bufPrint(&info_buf, "{d} × {d} · {s}", .{ shown_w, shown_h, item.image_format }) catch "";
-                target.drawTextWithSize(&self.font, info_str, x + 20 * iscale, thumb_y + @as(i32, @intCast(thumb_h)) + 16 * iscale, sec_sz, self.cfg.theme.text_muted);
 
                 return;
             } else {
@@ -1873,6 +1852,30 @@ test "ClipboardPanel initialization, 2-column layout and filtering" {
     try std.testing.expectEqual(@as(usize, 1), panel.selected_index);
     _ = panel.handlePointerAxis(0, 0, -1);
     try std.testing.expectEqual(@as(usize, 0), panel.selected_index);
+
+    // Test clicking items with scaling = 2 (items must not be intercepted by search input)
+    panel.ui_scale = 2;
+    panel.search_rect = .{ .x = 24, .y = 56, .w = 480, .h = 48 };
+    try panel.hit_areas.append(allocator, .{
+        .x = 24,
+        .y = 114,
+        .w = 480,
+        .h = 52,
+        .action = .{ .click_card = 0 },
+    });
+    try panel.hit_areas.append(allocator, .{
+        .x = 24,
+        .y = 172,
+        .w = 480,
+        .h = 52,
+        .action = .{ .click_card = 1 },
+    });
+
+    panel.selected_index = 0;
+    _ = panel.handlePointerButton(100, 180, 272, true);
+    try std.testing.expectEqual(@as(usize, 1), panel.selected_index);
+    _ = panel.handlePointerButton(100, 120, 272, true);
+    try std.testing.expectEqual(@as(usize, 0), panel.selected_index);
 }
 
 test "Clipboard first line extraction without popen" {
@@ -2063,7 +2066,7 @@ test "Clipboard rapid navigation and stale decode discarding" {
     panel.selected_index = 0;
     try std.testing.expectEqual(@as(u64, 101), panel.getSelectedId().?);
 
-    // Simulate decode result for item 102 (stale result that finished late while item 101 is selected)
+    // Simulate late decode result for unselected item.
     shared.decode_lock.lock();
     const stale_data = "Decoded 102";
     if (shared.decode_res_buf.len < stale_data.len) {
@@ -2076,14 +2079,14 @@ test "Clipboard rapid navigation and stale decode discarding" {
     shared.decode_res_ready = true;
     shared.decode_lock.unlock();
 
-    // tick() processes decode result: should cache it, but NOT trigger redraw because selection is 101!
+    // Cache result without triggering redraw.
     const changed = panel.tick();
     try std.testing.expectEqual(false, changed);
 
     // The stale decode must be safely stored in decode_cache for item 102
     try std.testing.expectEqualStrings("Decoded 102", panel.decode_cache.get(102).?);
 
-    // Now switch selection to 102: it should immediately be in cache with 0ms delay!
+    // Selection 102 content is already cached.
     panel.selected_index = 1;
     try std.testing.expectEqualStrings("Decoded 102", panel.getDecodedContent(panel.items.items[1]));
 }

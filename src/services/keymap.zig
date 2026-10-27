@@ -136,9 +136,7 @@ pub const KeyOverlay = struct {
             const code: u16 = ev.code;
             const val: i32 = ev.value;
 
-            // Track modifier state. Modifier keys themselves are not added to
-            // the history; they are rendered as keycaps alongside the key they
-            // modify.
+            // Track modifier state.
             if (code == 42 or code == 54) {
                 self.mods.shift = (val != 0);
                 continue;
@@ -155,8 +153,7 @@ pub const KeyOverlay = struct {
 
             if (val != 1) continue;
 
-            // Ignore keys we cannot describe (unknown keycodes, pure modifier
-            // variants, etc.) instead of leaving an empty keycap behind.
+            // Ignore unknown keys.
             if (keyText(code, self.mods.shift).len == 0 and keyIcon(code, self.mods.shift) == null) continue;
 
             const now = getNowMs();
@@ -188,9 +185,7 @@ pub const KeyOverlay = struct {
         return false;
     }
 
-    /// Build the visual segments (modifier keycaps + main key) for one item.
-    /// Shift is folded into character keys ("!" instead of shift + "!") and
-    /// only shown as a separate keycap for non-character keys ("Shift + Tab").
+    /// Build visual keycap segments (modifiers + main key) for an item.
     pub fn buildSegments(item: KeyItem, out: *[max_segments]Segment) usize {
         var n: usize = 0;
 
@@ -262,7 +257,7 @@ pub const KeyOverlay = struct {
             for (0..seg_counts[i]) |j| {
                 const seg = segs[i][j];
                 const content_w: i32 = @as(i32, @intCast(target.measureTextWithSize(&self.font, seg.text, font_size)));
-                // Provide a square minimum width for single glyphs so standard keycaps look uniform
+                // Square minimum width for uniform single-glyph keycaps.
                 const min_w = cap_h;
                 const w = @max(min_w, content_w + cap_pad_x * 2);
                 width_sets[i][j] = w;
@@ -274,8 +269,7 @@ pub const KeyOverlay = struct {
             if (i + 1 < count) total_content += item_gap;
         }
 
-        // Drop the oldest entries if they would overflow the overlay surface,
-        // so keycaps never spill past the allocated width.
+        // Drop oldest entries if overflowing overlay width.
         var first: usize = 0;
         while (first < count and total_content + box_pad * 2 > phys_w) {
             total_content -= item_widths[first];
@@ -294,8 +288,7 @@ pub const KeyOverlay = struct {
         const box_x = @max(0, @divTrunc(phys_w - box_w, 2));
         const box_y: i32 = 3 * s;
 
-        // The glass panel and its border are direct draws so the backdrop blur
-        // and squircle silhouette stay intact; the keycaps themselves are Clay.
+        // Direct draw glass background; Clay renders keycaps.
         target.fillGlassSquircle(box_x, box_y, @intCast(@max(1, box_w)), @intCast(@max(1, box_h)), 10 * scale, self.cfg.theme.panel_bg);
         target.drawSquircleBorder(box_x, box_y, @intCast(@max(1, box_w)), @intCast(@max(1, box_h)), 10 * scale, @max(1, scale), self.cfg.theme.panel_border);
 
@@ -481,9 +474,7 @@ pub fn keyText(code: u16, shift: bool) []const u8 {
     };
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
+// --- Tests ---
 
 test "shift is folded into character keys but kept for named keys" {
     var segs: [max_segments]Segment = undefined;

@@ -959,14 +959,6 @@ pub const MemoryMonitor = struct {
         return contentX0() + 294.0;
     }
 
-    fn memRight() f64 {
-        return contentX1() - 80.0;
-    }
-
-    fn pctRight() f64 {
-        return contentX1() - 2.0;
-    }
-
     fn nameMaxWidth() f64 {
         return pidRight() - nameX() - 24.0;
     }
@@ -1249,7 +1241,7 @@ pub const MemoryMonitor = struct {
             .align_y = .top,
         });
 
-        // Header: 2x2 system stat cards (RAM, CPU, Disk, Network) right at top.
+        // System stat cards: RAM, CPU, Disk, Network.
         _ = ui.open(.{
             .width = .{ .grow = .{} },
             .height = .{ .fixed = ui.s(HEADER_H) },
@@ -1474,8 +1466,7 @@ pub const MemoryMonitor = struct {
         ui.close(); // 2x2 stat cards grid
         ui.close(); // header
 
-        // Filter field: the whole field is a Clay box with a custom leaf for
-        // text, selection and caret rendering.
+        // Process filter input field.
         _ = ui.open(.{
             .id = "mem-filter",
             .width = .{ .grow = .{} },
@@ -1564,13 +1555,11 @@ pub const MemoryMonitor = struct {
                 const is_hovered = self.hover != null and self.hover.? == fi;
 
                 const row_bg: ?Color = if (is_selected)
-                    th.card_selected_bg
+                    Color.init(42, th.accent.r, th.accent.g, th.accent.b)
                 else if (is_hovered)
                     th.card_hover_bg
                 else
                     null;
-
-                const fg_selected = th.card_selected_fg;
 
                 _ = ui.open(.{
                     .width = .{ .grow = .{} },
@@ -1578,11 +1567,13 @@ pub const MemoryMonitor = struct {
                     .direction = .row,
                     .bg = row_bg,
                     .radius = ui.f(7),
+                    .border = if (is_selected) ui.su(1) else 0,
+                    .border_color = if (is_selected) Color.init(70, th.accent.r, th.accent.g, th.accent.b) else null,
                     .align_y = .center,
                 });
 
                 if (is_selected) {
-                    ui.rect(.{ .fixed = ui.s(3) }, .{ .fixed = ui.s(20) }, fg_selected, 1.5 * @as(f32, @floatFromInt(scale)), .{});
+                    ui.rect(.{ .fixed = ui.s(3) }, .{ .fixed = ui.s(20) }, accent, 1.5 * @as(f32, @floatFromInt(scale)), .{});
                 }
 
                 if (row.kind == .group) {
@@ -1600,7 +1591,7 @@ pub const MemoryMonitor = struct {
                         const chevron = if (grp.expanded) "▾" else "▸";
                         ui.text(chevron, .{
                             .size = (self.cfg.typography.secondary + 2) * scale,
-                            .color = if (is_selected) fg_selected else if (grp.expanded) accent else text_muted,
+                            .color = if (grp.expanded or is_selected) accent else text_muted,
                         });
                     } else {
                         ui.spacerSized(.{ .fixed = ui.s(10) }, .{ .fixed = 0 });
@@ -1618,14 +1609,14 @@ pub const MemoryMonitor = struct {
                     const name = renderer.truncateText(&self.row_measure, full_label, @intFromFloat(max_w * @as(f64, @floatFromInt(scale))), (self.cfg.typography.ui + 1) * scale, &name_buf);
                     ui.text(name, .{
                         .size = (self.cfg.typography.ui + 1) * scale,
-                        .color = if (is_selected) fg_selected else th.text_bright,
+                        .color = th.text_bright,
                     });
                     ui.spacerSized(.{ .grow = .{} }, .{ .fixed = 0 });
                     var pid_buf: [16]u8 = undefined;
                     const pid_str = std.fmt.bufPrint(&pid_buf, "{d}", .{grp.main_pid}) catch "";
                     ui.text(pid_str, .{
                         .size = (self.cfg.typography.secondary + 2) * scale,
-                        .color = if (is_selected) alphaCol(fg_selected, 0.85) else text_muted,
+                        .color = text_muted,
                     });
                     ui.close();
 
@@ -1633,7 +1624,7 @@ pub const MemoryMonitor = struct {
                     const mem_row_str = formatMemory(&mem_row_buf, grp.total_rss_kb);
                     ui.text(mem_row_str, .{
                         .size = (self.cfg.typography.ui + 1) * scale,
-                        .color = if (is_selected) fg_selected else text_main,
+                        .color = if (is_selected) th.text_bright else text_main,
                         .width = ui.s(94),
                         .text_align = .right,
                     });
@@ -1653,7 +1644,7 @@ pub const MemoryMonitor = struct {
                     });
                     ui.text(pct_row_str, .{
                         .size = (self.cfg.typography.secondary + 2) * scale,
-                        .color = if (is_selected) fg_selected else accent,
+                        .color = accent,
                     });
                     ui.close();
                 } else {
@@ -1733,7 +1724,7 @@ pub const MemoryMonitor = struct {
 
                         ui.text("↳", .{
                             .size = self.cfg.typography.secondary * scale,
-                            .color = if (is_selected) alphaCol(fg_selected, 0.75) else alphaCol(text_muted, 0.70),
+                            .color = if (is_selected) accent else alphaCol(text_muted, 0.70),
                         });
 
                         var cmd_fmt_buf: [256]u8 = undefined;
@@ -1750,7 +1741,7 @@ pub const MemoryMonitor = struct {
                         );
                         ui.text(sub_name, .{
                             .size = (self.cfg.typography.secondary + 2) * scale,
-                            .color = if (is_selected) fg_selected else alphaCol(text_main, 0.92),
+                            .color = if (is_selected) th.text_bright else alphaCol(text_main, 0.92),
                         });
                         ui.close();
 
@@ -1767,7 +1758,7 @@ pub const MemoryMonitor = struct {
                         const mem_row_str = formatMemory(&mem_row_buf, proc.rss_kb);
                         ui.text(mem_row_str, .{
                             .size = (self.cfg.typography.secondary + 2) * scale,
-                            .color = if (is_selected) fg_selected else alphaCol(text_main, 0.88),
+                            .color = if (is_selected) th.text_bright else alphaCol(text_main, 0.88),
                         });
 
                         // Kill button (x)

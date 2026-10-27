@@ -48,12 +48,6 @@ const Parser = struct {
         }
     }
 
-    fn peek(self: *Parser) ?u8 {
-        self.skipWhitespace();
-        if (self.pos >= self.source.len) return null;
-        return self.source[self.pos];
-    }
-
     fn skipWhitespace(self: *Parser) void {
         while (self.pos < self.source.len and (self.source[self.pos] == ' ' or self.source[self.pos] == '\t')) {
             self.pos += 1;

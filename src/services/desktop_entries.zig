@@ -10,6 +10,7 @@ pub const DesktopApp = struct {
     icon: ?[]const u8 = null,
     terminal: bool = false,
     keywords: ?[]const u8 = null,
+    usage: u32 = 0,
 
     pub fn deinit(self: *DesktopApp, allocator: std.mem.Allocator) void {
         allocator.free(self.id);
@@ -169,6 +170,7 @@ pub fn parseDesktopContent(
         .icon = dup_icon,
         .terminal = terminal,
         .keywords = dup_keywords,
+        .usage = 0,
     };
 }
 
@@ -192,7 +194,7 @@ pub fn discoverApplications(allocator: std.mem.Allocator) !std.ArrayList(Desktop
         dirs.deinit(allocator);
     }
 
-    // 1. $XDG_DATA_HOME/applications or ~/.local/share/applications
+    // User applications dir ($XDG_DATA_HOME or ~/.local/share)
     if (c.getenv("XDG_DATA_HOME")) |ptr| {
         const d = try std.fmt.allocPrint(allocator, "{s}/applications", .{std.mem.span(ptr)});
         try dirs.append(allocator, d);
@@ -201,7 +203,7 @@ pub fn discoverApplications(allocator: std.mem.Allocator) !std.ArrayList(Desktop
         try dirs.append(allocator, d);
     }
 
-    // 2. $XDG_DATA_DIRS/applications or /usr/local/share/applications and /usr/share/applications
+    // System applications dirs ($XDG_DATA_DIRS or /usr/share)
     if (c.getenv("XDG_DATA_DIRS")) |ptr| {
         var it = std.mem.splitScalar(u8, std.mem.span(ptr), ':');
         while (it.next()) |dir_part| {
@@ -219,6 +221,8 @@ pub fn discoverApplications(allocator: std.mem.Allocator) !std.ArrayList(Desktop
             std.debug.print("Could not scan directory {s}: {any}\n", .{ dir_path, err });
         };
     }
+
+    loadAppUsageInto(allocator, apps.items);
 
     return apps;
 }
@@ -384,15 +388,105 @@ pub fn searchApplicationsInto(
         }
     }
 
-    // Sort descending by score, tiebreak by name
+    // Sort descending by score, tiebreak by usage descending, then name ascending
     std.mem.sort(SearchResult, results.items, {}, struct {
         fn lessThan(_: void, a: SearchResult, b: SearchResult) bool {
             if (a.score != b.score) {
                 return a.score > b.score;
             }
+            if (a.app.usage != b.app.usage) {
+                return a.app.usage > b.app.usage;
+            }
             return std.mem.order(u8, a.app.name, b.app.name) == .lt;
         }
     }.lessThan);
+}
+
+pub fn getAppUsageFilePath(buf: []u8) ?[]const u8 {
+    const home = c.getenv("HOME") orelse return null;
+    return std.fmt.bufPrint(buf, "{s}/.cache/mizu/app_usage", .{std.mem.span(home)}) catch null;
+}
+
+pub fn loadAppUsageInto(allocator: std.mem.Allocator, apps: []DesktopApp) void {
+    var path_buf: [512]u8 = undefined;
+    const path = getAppUsageFilePath(&path_buf) orelse return;
+
+    var path_z_buf: [512]u8 = undefined;
+    const path_z = std.fmt.bufPrintZ(&path_z_buf, "{s}", .{path}) catch return;
+
+    const file = c.fopen(path_z.ptr, "r") orelse return;
+    defer _ = c.fclose(file);
+
+    var usage_map = std.StringHashMap(u32).init(allocator);
+    defer {
+        var it = usage_map.keyIterator();
+        while (it.next()) |k| allocator.free(k.*);
+        usage_map.deinit();
+    }
+
+    var line_buf: [1024]u8 = undefined;
+    while (c.fgets(&line_buf, @intCast(line_buf.len), file)) |line_ptr| {
+        const raw_line = std.mem.span(line_ptr);
+        const trimmed = std.mem.trim(u8, raw_line, " \t\r\n");
+        if (trimmed.len == 0 or trimmed[0] == '#') continue;
+
+        const sep_idx = std.mem.lastIndexOfScalar(u8, trimmed, ' ') orelse
+            std.mem.lastIndexOfScalar(u8, trimmed, '\t') orelse continue;
+
+        const id_part = std.mem.trim(u8, trimmed[0..sep_idx], " \t");
+        const count_part = std.mem.trim(u8, trimmed[sep_idx + 1 ..], " \t");
+        if (id_part.len == 0 or count_part.len == 0) continue;
+
+        const count = std.fmt.parseInt(u32, count_part, 10) catch continue;
+        const key_copy = allocator.dupe(u8, id_part) catch continue;
+        usage_map.put(key_copy, count) catch {
+            allocator.free(key_copy);
+        };
+    }
+
+    for (apps) |*app| {
+        if (usage_map.get(app.id)) |cnt| {
+            app.usage = cnt;
+        } else if (usage_map.get(app.name)) |cnt| {
+            app.usage = cnt;
+        }
+    }
+}
+
+pub fn saveAppUsageToFile(apps: []const DesktopApp) void {
+    const home = c.getenv("HOME") orelse return;
+    var dir_buf: [256]u8 = undefined;
+    const dir_path = std.fmt.bufPrintZ(&dir_buf, "{s}/.cache/mizu", .{std.mem.span(home)}) catch return;
+    _ = c.mkdir(dir_path.ptr, 0o755);
+
+    var path_buf: [512]u8 = undefined;
+    const path_z = std.fmt.bufPrintZ(&path_buf, "{s}/.cache/mizu/app_usage", .{std.mem.span(home)}) catch return;
+
+    const file = c.fopen(path_z.ptr, "w") orelse return;
+    defer _ = c.fclose(file);
+
+    var line_out: [512]u8 = undefined;
+    for (apps) |app| {
+        if (app.usage > 0) {
+            if (std.fmt.bufPrint(&line_out, "{s} {d}\n", .{ app.id, app.usage })) |line| {
+                _ = c.fwrite(line.ptr, 1, line.len, file);
+            } else |_| {}
+        }
+    }
+}
+
+pub fn recordAppUsage(apps: []DesktopApp, app_id: []const u8) void {
+    var found = false;
+    for (apps) |*app| {
+        if (std.mem.eql(u8, app.id, app_id) or std.mem.eql(u8, app.name, app_id)) {
+            app.usage +|= 1;
+            found = true;
+            break;
+        }
+    }
+    if (found) {
+        saveAppUsageToFile(apps);
+    }
 }
 
 pub fn searchApplications(
@@ -507,4 +601,59 @@ test "search ranking and case insensitivity" {
 
     try std.testing.expect(res2.items.len == 1);
     try std.testing.expectEqualStrings("Firefox", res2.items[0].app.name);
+}
+
+test "apps sorted by usage when query is empty and ties broken by name" {
+    const allocator = std.testing.allocator;
+
+    const app_a = DesktopApp{
+        .id = "alacritty.desktop",
+        .name = "Alacritty",
+        .exec = "alacritty",
+        .usage = 5,
+    };
+    const app_b = DesktopApp{
+        .id = "firefox.desktop",
+        .name = "Firefox",
+        .exec = "firefox",
+        .usage = 42,
+    };
+    const app_c = DesktopApp{
+        .id = "code.desktop",
+        .name = "Code",
+        .exec = "code",
+        .usage = 0,
+    };
+    const app_d = DesktopApp{
+        .id = "gimp.desktop",
+        .name = "GIMP",
+        .exec = "gimp",
+        .usage = 0,
+    };
+
+    var apps = [_]DesktopApp{ app_a, app_b, app_c, app_d };
+
+    var results = try searchApplications(allocator, &apps, "");
+    defer results.deinit(allocator);
+
+    try std.testing.expectEqual(@as(usize, 4), results.items.len);
+    // Firefox has highest usage (42) -> #1
+    try std.testing.expectEqualStrings("Firefox", results.items[0].app.name);
+    // Alacritty has next highest usage (5) -> #2
+    try std.testing.expectEqualStrings("Alacritty", results.items[1].app.name);
+    // Code and GIMP have 0 usage, so tiebreaker is alphabetical: Code (#3) then GIMP (#4)
+    try std.testing.expectEqualStrings("Code", results.items[2].app.name);
+    try std.testing.expectEqualStrings("GIMP", results.items[3].app.name);
+
+    // Test recordAppUsage increments usage
+    recordAppUsage(&apps, "code.desktop");
+    try std.testing.expectEqual(@as(u32, 1), apps[2].usage);
+
+    var updated_results = try searchApplications(allocator, &apps, "");
+    defer updated_results.deinit(allocator);
+    // Now Code has usage 1, so it comes before GIMP (usage 0)
+    try std.testing.expectEqualStrings("Firefox", updated_results.items[0].app.name);
+    try std.testing.expectEqualStrings("Alacritty", updated_results.items[1].app.name);
+    try std.testing.expectEqualStrings("Code", updated_results.items[2].app.name);
+    try std.testing.expectEqualStrings("GIMP", updated_results.items[3].app.name);
 }

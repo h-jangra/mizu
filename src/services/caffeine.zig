@@ -78,9 +78,7 @@ const layer_listener = c.zwlr_layer_surface_v1_listener{
     .closed = layerClosed,
 };
 
-/// Run a persistent idle inhibitor. The associated surface must be mapped and
-/// visible for the compositor to honor the inhibitor, so a transparent 1x1
-/// overlay layer surface is kept alive for the lifetime of this process.
+/// Run a persistent Wayland idle inhibitor.
 pub fn run() u8 {
     _ = c.signal(c.SIGTERM, handleSignal);
     _ = c.signal(c.SIGINT, handleSignal);

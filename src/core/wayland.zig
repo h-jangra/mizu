@@ -978,7 +978,7 @@ pub const WaylandApp = struct {
         if (n <= 0 or expirations == 0) return;
 
         const now = getMonotonicMs();
-        // After 1 second of holding the key, accelerate to fast repeat (~65 Hz = ~15ms)
+        // Accelerate repeat rate after 1s hold.
         if (!self.repeat_accelerated and (now - self.repeat_start_ms >= 1000)) {
             self.repeat_accelerated = true;
             self.armRepeatTimer(15, 15);
