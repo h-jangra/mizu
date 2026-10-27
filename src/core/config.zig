@@ -235,6 +235,7 @@ pub const Config = struct {
         var in_panels = false;
         var custom_buttons_cleared = false;
         var custom_panels_cleared = false;
+        var configured_font_family: ?[]const u8 = null;
 
         while (lines.next()) |raw_line| {
             const line = std.mem.trim(u8, raw_line, " \t\r");
@@ -326,7 +327,8 @@ pub const Config = struct {
                     if (cfg.terminal) |old| allocator.free(old);
                     cfg.terminal = if (val.len > 0) allocator.dupe(u8, val) catch null else null;
                 } else if (std.mem.eql(u8, key, "font_family")) {
-                    cfg.theme.font_family = allocator.dupe(u8, val) catch cfg.theme.font_family;
+                    configured_font_family = allocator.dupe(u8, val) catch cfg.theme.font_family;
+                    cfg.theme.font_family = configured_font_family.?;
                 } else if (std.mem.eql(u8, key, "ui")) {
                     cfg.typography.ui = parseFontSize(val, cfg.typography.ui);
                 } else if (std.mem.eql(u8, key, "secondary")) {
@@ -421,6 +423,10 @@ pub const Config = struct {
         // Saved runtime theme takes precedence over static config.ini setting
         if (theme.loadSavedTheme()) |saved| {
             cfg.theme = saved.toTheme();
+        }
+
+        if (configured_font_family) |fam| {
+            cfg.theme.font_family = fam;
         }
 
         cfg.theme.font_size = cfg.typography.ui;

@@ -28,6 +28,8 @@ pub const dbus_monitor = struct {
     pub extern "c" fn mizu_dbus_monitor_trigger_mpris_refresh() void;
     pub extern "c" fn mizu_dbus_monitor_start_bt_discovery() void;
     pub extern "c" fn mizu_dbus_monitor_stop_bt_discovery() void;
+    pub extern "c" fn mizu_dbus_monitor_bt_connect(mac: [*c]const u8, connect: bool, err_buf: [*c]u8, err_len: usize) bool;
+    pub extern "c" fn mizu_dbus_monitor_bt_remove(mac: [*c]const u8) bool;
     pub extern "c" fn mizu_dbus_monitor_deinit() void;
 };
 

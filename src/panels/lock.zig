@@ -27,8 +27,15 @@ pub const LockOutput = struct {
     height: u32 = 0,
     scale: u32 = 1,
     configured: bool = false,
+    bg_cache: ?[]u32 = null,
+    bg_cache_w: u32 = 0,
+    bg_cache_h: u32 = 0,
 
     pub fn deinit(self: *LockOutput) void {
+        if (self.bg_cache) |bg| {
+            self.app.allocator.free(bg);
+            self.bg_cache = null;
+        }
         if (self.pool) |*p| {
             p.deinit();
             self.pool = null;
@@ -82,6 +89,7 @@ pub const LockApp = struct {
     auth_username_len: usize = 0,
     caret_blink: bool = true,
     glyph_anim_offset: f32 = 0.0,
+    last_rendered_min: i32 = -1,
     rng_seed: u64 = 0x853c49e6748fea9b,
     xkb_ctx: ?*c.struct_xkb_context = null,
     xkb_keymap: ?*c.struct_xkb_keymap = null,
@@ -362,18 +370,38 @@ pub const LockApp = struct {
 
         const target = renderer.Renderer.init(pixels, phys_w, phys_h, stride) catch return;
 
-        // Draw wallpaper (cover scaled) or fallback gradient
-        if (self.wallpaper_img) |img| {
-            self.drawWallpaper(target, img, phys_w, phys_h);
-        } else {
-            self.drawFallbackBackground(target, phys_w, phys_h);
+        // Background cache check: pre-render wallpaper + dark overlay once per output configuration
+        if (out.bg_cache == null or out.bg_cache_w != phys_w or out.bg_cache_h != phys_h) {
+            if (out.bg_cache) |old_bg| {
+                self.allocator.free(old_bg);
+                out.bg_cache = null;
+            }
+            if (self.allocator.alloc(u32, phys_w * phys_h)) |new_bg| {
+                out.bg_cache = new_bg;
+                out.bg_cache_w = phys_w;
+                out.bg_cache_h = phys_h;
+
+                if (renderer.Renderer.init(new_bg.ptr, phys_w, phys_h, stride)) |bg_t| {
+                    if (self.wallpaper_img) |img| {
+                        self.drawWallpaper(bg_t, img, phys_w, phys_h);
+                    } else {
+                        self.drawFallbackBackground(bg_t, phys_w, phys_h);
+                    }
+                    bg_t.fillRect(0, 0, phys_w, phys_h, Color.init(55, 0, 0, 0));
+                } else |_| {}
+            } else |_| {}
         }
 
-        // Dark overlay for subtle contrast while keeping wallpaper vibrant
-        target.fillRect(0, 0, phys_w, phys_h, Color.init(55, 0, 0, 0));
-
-        // Subtle animated decorative glyphs
-        self.drawDecorativeGlyphs(target, phys_w, phys_h);
+        if (out.bg_cache) |cached_bg| {
+            @memcpy(target.pixels[0 .. phys_w * phys_h], cached_bg[0 .. phys_w * phys_h]);
+        } else {
+            if (self.wallpaper_img) |img| {
+                self.drawWallpaper(target, img, phys_w, phys_h);
+            } else {
+                self.drawFallbackBackground(target, phys_w, phys_h);
+            }
+            target.fillRect(0, 0, phys_w, phys_h, Color.init(55, 0, 0, 0));
+        }
 
         // Foreground HUD (clock, date, username, visible styled password box, caps-lock warning, error)
         self.drawClayHud(target, phys_w, phys_h, scale);
@@ -569,13 +597,6 @@ fn splitmix64(seed: u64) u64 {
             // Active input state: Show input box with nice glyphs as the user types
             const box_w: f32 = @floatFromInt(340 * scale);
             const box_h: f32 = @floatFromInt(54 * scale);
-            const border_w: u16 = if (self.auth_state == .failed) 2 else 1;
-            const border_col = if (self.auth_state == .failed)
-                Color.rgb(235, 87, 87)
-            else if (self.auth_state == .authenticating)
-                self.cfg.theme.accent
-            else
-                Color.init(180, 255, 255, 255);
 
             _ = ui.open(.{
                 .width = .{ .fixed = box_w },
@@ -591,9 +612,8 @@ fn splitmix64(seed: u64) u64 {
                 },
                 .gap = @intCast(8 * scale),
                 .bg = Color.init(190, 18, 22, 32),
-                .radius = box_h / 2.0,
-                .border = border_w,
-                .border_color = border_col,
+                .radius = @as(f32, @floatFromInt(16 * scale)),
+                .border = 0,
             });
 
             if (self.auth_state == .authenticating) {
@@ -602,24 +622,25 @@ fn splitmix64(seed: u64) u64 {
                     .color = Color.init(230, 255, 255, 255),
                 });
             } else {
-                // Render aesthetic randomized glyphs with large font for typed password characters
+                // Render aesthetic randomized glyphs with sliding window (max 7) so it never overflows
                 var glyph_buf: [512]u8 = undefined;
                 var g_pos: usize = 0;
-                const max_glyphs: usize = 14;
-                const visible_count = @min(self.password_len, max_glyphs);
+                const max_glyphs: usize = 7;
+                const start_idx = if (self.password_len > max_glyphs) self.password_len - max_glyphs else 0;
+                const visible_count = self.password_len;
                 var prev_idx: usize = 255;
-                var i: usize = 0;
+                var i: usize = start_idx;
                 while (i < visible_count) : (i += 1) {
                     const seed = self.rng_seed +% @as(u64, @intCast(i)) *% 0xBF58476D1CE4E5B9 +% @as(u64, self.password_buf[i]);
                     var idx = @as(usize, @intCast(splitmix64(seed) % LOCK_GLYPH_POOL.len));
-                    if (i > 0 and idx == prev_idx) {
+                    if (i > start_idx and idx == prev_idx) {
                         idx = (idx + 1) % LOCK_GLYPH_POOL.len;
                     }
                     prev_idx = idx;
                     const symbol = LOCK_GLYPH_POOL[idx];
 
-                    if (i > 0) {
-                        const sep = "  ";
+                    if (i > start_idx) {
+                        const sep = " ";
                         if (g_pos + sep.len <= glyph_buf.len) {
                             @memcpy(glyph_buf[g_pos .. g_pos + sep.len], sep);
                             g_pos += sep.len;
@@ -633,7 +654,7 @@ fn splitmix64(seed: u64) u64 {
 
                 if (g_pos > 0) {
                     ui.text(glyph_buf[0..g_pos], .{
-                        .size = 24 * scale,
+                        .size = 20 * scale,
                         .color = Color.rgb(255, 255, 255),
                     });
                 }
@@ -1276,13 +1297,17 @@ pub fn runLock(allocator: std.mem.Allocator, cfg: config.Config) !void {
         }
         _ = c.wl_display_dispatch_pending(disp);
 
-        // Timer tick for caret blinking and glyph animation
+        // Timer tick for clock update
         if (app.timer_fd >= 0 and (pfd[1].revents & c.POLLIN) != 0) {
             var val: u64 = 0;
             _ = c.read(app.timer_fd, &val, @sizeOf(u64));
-            app.caret_blink = !app.caret_blink;
-            app.glyph_anim_offset += 0.02;
-            app.needs_redraw = true;
+            const now = c.time(null);
+            var tm: c.struct_tm = undefined;
+            _ = c.localtime_r(&now, &tm);
+            if (tm.tm_min != app.last_rendered_min) {
+                app.last_rendered_min = tm.tm_min;
+                app.needs_redraw = true;
+            }
         }
 
         // Check authentication results from worker thread

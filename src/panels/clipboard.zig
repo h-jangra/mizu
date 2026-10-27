@@ -871,10 +871,12 @@ pub const ClipboardPanel = struct {
                 const is_image = std.mem.startsWith(u8, content, "[[ binary data") or std.mem.startsWith(u8, content, "[[ binary data ");
 
                 var item = ClipItem{ .id = id, .clip_type = if (is_image) .image else .text };
-                const preview_len = @min(content.len, item.preview.len);
+                const max_p = @min(content.len, item.preview.len);
+                const preview_len = trimToValidUtf8(content[0..max_p]);
                 @memcpy(item.preview[0..preview_len], content[0..preview_len]);
                 item.preview_len = preview_len;
-                const first_len = @min(content.len, item.first_line.len);
+                const max_f = @min(content.len, item.first_line.len);
+                const first_len = trimToValidUtf8(content[0..max_f]);
                 @memcpy(item.first_line[0..first_len], content[0..first_len]);
                 item.first_line_len = first_len;
                 item.first_line_loaded = true;
@@ -1381,6 +1383,7 @@ pub const ClipboardPanel = struct {
                     clean_buf[clean_len] = if (b == '\t') ' ' else b;
                     clean_len += 1;
                 }
+                clean_len = trimToValidUtf8(clean_buf[0..clean_len]);
                 const clean_slice = std.mem.trim(u8, clean_buf[0..clean_len], " ");
 
                 var trunc_buf: [160]u8 = undefined;
@@ -1697,6 +1700,7 @@ pub const ClipboardPanel = struct {
                         clen += 1;
                     }
                 }
+                clen = trimToValidUtf8(clean_buf[0..clen]);
                 const clean_slice = clean_buf[0..clen];
 
                 var trunc_buf: [260]u8 = undefined;
@@ -1726,64 +1730,76 @@ pub const ClipboardPanel = struct {
         }
     }
 
+    fn trimToValidUtf8(bytes: []const u8) usize {
+        var len = bytes.len;
+        while (len > 0 and (bytes[len - 1] & 0xC0) == 0x80) {
+            len -= 1;
+        }
+        if (len > 0 and (bytes[len - 1] & 0x80) != 0) {
+            const lead = bytes[len - 1];
+            const seq_len: usize = if ((lead & 0xE0) == 0xC0)
+                2
+            else if ((lead & 0xF0) == 0xE0)
+                3
+            else if ((lead & 0xF8) == 0xF0)
+                4
+            else
+                1;
+            if (len - 1 + seq_len > bytes.len) {
+                len -= 1;
+            } else {
+                len = len - 1 + seq_len;
+            }
+        }
+        return len;
+    }
+
     pub fn truncateStrWithSize(target: renderer.Renderer, font: *renderer.Font, str: []const u8, size: u32, max_w: u32, buf: []u8) []const u8 {
         if (str.len == 0) return "";
         if (target.measureTextWithSize(font, str, size) <= max_w) return str;
 
-        const dots_w = target.measureTextWithSize(font, "...", size);
+        const dots = "...";
+        const dots_w = target.measureTextWithSize(font, dots, size);
         if (dots_w >= max_w) {
-            if (buf.len >= 3) {
-                @memcpy(buf[0..3], "...");
-                return buf[0..3];
+            if (buf.len >= dots.len) {
+                @memcpy(buf[0..dots.len], dots);
+                return buf[0..dots.len];
             }
             return "";
         }
         const avail_w = max_w - dots_w;
 
-        // Binary search for maximum prefix that fits in avail_w
-        var low: usize = 0;
-        var high: usize = @min(str.len, buf.len - 4);
-        var best: usize = 0;
+        var utf8_view = std.unicode.Utf8View.init(str) catch {
+            return "";
+        };
+        var it = utf8_view.iterator();
+        var best_len: usize = 0;
+        var current_w: u32 = 0;
 
-        while (low <= high) {
-            const mid = low + (high - low) / 2;
-            if (mid == 0) {
-                low = 1;
-                continue;
-            }
+        while (it.nextCodepoint()) |cp| {
+            const cp_len = std.unicode.utf8CodepointSequenceLength(cp) catch break;
+            const next_len = best_len + cp_len;
+            if (next_len + dots.len > buf.len) break;
 
-            var char_mid = mid;
-            while (char_mid > 0 and (str[char_mid] & 0xC0) == 0x80) {
-                char_mid -= 1;
-            }
-            if (char_mid == 0) {
-                low = mid + 1;
-                continue;
-            }
+            const adv = if (font.getOrLoadGlyph(cp, size)) |cg| cg.advance_x else @as(i32, @intCast(size / 2));
+            const adv_u: u32 = if (adv > 0) @intCast(adv) else 0;
+            if (current_w + adv_u > avail_w) break;
 
-            const w = target.measureTextWithSize(font, str[0..char_mid], size);
-            if (w <= avail_w) {
-                best = char_mid;
-                low = mid + 1;
-            } else {
-                if (char_mid == 0) break;
-                high = char_mid - 1;
-            }
+            current_w += adv_u;
+            best_len = next_len;
         }
 
-        if (best == 0) {
-            if (buf.len >= 3) {
-                @memcpy(buf[0..3], "...");
-                return buf[0..3];
+        if (best_len == 0) {
+            if (buf.len >= dots.len) {
+                @memcpy(buf[0..dots.len], dots);
+                return buf[0..dots.len];
             }
             return "";
         }
 
-        @memcpy(buf[0..best], str[0..best]);
-        buf[best] = '.';
-        buf[best + 1] = '.';
-        buf[best + 2] = '.';
-        return buf[0 .. best + 3];
+        @memcpy(buf[0..best_len], str[0..best_len]);
+        @memcpy(buf[best_len .. best_len + dots.len], dots);
+        return buf[0 .. best_len + dots.len];
     }
 
     pub fn truncateStr(target: renderer.Renderer, font: *renderer.Font, str: []const u8, max_w: u32, buf: []u8) []const u8 {
@@ -1869,6 +1885,32 @@ test "Clipboard first line extraction without popen" {
     loadItemFirstLine(&item);
     try std.testing.expect(item.first_line_loaded);
     try std.testing.expectEqualStrings("Hello World", item.first_line[0..item.first_line_len]);
+}
+
+test "Clipboard unicode ornaments and symbols like ❫" {
+    const allocator = std.testing.allocator;
+    var cfg = config.Config.init(allocator);
+    defer cfg.deinit(allocator);
+
+    var font = try renderer.Font.init(allocator, cfg.theme.font_family, cfg.typography.ui);
+    defer font.deinit();
+
+    const pixels = try allocator.alloc(u32, 400 * 200);
+    defer allocator.free(pixels);
+    @memset(pixels, 0);
+    const target = try renderer.Renderer.init(pixels.ptr, 400, 200, 400 * 4);
+
+    const test_str = "❫ test ⏎";
+    var trunc_buf: [160]u8 = undefined;
+    const truncated = ClipboardPanel.truncateStr(target, &font, test_str, 200, &trunc_buf);
+    try std.testing.expectEqualStrings(test_str, truncated);
+
+    target.drawTextWithSpacing(&font, test_str, 10, 50, cfg.typography.ui, cfg.theme.text_bright, 0);
+    var non_zero: usize = 0;
+    for (pixels) |px| {
+        if (px != 0) non_zero += 1;
+    }
+    try std.testing.expect(non_zero > 0);
 }
 
 test "Clipboard DecodedCache LRU eviction and retrieval" {

@@ -776,9 +776,15 @@ pub const QuickSettings = struct {
                         if (idx < self.bt_items.items.len) {
                             const item = self.bt_items.items[idx];
                             const mac = item.mac[0..item.mac_len];
+                            var mac_z: [33]u8 = [_]u8{0} ** 33;
+                            @memcpy(mac_z[0..mac.len], mac);
+                            mac_z[mac.len] = 0;
+                            _ = sys_status.dbus_monitor.mizu_dbus_monitor_bt_remove(&mac_z);
+
                             var cmd_buf: [128]u8 = undefined;
-                            const cmd = std.fmt.bufPrint(&cmd_buf, "bluetoothctl remove {s} 2>/dev/null || true", .{mac}) catch "";
-                            sys_status.spawnCmd(cmd);
+                            if (std.fmt.bufPrintZ(&cmd_buf, "bluetoothctl remove {s} 2>/dev/null || true", .{mac})) |cmd| {
+                                sys_status.spawnCmd(cmd);
+                            } else |_| {}
 
                             // Instantly reflect device removal in UI state without closing panel
                             _ = self.bt_items.orderedRemove(idx);
@@ -1554,73 +1560,55 @@ pub const QuickSettings = struct {
             worker.running.store(true, .release);
 
             const mac = worker.mac[0..worker.mac_len];
-            var cmd_buf: [512]u8 = undefined;
-            const cmd = if (worker.connect)
-                std.fmt.bufPrint(&cmd_buf, "bluetoothctl default-agent 2>/dev/null; bluetoothctl --timeout 5 trust {0s} 2>/dev/null; bluetoothctl --timeout 15 pair {0s} 2>/dev/null; bluetoothctl --timeout 15 connect {0s} 2>&1", .{mac}) catch ""
-            else
-                std.fmt.bufPrint(&cmd_buf, "bluetoothctl --timeout 8 disconnect {s} 2>&1", .{mac}) catch "";
+            var mac_z: [33]u8 = [_]u8{0} ** 33;
+            @memcpy(mac_z[0..mac.len], mac);
+            mac_z[mac.len] = 0;
 
-            var success = false;
-            var out_buf: [4096]u8 = undefined;
-            var total_read: usize = 0;
+            var err_buf: [128]u8 = [_]u8{0} ** 128;
+            var success = sys_status.dbus_monitor.mizu_dbus_monitor_bt_connect(&mac_z, worker.connect, &err_buf, err_buf.len);
 
-            if (cmd.len > 0) {
-                const pipe = c.popen(cmd.ptr, "r");
-                if (pipe) |p| {
-                    while (total_read < out_buf.len - 1) {
-                        const n = c.fread(out_buf[total_read..].ptr, 1, out_buf.len - 1 - total_read, p);
-                        if (n == 0) break;
-                        total_read += n;
+            if (!success) {
+                // If direct D-Bus returned an error, attempt clean bluetoothctl as fallback
+                var cmd_buf: [256]u8 = undefined;
+                const cmd_slice = if (worker.connect)
+                    std.fmt.bufPrintZ(&cmd_buf, "bluetoothctl --timeout 15 connect {s} 2>&1", .{mac}) catch null
+                else
+                    std.fmt.bufPrintZ(&cmd_buf, "bluetoothctl --timeout 8 disconnect {s} 2>&1", .{mac}) catch null;
+
+                if (cmd_slice) |cmd_z| {
+                    if (c.popen(cmd_z.ptr, "r")) |pipe| {
+                        var out_buf: [2048]u8 = undefined;
+                        var total_read: usize = 0;
+                        while (total_read < out_buf.len - 1) {
+                            const n = c.fread(out_buf[total_read..].ptr, 1, out_buf.len - 1 - total_read, pipe);
+                            if (n == 0) break;
+                            total_read += n;
+                        }
+                        out_buf[total_read] = 0;
+                        _ = c.pclose(pipe);
+
+                        if (worker.connect) {
+                            if (std.mem.indexOf(u8, out_buf[0..total_read], "Connection successful") != null or
+                                std.mem.indexOf(u8, out_buf[0..total_read], "Connected: yes") != null)
+                            {
+                                success = true;
+                            }
+                        } else {
+                            if (std.mem.indexOf(u8, out_buf[0..total_read], "Successful disconnected") != null or
+                                std.mem.indexOf(u8, out_buf[0..total_read], "Connected: no") != null)
+                            {
+                                success = true;
+                            }
+                        }
                     }
-                    out_buf[total_read] = 0;
-                    _ = c.pclose(p);
                 }
             }
 
-            // Verify actual connection status via bluez info
-            var check_buf: [128]u8 = undefined;
-            const check_cmd = std.fmt.bufPrint(&check_buf, "bluetoothctl info {s} 2>/dev/null | grep -q 'Connected: yes'", .{mac}) catch "";
-            if (check_cmd.len > 0) {
-                const check_res = c.system(check_cmd.ptr);
-                const check_exit = (check_res >> 8) & 0xff;
-                if (worker.connect) {
-                    success = (check_exit == 0);
-                } else {
-                    success = (check_exit != 0);
-                }
-            } else {
-                if (worker.connect) {
-                    success = (std.mem.indexOf(u8, out_buf[0..total_read], "Connection successful") != null or
-                        std.mem.indexOf(u8, out_buf[0..total_read], "Connected: yes") != null);
-                } else {
-                    success = (std.mem.indexOf(u8, out_buf[0..total_read], "Successful disconnected") != null or
-                        std.mem.indexOf(u8, out_buf[0..total_read], "Connected: no") != null);
-                }
-            }
-
-            if (!success and total_read > 0) {
-                const trimmed = std.mem.trim(u8, out_buf[0..total_read], " \t\r\n");
-                if (std.mem.indexOf(u8, trimmed, "not available") != null or
-                    std.mem.indexOf(u8, trimmed, "Host is down") != null or
-                    std.mem.indexOf(u8, trimmed, "unreachable") != null)
-                {
-                    const err_text = "Device offline or unreachable";
-                    const clen = @min(err_text.len, worker.error_msg.len);
-                    @memcpy(worker.error_msg[0..clen], err_text[0..clen]);
-                    worker.error_len = clen;
-                } else if (std.mem.indexOf(u8, trimmed, "Authentication") != null or
-                    std.mem.indexOf(u8, trimmed, "Failed to pair") != null)
-                {
-                    const err_text = "Pairing failed. Put device in pairing mode";
-                    const clen = @min(err_text.len, worker.error_msg.len);
-                    @memcpy(worker.error_msg[0..clen], err_text[0..clen]);
-                    worker.error_len = clen;
-                } else if (std.mem.indexOf(u8, trimmed, "br-connection") != null or
-                    std.mem.indexOf(u8, trimmed, "profile-unavailable") != null)
-                {
-                    const err_text = "Audio profile unavailable";
-                    const clen = @min(err_text.len, worker.error_msg.len);
-                    @memcpy(worker.error_msg[0..clen], err_text[0..clen]);
+            if (!success) {
+                const err_len = std.mem.len(@as([*:0]const u8, @ptrCast(&err_buf)));
+                if (err_len > 0) {
+                    const clen = @min(err_len, worker.error_msg.len);
+                    @memcpy(worker.error_msg[0..clen], err_buf[0..clen]);
                     worker.error_len = clen;
                 }
             }
@@ -4571,7 +4559,9 @@ pub const QuickSettings = struct {
                     if (ui.rectOf("qs-bt-action", @intCast(actual_idx))) |rect| {
                         try self.appendRect(rect, scale, if (item.connected) .{ .disconnect_bluetooth = actual_idx } else .{ .select_bluetooth = actual_idx });
                     }
-                    if (ui.rectOf("qs-bt-card", @intCast(actual_idx))) |rect| try self.appendRect(rect, scale, .{ .select_bluetooth = actual_idx });
+                    if (ui.rectOf("qs-bt-card", @intCast(actual_idx))) |rect| {
+                        try self.appendRect(rect, scale, if (item.connected) .{ .disconnect_bluetooth = actual_idx } else .{ .select_bluetooth = actual_idx });
+                    }
                 }
             },
             .audio_menu => {

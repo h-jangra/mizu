@@ -3,6 +3,7 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include <stddef.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -47,6 +48,12 @@ void mizu_dbus_monitor_start_bt_discovery(void);
 
 // Stop active Bluetooth discovery on BlueZ.
 void mizu_dbus_monitor_stop_bt_discovery(void);
+
+// Connect or disconnect a Bluetooth device via BlueZ D-Bus.
+bool mizu_dbus_monitor_bt_connect(const char *mac, bool connect, char *err_buf, size_t err_len);
+
+// Remove/unpair a Bluetooth device via BlueZ D-Bus.
+bool mizu_dbus_monitor_bt_remove(const char *mac);
 
 // Cleanly stop the background monitor thread and close D-Bus connections.
 void mizu_dbus_monitor_deinit(void);

@@ -535,6 +535,219 @@ void mizu_dbus_monitor_stop_bt_discovery(void) {
     pthread_mutex_unlock(&s_mutex);
 }
 
+bool mizu_dbus_monitor_bt_connect(const char *mac, bool connect, char *err_buf, size_t err_len) {
+    if (!mac || !mac[0]) return false;
+    if (err_buf && err_len > 0) err_buf[0] = '\0';
+
+    DBusError err;
+    dbus_error_init(&err);
+
+    // Open private connection to system bus
+    DBusConnection *conn = dbus_bus_get_private(DBUS_BUS_SYSTEM, &err);
+    if (!conn || dbus_error_is_set(&err)) {
+        if (err_buf && err_len > 0) {
+            snprintf(err_buf, err_len, "D-Bus connection failed: %s", err.message ? err.message : "unknown");
+        }
+        dbus_error_free(&err);
+        return false;
+    }
+
+    // Convert MAC (e.g. "B0:38:E2:FB:21:DC") to safe format ("B0_38_E2_FB_21_DC")
+    char safe_mac[32];
+    snprintf(safe_mac, sizeof(safe_mac), "%s", mac);
+    for (char *p = safe_mac; *p; p++) {
+        if (*p == ':') *p = '_';
+    }
+
+    char adapter[64];
+    pthread_mutex_lock(&s_mutex);
+    snprintf(adapter, sizeof(adapter), "%s", s_bt_adapter_path);
+    pthread_mutex_unlock(&s_mutex);
+    if (!adapter[0]) {
+        snprintf(adapter, sizeof(adapter), "/org/bluez/hci0");
+    }
+
+    char dev_path[128];
+    snprintf(dev_path, sizeof(dev_path), "%s/dev_%s", adapter, safe_mac);
+
+    if (connect) {
+        // Set Trusted = true (matching linktui: Trust(mac) before Connect(mac))
+        DBusMessage *trust_msg = dbus_message_new_method_call(
+            "org.bluez",
+            dev_path,
+            "org.freedesktop.DBus.Properties",
+            "Set"
+        );
+        if (trust_msg) {
+            const char *iface = "org.bluez.Device1";
+            const char *prop = "Trusted";
+            dbus_bool_t val = TRUE;
+            DBusMessageIter iter, sub;
+            dbus_message_iter_init_append(trust_msg, &iter);
+            dbus_message_iter_append_basic(&iter, DBUS_TYPE_STRING, &iface);
+            dbus_message_iter_append_basic(&iter, DBUS_TYPE_STRING, &prop);
+            dbus_message_iter_open_container(&iter, DBUS_TYPE_VARIANT, "b", &sub);
+            dbus_message_iter_append_basic(&sub, DBUS_TYPE_BOOLEAN, &val);
+            dbus_message_iter_close_container(&iter, &sub);
+
+            DBusMessage *reply = dbus_connection_send_with_reply_and_block(conn, trust_msg, 2000, &err);
+            dbus_message_unref(trust_msg);
+            if (reply) dbus_message_unref(reply);
+            if (dbus_error_is_set(&err)) dbus_error_free(&err);
+        }
+    }
+
+    // Call Connect or Disconnect on org.bluez.Device1
+    const char *method = connect ? "Connect" : "Disconnect";
+    DBusMessage *msg = dbus_message_new_method_call(
+        "org.bluez",
+        dev_path,
+        "org.bluez.Device1",
+        method
+    );
+    if (!msg) {
+        dbus_connection_close(conn);
+        dbus_connection_unref(conn);
+        return false;
+    }
+
+    int timeout_ms = connect ? 15000 : 8000;
+    DBusMessage *reply = dbus_connection_send_with_reply_and_block(conn, msg, timeout_ms, &err);
+    dbus_message_unref(msg);
+
+    bool success = false;
+    if (dbus_error_is_set(&err)) {
+        if (connect && strcmp(err.name, "org.bluez.Error.AlreadyConnected") == 0) {
+            success = true;
+        } else if (!connect && strcmp(err.name, "org.bluez.Error.NotConnected") == 0) {
+            success = true;
+        } else if (strcmp(err.name, "org.bluez.Error.InProgress") == 0) {
+            dbus_error_free(&err);
+            // Poll for up to 4 seconds to see if connection completes
+            for (int i = 0; i < 4; i++) {
+                usleep(1000000);
+                DBusMessage *get_msg = dbus_message_new_method_call(
+                    "org.bluez", dev_path, "org.freedesktop.DBus.Properties", "Get");
+                if (get_msg) {
+                    const char *iface = "org.bluez.Device1";
+                    const char *prop = "Connected";
+                    dbus_message_append_args(get_msg, DBUS_TYPE_STRING, &iface, DBUS_TYPE_STRING, &prop, DBUS_TYPE_INVALID);
+                    DBusMessage *get_reply = dbus_connection_send_with_reply_and_block(conn, get_msg, 1000, &err);
+                    dbus_message_unref(get_msg);
+                    if (get_reply) {
+                        DBusMessageIter r_iter, v_iter;
+                        if (dbus_message_iter_init(get_reply, &r_iter) &&
+                            dbus_message_iter_get_arg_type(&r_iter) == DBUS_TYPE_VARIANT) {
+                            dbus_message_iter_recurse(&r_iter, &v_iter);
+                            if (dbus_message_iter_get_arg_type(&v_iter) == DBUS_TYPE_BOOLEAN) {
+                                dbus_bool_t c_val = FALSE;
+                                dbus_message_iter_get_basic(&v_iter, &c_val);
+                                if (c_val == (connect ? TRUE : FALSE)) {
+                                    dbus_message_unref(get_reply);
+                                    success = true;
+                                    break;
+                                }
+                            }
+                        }
+                        dbus_message_unref(get_reply);
+                    }
+                    if (dbus_error_is_set(&err)) dbus_error_free(&err);
+                }
+            }
+        } else {
+            success = false;
+            if (err_buf && err_len > 0) {
+                if (strstr(err.name, "Timeout") != NULL || strstr(err.name, "NoReply") != NULL ||
+                    (err.message && strstr(err.message, "Host is down") != NULL) ||
+                    (err.message && strstr(err.message, "not available") != NULL))
+                {
+                    snprintf(err_buf, err_len, "Device offline or unreachable");
+                } else if (err.message && strstr(err.message, "br-connection") != NULL) {
+                    snprintf(err_buf, err_len, "Audio profile unavailable");
+                } else if (strstr(err.name, "Failed") != NULL && err.message) {
+                    snprintf(err_buf, err_len, "%s", err.message);
+                } else {
+                    snprintf(err_buf, err_len, "%s", err.message ? err.message : err.name);
+                }
+            }
+        }
+        if (dbus_error_is_set(&err)) {
+            dbus_error_free(&err);
+        }
+    } else {
+        success = true;
+    }
+
+    if (reply) {
+        dbus_message_unref(reply);
+    }
+
+    dbus_connection_close(conn);
+    dbus_connection_unref(conn);
+    return success;
+}
+
+bool mizu_dbus_monitor_bt_remove(const char *mac) {
+    if (!mac || !mac[0]) return false;
+
+    DBusError err;
+    dbus_error_init(&err);
+
+    DBusConnection *conn = dbus_bus_get_private(DBUS_BUS_SYSTEM, &err);
+    if (!conn || dbus_error_is_set(&err)) {
+        dbus_error_free(&err);
+        return false;
+    }
+
+    char safe_mac[32];
+    snprintf(safe_mac, sizeof(safe_mac), "%s", mac);
+    for (char *p = safe_mac; *p; p++) {
+        if (*p == ':') *p = '_';
+    }
+
+    char adapter[64];
+    pthread_mutex_lock(&s_mutex);
+    snprintf(adapter, sizeof(adapter), "%s", s_bt_adapter_path);
+    pthread_mutex_unlock(&s_mutex);
+    if (!adapter[0]) {
+        snprintf(adapter, sizeof(adapter), "/org/bluez/hci0");
+    }
+
+    char dev_path[128];
+    snprintf(dev_path, sizeof(dev_path), "%s/dev_%s", adapter, safe_mac);
+    const char *dev_path_ptr = dev_path;
+
+    DBusMessage *msg = dbus_message_new_method_call(
+        "org.bluez",
+        adapter,
+        "org.bluez.Adapter1",
+        "RemoveDevice"
+    );
+    if (!msg) {
+        dbus_connection_close(conn);
+        dbus_connection_unref(conn);
+        return false;
+    }
+
+    dbus_message_append_args(msg, DBUS_TYPE_OBJECT_PATH, &dev_path_ptr, DBUS_TYPE_INVALID);
+
+    DBusMessage *reply = dbus_connection_send_with_reply_and_block(conn, msg, 4000, &err);
+    dbus_message_unref(msg);
+
+    bool success = true;
+    if (dbus_error_is_set(&err)) {
+        success = false;
+        dbus_error_free(&err);
+    }
+    if (reply) {
+        dbus_message_unref(reply);
+    }
+
+    dbus_connection_close(conn);
+    dbus_connection_unref(conn);
+    return success;
+}
+
 void mizu_dbus_monitor_deinit(void) {
     pthread_mutex_lock(&s_mutex);
     if (!s_running) {

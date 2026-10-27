@@ -1181,7 +1181,8 @@ pub const WaylandApp = struct {
             } else if (l.hover_index != null) {
                 shape = .pointer;
             }
-        } else if (self.power) |_| {
+        } else if (self.power) |p| {
+            if (p.handlePointerMotion(px, py)) self.needs_redraw = true;
             shape = .pointer;
         } else if (self.bar) |bar| {
             if (bar.handlePointerMotion(px, py)) {

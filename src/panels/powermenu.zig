@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const c = @import("../c.zig").c;
 const theme = @import("../core/theme.zig");
 const config = @import("../core/config.zig");
@@ -67,6 +68,8 @@ pub const PowerOverlay = struct {
     countdown_seconds: u32 = 5,
     elapsed_ticks: u32 = 0,
     running: bool = true,
+    dry_run: bool = false,
+    last_executed_action: ?PowerAction = null,
     hit_areas: std.ArrayList(HitArea),
 
     pub fn init(allocator: std.mem.Allocator, cfg: config.Config) !PowerOverlay {
@@ -143,6 +146,12 @@ pub const PowerOverlay = struct {
                 }
             },
             c.XKB_KEY_Return, c.XKB_KEY_KP_Enter, c.XKB_KEY_space => {
+                const act: PowerAction = @enumFromInt(self.selected_idx);
+                if (act == .lock) {
+                    self.executeAction();
+                    self.running = false;
+                    return true;
+                }
                 if (self.confirming) {
                     self.executeAction();
                     self.running = false;
@@ -161,26 +170,77 @@ pub const PowerOverlay = struct {
                 return true;
             },
             c.XKB_KEY_2, c.XKB_KEY_p, c.XKB_KEY_P => {
-                self.selected_idx = @intFromEnum(PowerAction.shutdown);
-                self.confirming = true;
+                if (self.confirming and self.selected_idx == @intFromEnum(PowerAction.shutdown)) {
+                    self.executeAction();
+                    self.running = false;
+                } else {
+                    self.selected_idx = @intFromEnum(PowerAction.shutdown);
+                    self.confirming = true;
+                    self.countdown_seconds = 5;
+                    self.elapsed_ticks = 0;
+                }
                 return true;
             },
             c.XKB_KEY_3, c.XKB_KEY_r, c.XKB_KEY_R => {
-                self.selected_idx = @intFromEnum(PowerAction.reboot);
-                self.confirming = true;
+                if (self.confirming and self.selected_idx == @intFromEnum(PowerAction.reboot)) {
+                    self.executeAction();
+                    self.running = false;
+                } else {
+                    self.selected_idx = @intFromEnum(PowerAction.reboot);
+                    self.confirming = true;
+                    self.countdown_seconds = 5;
+                    self.elapsed_ticks = 0;
+                }
                 return true;
             },
             c.XKB_KEY_4, c.XKB_KEY_s, c.XKB_KEY_S, c.XKB_KEY_h, c.XKB_KEY_H => {
-                self.selected_idx = @intFromEnum(PowerAction.hibernate);
-                self.confirming = true;
+                if (self.confirming and self.selected_idx == @intFromEnum(PowerAction.hibernate)) {
+                    self.executeAction();
+                    self.running = false;
+                } else {
+                    self.selected_idx = @intFromEnum(PowerAction.hibernate);
+                    self.confirming = true;
+                    self.countdown_seconds = 5;
+                    self.elapsed_ticks = 0;
+                }
                 return true;
             },
             c.XKB_KEY_5, c.XKB_KEY_e, c.XKB_KEY_E => {
-                self.selected_idx = @intFromEnum(PowerAction.logout);
-                self.confirming = true;
+                if (self.confirming and self.selected_idx == @intFromEnum(PowerAction.logout)) {
+                    self.executeAction();
+                    self.running = false;
+                } else {
+                    self.selected_idx = @intFromEnum(PowerAction.logout);
+                    self.confirming = true;
+                    self.countdown_seconds = 5;
+                    self.elapsed_ticks = 0;
+                }
                 return true;
             },
             else => {},
+        }
+        return false;
+    }
+
+    pub fn handlePointerMotion(self: *PowerOverlay, x: i32, y: i32) bool {
+        for (self.hit_areas.items) |ha| {
+            if (x >= ha.x and x < ha.x + @as(i32, @intCast(ha.w)) and
+                y >= ha.y and y < ha.y + @as(i32, @intCast(ha.h)))
+            {
+                if (ha.action) |act| {
+                    const idx = @intFromEnum(act);
+                    if (self.selected_idx != idx) {
+                        self.selected_idx = idx;
+                        if (self.confirming) {
+                            self.confirming = false;
+                            self.countdown_seconds = 5;
+                            self.elapsed_ticks = 0;
+                        }
+                        return true;
+                    }
+                }
+                return false;
+            }
         }
         return false;
     }
@@ -191,20 +251,22 @@ pub const PowerOverlay = struct {
                 y >= ha.y and y < ha.y + @as(i32, @intCast(ha.h)))
             {
                 if (ha.action) |act| {
-                    if (self.confirming) {
-                        if (self.selected_idx == @intFromEnum(act)) {
-                            self.confirming = false;
-                            self.countdown_seconds = 5;
-                            return true;
-                        } else {
-                            self.selected_idx = @intFromEnum(act);
-                            self.countdown_seconds = 5;
-                            return true;
-                        }
+                    if (act == .lock) {
+                        self.selected_idx = @intFromEnum(act);
+                        self.executeAction();
+                        self.running = false;
+                        return true;
+                    }
+
+                    if (self.confirming and self.selected_idx == @intFromEnum(act)) {
+                        self.executeAction();
+                        self.running = false;
+                        return true;
                     } else {
                         self.selected_idx = @intFromEnum(act);
                         self.confirming = true;
                         self.countdown_seconds = 5;
+                        self.elapsed_ticks = 0;
                         return true;
                     }
                 }
@@ -215,6 +277,8 @@ pub const PowerOverlay = struct {
 
     pub fn executeAction(self: *PowerOverlay) void {
         const act: PowerAction = @enumFromInt(self.selected_idx);
+        self.last_executed_action = act;
+        if (self.dry_run or builtin.is_test) return;
         sys_status.spawnCmd(act.command());
     }
 
@@ -344,4 +408,68 @@ test "PowerOverlay initialization and hotkeys" {
 
     _ = overlay.handleKey(c.XKB_KEY_Escape);
     try std.testing.expectEqual(false, overlay.running);
+}
+
+test "PowerOverlay lock action has no countdown and double click executes" {
+    const allocator = std.testing.allocator;
+    var cfg = config.Config.init(allocator);
+    defer cfg.deinit(allocator);
+
+    var overlay = try PowerOverlay.init(allocator, cfg);
+    defer overlay.deinit();
+
+    // 1. Lock on Return executes immediately without countdown
+    overlay.selected_idx = @intFromEnum(PowerAction.lock);
+    _ = overlay.handleKey(c.XKB_KEY_Return);
+    try std.testing.expectEqual(false, overlay.confirming);
+    try std.testing.expectEqual(false, overlay.running);
+    try std.testing.expectEqual(PowerAction.lock, overlay.last_executed_action.?);
+
+    // Reset overlay
+    overlay.running = true;
+    overlay.confirming = false;
+    overlay.last_executed_action = null;
+
+    // Simulate hit area for lock and shutdown
+    try overlay.hit_areas.append(allocator, .{
+        .x = 10,
+        .y = 10,
+        .w = 100,
+        .h = 100,
+        .action = .lock,
+    });
+    try overlay.hit_areas.append(allocator, .{
+        .x = 120,
+        .y = 10,
+        .w = 100,
+        .h = 100,
+        .action = .shutdown,
+    });
+
+    // 2. Click on lock executes immediately without countdown
+    _ = overlay.handleClick(15, 15);
+    try std.testing.expectEqual(false, overlay.confirming);
+    try std.testing.expectEqual(false, overlay.running);
+    try std.testing.expectEqual(PowerAction.lock, overlay.last_executed_action.?);
+
+    // Reset overlay
+    overlay.running = true;
+    overlay.confirming = false;
+    overlay.last_executed_action = null;
+
+    // 3. Hovering updates selected_idx
+    _ = overlay.handlePointerMotion(125, 15);
+    try std.testing.expectEqual(@intFromEnum(PowerAction.shutdown), overlay.selected_idx);
+
+    // 4. First click on shutdown triggers confirmation with countdown
+    _ = overlay.handleClick(125, 15);
+    try std.testing.expectEqual(true, overlay.confirming);
+    try std.testing.expectEqual(true, overlay.running);
+    try std.testing.expectEqual(@as(u32, 5), overlay.countdown_seconds);
+    try std.testing.expectEqual(@as(?PowerAction, null), overlay.last_executed_action);
+
+    // 5. Second click on shutdown executes immediately!
+    _ = overlay.handleClick(125, 15);
+    try std.testing.expectEqual(false, overlay.running);
+    try std.testing.expectEqual(PowerAction.shutdown, overlay.last_executed_action.?);
 }

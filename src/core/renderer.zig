@@ -17,10 +17,18 @@ pub const CachedGlyph = struct {
     bitmap: []u8,
 };
 
+pub const FallbackFace = struct {
+    face: c.FT_Face,
+    path: []const u8,
+};
+
 pub const Font = struct {
     ft_lib: c.FT_Library = null,
     face: c.FT_Face = null,
     fallback_face: ?c.FT_Face = null,
+    fallback_faces: std.ArrayList(FallbackFace) = std.ArrayList(FallbackFace).empty,
+    primary_font_path: []const u8 = "",
+    missing_glyphs: std.AutoHashMap(u32, void),
     allocator: std.mem.Allocator,
     size_px: u32,
     primary_size_px: u32,
@@ -39,7 +47,16 @@ pub const Font = struct {
         errdefer _ = c.FT_Done_FreeType(ft_lib);
 
         // Find primary font path via Fontconfig
-        const font_path = try findFontPath(allocator, font_family);
+        var expanded_family: ?[]u8 = null;
+        defer if (expanded_family) |ef| allocator.free(ef);
+
+        var query_family = font_family;
+        if (std.mem.indexOf(u8, font_family, "Maple Mono") != null and std.mem.indexOf(u8, font_family, "NF") == null) {
+            expanded_family = std.fmt.allocPrint(allocator, "Maple Mono NF, {s}", .{font_family}) catch null;
+            if (expanded_family) |ef| query_family = ef;
+        }
+
+        const font_path = try findFontPath(allocator, query_family);
         defer allocator.free(font_path);
 
         var face: c.FT_Face = null;
@@ -60,28 +77,68 @@ pub const Font = struct {
         const descender_px = @as(i32, @intCast(metrics.descender >> 6));
         const height_px = @as(i32, @intCast(metrics.height >> 6));
 
-        // Load fallback face for symbols / Nerd Font
-        var fallback_face: ?c.FT_Face = null;
-        const fallback_path = findFontPath(allocator, "Symbols Nerd Font, JetBrainsMono Nerd Font, monospace") catch null;
-        if (fallback_path) |fb_path| {
-            defer allocator.free(fb_path);
-            const fb_c_path = allocator.dupeZ(u8, fb_path) catch null;
-            if (fb_c_path) |fcp| {
-                defer allocator.free(fcp);
-                var fb_f: c.FT_Face = null;
-                if (c.FT_New_Face(ft_lib, fcp.ptr, 0, &fb_f) == 0) {
-                    _ = c.FT_Set_Pixel_Sizes(fb_f, 0, size_px);
-                    fallback_face = fb_f;
-                }
+        const primary_path_copy = try allocator.dupe(u8, font_path);
+        errdefer allocator.free(primary_path_copy);
+
+        // Preload common fallback faces for symbols / Nerd Fonts
+        var fallback_faces = std.ArrayList(FallbackFace).empty;
+        errdefer {
+            for (fallback_faces.items) |fb| {
+                _ = c.FT_Done_Face(fb.face);
+                allocator.free(fb.path);
             }
+            fallback_faces.deinit(allocator);
         }
 
+        const fb_candidates = [_][]const u8{
+            "SymbolsNF, Symbols Nerd Font, monospace",
+            "JetBrainsMono Nerd Font, monospace",
+            "DejaVu Sans, monospace",
+        };
+        for (fb_candidates) |candidate| {
+            if (findFontPath(allocator, candidate)) |fb_path| {
+                defer allocator.free(fb_path);
+                if (!std.mem.eql(u8, fb_path, primary_path_copy)) {
+                    var already_loaded = false;
+                    for (fallback_faces.items) |existing| {
+                        if (std.mem.eql(u8, existing.path, fb_path)) {
+                            already_loaded = true;
+                            break;
+                        }
+                    }
+                    if (!already_loaded) {
+                        const fb_c_path = allocator.dupeZ(u8, fb_path) catch null;
+                        if (fb_c_path) |fcp| {
+                            defer allocator.free(fcp);
+                            var fb_f: c.FT_Face = null;
+                            if (c.FT_New_Face(ft_lib, fcp.ptr, 0, &fb_f) == 0) {
+                                _ = c.FT_Set_Pixel_Sizes(fb_f, 0, size_px);
+                                const saved_path = allocator.dupe(u8, fb_path) catch null;
+                                if (saved_path) |sp| {
+                                    fallback_faces.append(allocator, .{ .face = fb_f, .path = sp }) catch {
+                                        allocator.free(sp);
+                                        _ = c.FT_Done_Face(fb_f);
+                                    };
+                                } else {
+                                    _ = c.FT_Done_Face(fb_f);
+                                }
+                            }
+                        }
+                    }
+                }
+            } else |_| {}
+        }
+
+        const fallback_face = if (fallback_faces.items.len > 0) fallback_faces.items[0].face else null;
         const family_c_str = try allocator.dupeZ(u8, theme.firstFamily(font_family));
 
         return .{
             .ft_lib = ft_lib,
             .face = face,
             .fallback_face = fallback_face,
+            .fallback_faces = fallback_faces,
+            .primary_font_path = primary_path_copy,
+            .missing_glyphs = std.AutoHashMap(u32, void).init(allocator),
             .allocator = allocator,
             .size_px = size_px,
             .primary_size_px = size_px,
@@ -101,11 +158,21 @@ pub const Font = struct {
         }
         self.glyph_cache.deinit();
 
-        self.allocator.free(self.family_c_str);
-        if (self.fallback_face) |fbf| {
-            _ = c.FT_Done_Face(fbf);
-            self.fallback_face = null;
+        for (self.fallback_faces.items) |fb| {
+            _ = c.FT_Done_Face(fb.face);
+            self.allocator.free(fb.path);
         }
+        self.fallback_faces.deinit(self.allocator);
+        self.fallback_face = null;
+
+        if (self.primary_font_path.len > 0) {
+            self.allocator.free(self.primary_font_path);
+            self.primary_font_path = "";
+        }
+
+        self.missing_glyphs.deinit();
+
+        self.allocator.free(self.family_c_str);
         if (self.face) |face| {
             _ = c.FT_Done_Face(face);
             self.face = null;
@@ -145,6 +212,75 @@ pub const Font = struct {
         return res;
     }
 
+    fn loadFallbackForCodepoint(self: *Font, cp: u32, size_px: u32) ?struct { face: c.FT_Face, glyph_index: c.FT_UInt } {
+        if (c.FcInit() == 0) return null;
+        const config = c.FcConfigGetCurrent() orelse c.FcInitLoadConfigAndFonts();
+        const pat = c.FcPatternCreate() orelse return null;
+        defer c.FcPatternDestroy(pat);
+
+        const cs = c.FcCharSetCreate() orelse return null;
+        defer c.FcCharSetDestroy(cs);
+        _ = c.FcCharSetAddChar(cs, cp);
+        _ = c.FcPatternAddCharSet(pat, c.FC_CHARSET, cs);
+
+        _ = c.FcConfigSubstitute(config, pat, c.FcMatchPattern);
+        c.FcDefaultSubstitute(pat);
+
+        var result: c.FcResult = undefined;
+        const match = c.FcFontMatch(config, pat, &result);
+        if (match == null) return null;
+        defer c.FcPatternDestroy(match);
+
+        var file_ptr: [*c]c.FcChar8 = null;
+        if (c.FcPatternGetString(match, c.FC_FILE, 0, &file_ptr) != c.FcResultMatch or file_ptr == null) {
+            return null;
+        }
+
+        const path_len = std.mem.len(file_ptr);
+        const font_path = file_ptr[0..path_len];
+
+        if (std.mem.eql(u8, self.primary_font_path, font_path)) {
+            return null;
+        }
+
+        for (self.fallback_faces.items) |fb| {
+            if (std.mem.eql(u8, fb.path, font_path)) {
+                const idx = c.FT_Get_Char_Index(fb.face, cp);
+                if (idx != 0) {
+                    return .{ .face = fb.face, .glyph_index = idx };
+                }
+                return null;
+            }
+        }
+
+        const c_path = self.allocator.dupeZ(u8, font_path) catch return null;
+        defer self.allocator.free(c_path);
+
+        var new_face: c.FT_Face = null;
+        if (c.FT_New_Face(self.ft_lib, c_path.ptr, 0, &new_face) != 0) {
+            return null;
+        }
+
+        _ = c.FT_Set_Pixel_Sizes(new_face, 0, size_px);
+
+        const saved_path = self.allocator.dupe(u8, font_path) catch {
+            _ = c.FT_Done_Face(new_face);
+            return null;
+        };
+
+        self.fallback_faces.append(self.allocator, .{ .face = new_face, .path = saved_path }) catch {
+            self.allocator.free(saved_path);
+            _ = c.FT_Done_Face(new_face);
+            return null;
+        };
+
+        const g_idx = c.FT_Get_Char_Index(new_face, cp);
+        if (g_idx != 0) {
+            return .{ .face = new_face, .glyph_index = g_idx };
+        }
+        return null;
+    }
+
     pub fn getOrLoadGlyph(self: *Font, cp: u32, size_px: u32) ?CachedGlyph {
         const key = (@as(u64, size_px) << 32) | @as(u64, cp);
         if (self.glyph_cache.get(key)) |g| {
@@ -153,29 +289,34 @@ pub const Font = struct {
 
         var face = self.face;
         var glyph_index = c.FT_Get_Char_Index(face, cp);
-        var is_fallback = false;
-        if (glyph_index == 0 and self.fallback_face != null) {
-            const fb_index = c.FT_Get_Char_Index(self.fallback_face.?, cp);
-            if (fb_index != 0) {
-                face = self.fallback_face.?;
-                glyph_index = fb_index;
-                is_fallback = true;
+
+        if (glyph_index == 0) {
+            for (self.fallback_faces.items) |fb| {
+                const fb_index = c.FT_Get_Char_Index(fb.face, cp);
+                if (fb_index != 0) {
+                    face = fb.face;
+                    glyph_index = fb_index;
+                    break;
+                }
+            }
+
+            if (glyph_index == 0 and !self.missing_glyphs.contains(cp)) {
+                if (self.loadFallbackForCodepoint(cp, size_px)) |matched| {
+                    face = matched.face;
+                    glyph_index = matched.glyph_index;
+                } else {
+                    self.missing_glyphs.put(cp, {}) catch {};
+                }
             }
         }
 
-        if (is_fallback) {
-            if (self.fallback_size_px != size_px) {
-                if (c.FT_Set_Pixel_Sizes(face, 0, size_px) != 0) {
-                    return null;
-                }
-                self.fallback_size_px = size_px;
-            }
-        } else {
-            if (self.primary_size_px != size_px) {
-                if (c.FT_Set_Pixel_Sizes(face, 0, size_px) != 0) {
-                    return null;
-                }
-                self.primary_size_px = size_px;
+        if (glyph_index == 0) {
+            return null;
+        }
+
+        if (face.*.size == null or @as(u32, face.*.size.*.metrics.y_ppem) != size_px) {
+            if (c.FT_Set_Pixel_Sizes(face, 0, size_px) != 0) {
+                return null;
             }
         }
 
@@ -1873,3 +2014,20 @@ pub const Renderer = struct {
         }
     }
 };
+
+test "Font fallback renders unicode ornament ❫ and symbols" {
+    const allocator = std.testing.allocator;
+    var font = try Font.init(allocator, "Maple Mono NF, monospace", 16);
+    defer font.deinit();
+
+    // 0x276B is ❫
+    const glyph_paren = font.getOrLoadGlyph(0x276b, 16);
+    try std.testing.expect(glyph_paren != null);
+    try std.testing.expect(glyph_paren.?.advance_x > 0);
+
+    // 0x23CE is ⏎
+    const glyph_enter = font.getOrLoadGlyph(0x23ce, 16);
+    try std.testing.expect(glyph_enter != null);
+    try std.testing.expect(glyph_enter.?.advance_x > 0);
+}
+
