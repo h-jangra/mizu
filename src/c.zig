@@ -10,6 +10,7 @@ pub const c = @cImport({
     @cInclude("viewporter-client-protocol.h");
     @cInclude("idle-inhibit-unstable-v1-client-protocol.h");
     @cInclude("security/pam_appl.h");
+    @cInclude("pwd.h");
     @cInclude("unistd.h");
     @cInclude("sys/stat.h");
     @cInclude("fcntl.h");
