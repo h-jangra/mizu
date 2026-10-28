@@ -1,9 +1,72 @@
 const std = @import("std");
 
+fn configureMizuModule(b: *std.Build, mod: *std.Build.Module) void {
+    mod.linkSystemLibrary("wayland-client", .{});
+    mod.linkSystemLibrary("wayland-cursor", .{});
+    mod.linkSystemLibrary("freetype", .{});
+    mod.linkSystemLibrary("fontconfig", .{});
+    mod.linkSystemLibrary("xkbcommon", .{});
+    mod.linkSystemLibrary("png16", .{});
+    mod.linkSystemLibrary("pam", .{});
+    mod.linkSystemLibrary("jpeg", .{});
+    mod.linkSystemLibrary("dbus-1", .{});
+
+    mod.addIncludePath(b.path("src"));
+    mod.addIncludePath(b.path("src/c"));
+    mod.addIncludePath(b.path("src/core"));
+    mod.addIncludePath(b.path("src/bar"));
+    mod.addIncludePath(b.path("src/panels"));
+    mod.addIncludePath(b.path("src/graphics"));
+    mod.addIncludePath(b.path("src/apps"));
+    mod.addIncludePath(b.path("src/services"));
+    mod.addIncludePath(b.path("src/protocols/wayland/generated"));
+    mod.addIncludePath(.{ .cwd_relative = "/usr/include/freetype2" });
+    mod.addIncludePath(.{ .cwd_relative = "/usr/include/dbus-1.0" });
+    mod.addIncludePath(.{ .cwd_relative = "/usr/lib64/dbus-1.0/include" });
+
+    mod.addCSourceFile(.{
+        .file = b.path("src/protocols/wayland/generated/xdg-shell-protocol.c"),
+    });
+    mod.addCSourceFile(.{
+        .file = b.path("src/protocols/wayland/generated/wlr-layer-shell-unstable-v1-protocol.c"),
+    });
+    mod.addCSourceFile(.{
+        .file = b.path("src/protocols/wayland/generated/ext-session-lock-v1-protocol.c"),
+    });
+    mod.addCSourceFile(.{
+        .file = b.path("src/protocols/wayland/generated/viewporter-protocol.c"),
+    });
+    mod.addCSourceFile(.{
+        .file = b.path("src/protocols/wayland/generated/idle-inhibit-unstable-v1-protocol.c"),
+    });
+    mod.addCSourceFile(.{
+        .file = b.path("src/c/notify_dbus.c"),
+    });
+    mod.addCSourceFile(.{
+        .file = b.path("src/c/tray_dbus.c"),
+    });
+    mod.addCSourceFile(.{
+        .file = b.path("src/c/mizu_dbus_monitor.c"),
+    });
+    mod.addCSourceFile(.{
+        .file = b.path("src/c/clay_impl.c"),
+        .flags = &.{ "-O2", "-std=c99" },
+    });
+    mod.addCSourceFile(.{
+        .file = b.path("src/core/nanosvg.c"),
+        .flags = &.{"-O2"},
+    });
+    mod.addCSourceFile(.{
+        .file = b.path("src/core/nanosvg_rasterizer.c"),
+        .flags = &.{"-O2"},
+    });
+}
+
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
+    // Main Mizu desktop shell executable
     const exe = b.addExecutable(.{
         .name = "mizu",
         .root_module = b.createModule(.{
@@ -13,67 +76,34 @@ pub fn build(b: *std.Build) void {
             .link_libc = true,
         }),
     });
-
-    exe.root_module.linkSystemLibrary("wayland-client", .{});
-    exe.root_module.linkSystemLibrary("wayland-cursor", .{});
-    exe.root_module.linkSystemLibrary("freetype", .{});
-    exe.root_module.linkSystemLibrary("fontconfig", .{});
-    exe.root_module.linkSystemLibrary("xkbcommon", .{});
-    exe.root_module.linkSystemLibrary("png16", .{});
-    exe.root_module.linkSystemLibrary("pam", .{});
-    exe.root_module.linkSystemLibrary("jpeg", .{});
-    exe.root_module.linkSystemLibrary("dbus-1", .{});
-
-    exe.root_module.addIncludePath(b.path("src"));
-    exe.root_module.addIncludePath(b.path("src/c"));
-    exe.root_module.addIncludePath(b.path("src/core"));
-    exe.root_module.addIncludePath(b.path("src/bar"));
-    exe.root_module.addIncludePath(b.path("src/panels"));
-    exe.root_module.addIncludePath(b.path("src/graphics"));
-    exe.root_module.addIncludePath(b.path("src/services"));
-    exe.root_module.addIncludePath(b.path("src/protocols/wayland/generated"));
-    exe.root_module.addIncludePath(.{ .cwd_relative = "/usr/include/freetype2" });
-    exe.root_module.addIncludePath(.{ .cwd_relative = "/usr/include/dbus-1.0" });
-    exe.root_module.addIncludePath(.{ .cwd_relative = "/usr/lib64/dbus-1.0/include" });
-
-    exe.root_module.addCSourceFile(.{
-        .file = b.path("src/protocols/wayland/generated/xdg-shell-protocol.c"),
-    });
-    exe.root_module.addCSourceFile(.{
-        .file = b.path("src/protocols/wayland/generated/wlr-layer-shell-unstable-v1-protocol.c"),
-    });
-    exe.root_module.addCSourceFile(.{
-        .file = b.path("src/protocols/wayland/generated/ext-session-lock-v1-protocol.c"),
-    });
-    exe.root_module.addCSourceFile(.{
-        .file = b.path("src/protocols/wayland/generated/viewporter-protocol.c"),
-    });
-    exe.root_module.addCSourceFile(.{
-        .file = b.path("src/protocols/wayland/generated/idle-inhibit-unstable-v1-protocol.c"),
-    });
-    exe.root_module.addCSourceFile(.{
-        .file = b.path("src/c/notify_dbus.c"),
-    });
-    exe.root_module.addCSourceFile(.{
-        .file = b.path("src/c/tray_dbus.c"),
-    });
-    exe.root_module.addCSourceFile(.{
-        .file = b.path("src/c/mizu_dbus_monitor.c"),
-    });
-    exe.root_module.addCSourceFile(.{
-        .file = b.path("src/c/clay_impl.c"),
-        .flags = &.{ "-O2", "-std=c99" },
-    });
-    exe.root_module.addCSourceFile(.{
-        .file = b.path("src/core/nanosvg.c"),
-        .flags = &.{"-O2"},
-    });
-    exe.root_module.addCSourceFile(.{
-        .file = b.path("src/core/nanosvg_rasterizer.c"),
-        .flags = &.{"-O2"},
-    });
-
+    configureMizuModule(b, exe.root_module);
     b.installArtifact(exe);
+
+    // Standalone Mizu Annotate executable
+    const exe_annotate = b.addExecutable(.{
+        .name = "mizu-annotate",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/annotate_main.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        }),
+    });
+    configureMizuModule(b, exe_annotate.root_module);
+    b.installArtifact(exe_annotate);
+
+    // Standalone Mizu Image executable
+    const exe_image = b.addExecutable(.{
+        .name = "mizu-image",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/image_main.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        }),
+    });
+    configureMizuModule(b, exe_image.root_module);
+    b.installArtifact(exe_image);
 
     const run_cmd = b.addRunArtifact(exe);
     run_cmd.step.dependOn(b.getInstallStep());

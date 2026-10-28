@@ -12,6 +12,7 @@ const notification_module = @import("notifications.zig");
 const recorder = @import("../bar/recorder.zig");
 const icons = @import("../graphics/icons.zig");
 const ui_mod = @import("../core/ui.zig");
+const keymap_module = @import("../services/keymap.zig");
 
 /// Layout tokens for Quick Settings panels (logical pixels).
 pub const QsLayout = struct {
@@ -53,6 +54,10 @@ pub const Action = union(enum) {
     open_power_menu,
     open_clipboard,
     cycle_theme,
+    open_keymap_menu,
+    toggle_keymap,
+    set_keymap_size: u32,
+    set_keymap_pos: config.KeymapPosition,
     open_session_power_menu,
     open_notifications_menu,
     open_recording_menu,
@@ -142,6 +147,7 @@ pub const ViewMode = enum {
     recording_menu,
     display_menu,
     power_menu,
+    keymap_menu,
 };
 
 pub const WifiItem = struct {
@@ -380,6 +386,7 @@ pub const QuickSettings = struct {
             .notifications_menu => 460,
             .recording_menu => 420,
             .power_menu => 360,
+            .keymap_menu => 360,
         };
     }
 
@@ -387,7 +394,7 @@ pub const QuickSettings = struct {
         return switch (self.view_mode) {
             .wifi_menu, .bluetooth_menu => 7,
             .audio_menu, .notifications_menu, .display_menu => 6,
-            .recording_menu, .power_menu => 3,
+            .recording_menu, .power_menu, .keymap_menu => 3,
             .main => 0,
         };
     }
@@ -632,6 +639,7 @@ pub const QuickSettings = struct {
             .recording_menu => 3,
             .display_menu => 0,
             .power_menu => 3,
+            .keymap_menu => 0,
             .main => 0,
         };
         const max_visible = self.maxVisibleRows();
@@ -854,7 +862,7 @@ pub const QuickSettings = struct {
                             .notifications_menu => {
                                 if (self.notif_store) |*ns| ns.loadHistory();
                             },
-                            .display_menu, .power_menu, .main => {},
+                            .display_menu, .power_menu, .keymap_menu, .main => {},
                         }
                         return true;
                     },
@@ -1135,6 +1143,27 @@ pub const QuickSettings = struct {
                         const next_th = self.cfg.theme.kind.next();
                         self.cfg.theme = next_th.toTheme();
                         theme.saveCurrentTheme(next_th);
+                        return true;
+                    },
+                    .open_keymap_menu => {
+                        self.view_mode = .keymap_menu;
+                        self.scroll_offset = 0;
+                        return true;
+                    },
+                    .toggle_keymap => {
+                        sys_status.spawnCmd("mizu keyoverlay 2>/dev/null || true");
+                        return true;
+                    },
+                    .set_keymap_size => |sz| {
+                        self.cfg.typography.keymap_text = sz;
+                        config.saveKeymapSize(sz);
+                        sys_status.spawnCmd("pkill -USR1 -f 'mizu keyoverlay' 2>/dev/null || pkill -USR1 mizu 2>/dev/null || true");
+                        return true;
+                    },
+                    .set_keymap_pos => |pos| {
+                        self.cfg.keymap_position = pos;
+                        config.saveKeymapPosition(pos);
+                        sys_status.spawnCmd("pkill -USR1 -f 'mizu keyoverlay' 2>/dev/null || pkill -USR1 mizu 2>/dev/null || true");
                         return true;
                     },
                     .open_session_power_menu => {
@@ -2721,17 +2750,18 @@ pub const QuickSettings = struct {
         try self.renderExpandableCard(ui, 3, power_icon, power_icon, "Power Mode", prof_sub, (self.sys.power_profile != .balanced), icon_sz, ui_sz, sec_sz, scale);
         ui.close();
 
-        // Row 3: Caffeine, Clipboard, Theme, DND.
+        // Row 3: Caffeine, Clipboard, Keymaps, DND.
         _ = ui.open(.{
             .width = .{ .grow = .{} },
             .height = .{ .fixed = ui.s(QsLayout.row3_h) },
             .direction = .row,
             .gap = ui.su(QsLayout.section_gap),
         });
+        const keymap_active = keymap_module.isKeymapsActive();
         const row3_items = [_]struct { icon: []const u8, active: bool }{
             .{ .icon = "caffeine", .active = self.caffeine_enabled },
             .{ .icon = "clipboard", .active = false },
-            .{ .icon = "palette", .active = false },
+            .{ .icon = "keyboard", .active = keymap_active },
             .{ .icon = if (self.dnd_enabled) "bell-off" else "bell", .active = self.dnd_enabled },
         };
         for (row3_items, 0..) |it, idx| {
@@ -3221,6 +3251,7 @@ pub const QuickSettings = struct {
             .recording_menu => "Recording Options",
             .display_menu => "Display Settings",
             .power_menu => "Power Mode",
+            .keymap_menu => "Keymaps",
             .main => "",
         };
 
@@ -3251,8 +3282,13 @@ pub const QuickSettings = struct {
         ui.text(title, .{ .size = head_sz, .color = self.cfg.theme.text_bright });
         ui.spacerSized(.{ .grow = .{} }, .{ .fixed = 0 });
 
-        if (self.view_mode == .wifi_menu or self.view_mode == .bluetooth_menu) {
-            const is_on = if (self.view_mode == .wifi_menu) self.sys.wifi_enabled else self.sys.bluetooth_enabled;
+        if (self.view_mode == .wifi_menu or self.view_mode == .bluetooth_menu or self.view_mode == .keymap_menu) {
+            const is_on = switch (self.view_mode) {
+                .wifi_menu => self.sys.wifi_enabled,
+                .bluetooth_menu => self.sys.bluetooth_enabled,
+                .keymap_menu => keymap_module.isKeymapsActive(),
+                else => false,
+            };
             _ = ui.open(.{
                 .id = "qs-header-toggle",
                 .width = .{ .fixed = ui.s(46) },
@@ -3284,7 +3320,7 @@ pub const QuickSettings = struct {
             });
             ui.icon("close", icon_sz, if (hov) self.cfg.theme.error_color else self.cfg.theme.text_bright, 0);
             ui.close();
-        } else if (self.view_mode != .power_menu and self.view_mode != .recording_menu and self.view_mode != .display_menu) {
+        } else if (self.view_mode != .power_menu and self.view_mode != .recording_menu and self.view_mode != .display_menu and self.view_mode != .keymap_menu) {
             const hov = ui.hovered("qs-refresh", 0);
             const is_scanning_submenu = self.is_scanning and (self.view_mode == .wifi_menu or self.view_mode == .bluetooth_menu or self.view_mode == .audio_menu);
             _ = ui.open(.{
@@ -4415,6 +4451,115 @@ pub const QuickSettings = struct {
                 });
                 ui.close();
             },
+            .keymap_menu => {
+                // Section 1: Key & Icon Size
+                _ = ui.open(.{
+                    .width = .{ .grow = .{} },
+                    .direction = .column,
+                    .gap = ui.su(8),
+                });
+                ui.text("Keycard & Icon Size", .{ .size = sub_sz, .color = self.cfg.theme.text_bright });
+                _ = ui.open(.{
+                    .width = .{ .grow = .{} },
+                    .height = .{ .fixed = ui.s(38) },
+                    .direction = .row,
+                    .gap = ui.su(8),
+                });
+                const key_sizes = [_]struct { size: u32, label: []const u8 }{
+                    .{ .size = 18, .label = "Small" },
+                    .{ .size = 24, .label = "Medium" },
+                    .{ .size = 32, .label = "Large" },
+                    .{ .size = 40, .label = "X-Large" },
+                };
+                inline for (key_sizes, 0..) |ks, s_idx| {
+                    const sel = (self.cfg.typography.keymap_text == ks.size);
+                    const hov = ui.hovered("qs-km-size", s_idx);
+                    _ = ui.open(.{
+                        .id = "qs-km-size",
+                        .index = s_idx,
+                        .width = .{ .grow = .{} },
+                        .height = .{ .grow = .{} },
+                        .bg = if (sel) self.cfg.theme.elevated else if (hov) self.cfg.theme.card_hover_bg else self.cfg.theme.card_bg,
+                        .radius = ui.f(10),
+                        .border = ui.su(1),
+                        .border_color = if (sel) self.cfg.theme.accent else if (hov) self.cfg.theme.border_focused else self.cfg.theme.border,
+                        .align_x = .center,
+                        .align_y = .center,
+                    });
+                    ui.text(ks.label, .{
+                        .size = btn_sz,
+                        .color = if (sel) self.cfg.theme.accent else self.cfg.theme.text_bright,
+                    });
+                    ui.close();
+                }
+                ui.close(); // row
+                ui.close(); // section 1
+
+                // Section 2: Placement (9 Places in 3x3 Grid)
+                _ = ui.open(.{
+                    .width = .{ .grow = .{} },
+                    .direction = .column,
+                    .gap = ui.su(8),
+                });
+                ui.text("Placement (9 Positions)", .{ .size = sub_sz, .color = self.cfg.theme.text_bright });
+                _ = ui.open(.{
+                    .width = .{ .grow = .{} },
+                    .direction = .column,
+                    .gap = ui.su(6),
+                });
+
+                const pos_grid = [_][3]struct { pos: config.KeymapPosition, label: []const u8 }{
+                    .{
+                        .{ .pos = .top_left, .label = "Top Left" },
+                        .{ .pos = .top_center, .label = "Top Center" },
+                        .{ .pos = .top_right, .label = "Top Right" },
+                    },
+                    .{
+                        .{ .pos = .center_left, .label = "Left" },
+                        .{ .pos = .center, .label = "Center" },
+                        .{ .pos = .center_right, .label = "Right" },
+                    },
+                    .{
+                        .{ .pos = .bottom_left, .label = "Bottom Left" },
+                        .{ .pos = .bottom_center, .label = "Bottom Center" },
+                        .{ .pos = .bottom_right, .label = "Bottom Right" },
+                    },
+                };
+
+                inline for (pos_grid, 0..) |row, row_idx| {
+                    _ = ui.open(.{
+                        .width = .{ .grow = .{} },
+                        .height = .{ .fixed = ui.s(36) },
+                        .direction = .row,
+                        .gap = ui.su(6),
+                    });
+                    inline for (row, 0..) |cell, col_idx| {
+                        const cell_idx = row_idx * 3 + col_idx;
+                        const sel = (self.cfg.keymap_position == cell.pos);
+                        const hov = ui.hovered("qs-km-pos", cell_idx);
+                        _ = ui.open(.{
+                            .id = "qs-km-pos",
+                            .index = cell_idx,
+                            .width = .{ .grow = .{} },
+                            .height = .{ .grow = .{} },
+                            .bg = if (sel) self.cfg.theme.elevated else if (hov) self.cfg.theme.card_hover_bg else self.cfg.theme.card_bg,
+                            .radius = ui.f(8),
+                            .border = ui.su(1),
+                            .border_color = if (sel) self.cfg.theme.accent else if (hov) self.cfg.theme.border_focused else self.cfg.theme.border,
+                            .align_x = .center,
+                            .align_y = .center,
+                        });
+                        ui.text(cell.label, .{
+                            .size = sec_sz,
+                            .color = if (sel) self.cfg.theme.accent else self.cfg.theme.text_bright,
+                        });
+                        ui.close();
+                    }
+                    ui.close();
+                }
+                ui.close(); // grid column
+                ui.close(); // section 3
+            },
             .main => {},
         }
 
@@ -4452,7 +4597,7 @@ pub const QuickSettings = struct {
             // Row 3 buttons
             if (ui.rectOf("qs-row3-btn", 0)) |rect| try self.appendRect(rect, scale, .toggle_caffeine);
             if (ui.rectOf("qs-row3-btn", 1)) |rect| try self.appendRect(rect, scale, .open_clipboard);
-            if (ui.rectOf("qs-row3-btn", 2)) |rect| try self.appendRect(rect, scale, .cycle_theme);
+            if (ui.rectOf("qs-row3-btn", 2)) |rect| try self.appendRect(rect, scale, .open_keymap_menu);
             if (ui.rectOf("qs-row3-btn", 3)) |rect| try self.appendRect(rect, scale, .toggle_dnd);
 
             // Sliders
@@ -4476,11 +4621,17 @@ pub const QuickSettings = struct {
         if (ui.rectOf("qs-back", 0)) |rect| try self.appendRect(rect, scale, .back_to_main);
         if (self.view_mode == .notifications_menu) {
             if (ui.rectOf("qs-clear-notifs", 0)) |rect| try self.appendRect(rect, scale, .clear_notifications);
-        } else if (self.view_mode != .power_menu and self.view_mode != .recording_menu and self.view_mode != .display_menu) {
+        } else if (self.view_mode != .power_menu and self.view_mode != .recording_menu and self.view_mode != .display_menu and self.view_mode != .keymap_menu) {
             if (ui.rectOf("qs-refresh", 0)) |rect| try self.appendRect(rect, scale, .refresh_sub_menu);
         }
         if (ui.rectOf("qs-header-toggle", 0)) |rect| {
-            try self.appendRect(rect, scale, if (self.view_mode == .wifi_menu) .toggle_wifi else .toggle_bluetooth);
+            const action: Action = switch (self.view_mode) {
+                .wifi_menu => .toggle_wifi,
+                .bluetooth_menu => .toggle_bluetooth,
+                .keymap_menu => .toggle_keymap,
+                else => .toggle_wifi,
+            };
+            try self.appendRect(rect, scale, action);
         }
 
         const max_visible = self.maxVisibleRows();
@@ -4578,6 +4729,24 @@ pub const QuickSettings = struct {
                 while (actual_idx < end_idx) : (actual_idx += 1) {
                     if (ui.rectOf("qs-notif-dismiss", @intCast(actual_idx))) |rect| {
                         try self.appendRect(rect, scale, .{ .dismiss_notification = actual_idx });
+                    }
+                }
+            },
+            .keymap_menu => {
+                const key_sizes = [_]u32{ 18, 24, 32, 40 };
+                inline for (key_sizes, 0..) |ks, s_idx| {
+                    if (ui.rectOf("qs-km-size", s_idx)) |rect| {
+                        try self.appendRect(rect, scale, .{ .set_keymap_size = ks });
+                    }
+                }
+                const positions = [_]config.KeymapPosition{
+                    .top_left,    .top_center,    .top_right,
+                    .center_left, .center,        .center_right,
+                    .bottom_left, .bottom_center, .bottom_right,
+                };
+                inline for (positions, 0..) |pos, p_idx| {
+                    if (ui.rectOf("qs-km-pos", p_idx)) |rect| {
+                        try self.appendRect(rect, scale, .{ .set_keymap_pos = pos });
                     }
                 }
             },
@@ -5812,4 +5981,50 @@ test "QuickSettings footer battery, uptime, and session actions" {
     try qs.hit_areas.append(allocator, .{ .x = 10, .y = 10, .w = 34, .h = 34, .action = .open_session_power_menu });
     try std.testing.expect(qs.handlePointerButton(20, 20, 272, true));
     try std.testing.expect(!qs.running);
+}
+
+test "QuickSettings keymap submenu navigation and settings" {
+    const allocator = std.testing.allocator;
+    var cfg = config.Config.init(allocator);
+    defer cfg.deinit(allocator);
+
+    var qs = QuickSettings{
+        .allocator = allocator,
+        .cfg = cfg,
+        .font = undefined,
+        .sys = sys_status.SysStatus.init(allocator),
+        .hit_areas = std.ArrayList(HitArea).empty,
+        .wifi_items = std.ArrayList(WifiItem).empty,
+        .bt_items = std.ArrayList(BluetoothItem).empty,
+    };
+    defer {
+        qs.hit_areas.deinit(allocator);
+        qs.wifi_items.deinit(allocator);
+        qs.bt_items.deinit(allocator);
+        qs.sys.deinit();
+    }
+
+    // Open keymap menu
+    try qs.hit_areas.append(allocator, .{ .x = 10, .y = 10, .w = 50, .h = 50, .action = .open_keymap_menu });
+    try std.testing.expect(qs.handlePointerButton(20, 20, 272, true));
+    try std.testing.expectEqual(ViewMode.keymap_menu, qs.view_mode);
+    try std.testing.expectEqual(@as(u32, 360), qs.getDesiredHeight());
+
+    // Change keymap size
+    qs.hit_areas.clearRetainingCapacity();
+    try qs.hit_areas.append(allocator, .{ .x = 10, .y = 10, .w = 50, .h = 30, .action = .{ .set_keymap_size = 32 } });
+    try std.testing.expect(qs.handlePointerButton(20, 20, 272, true));
+    try std.testing.expectEqual(@as(u32, 32), qs.cfg.typography.keymap_text);
+
+    // Change keymap position
+    qs.hit_areas.clearRetainingCapacity();
+    try qs.hit_areas.append(allocator, .{ .x = 10, .y = 10, .w = 50, .h = 30, .action = .{ .set_keymap_pos = .top_right } });
+    try std.testing.expect(qs.handlePointerButton(20, 20, 272, true));
+    try std.testing.expectEqual(config.KeymapPosition.top_right, qs.cfg.keymap_position);
+
+    // Navigate back to main
+    qs.hit_areas.clearRetainingCapacity();
+    try qs.hit_areas.append(allocator, .{ .x = 10, .y = 10, .w = 34, .h = 34, .action = .back_to_main });
+    try std.testing.expect(qs.handlePointerButton(20, 20, 272, true));
+    try std.testing.expectEqual(ViewMode.main, qs.view_mode);
 }

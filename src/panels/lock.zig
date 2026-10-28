@@ -849,6 +849,7 @@ fn loadActiveWallpaper(allocator: std.mem.Allocator, cfg: config.Config) ?*Image
     const home_str = std.mem.span(home);
 
     const cache_paths = [_][]const u8{
+        "/.cache/mizu/wallpaper",
         "/.cache/wm/current_wallpaper",
         "/.cache/current_wallpaper",
     };

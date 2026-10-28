@@ -496,15 +496,7 @@ pub const Image = struct {
         self.deinit();
     }
 
-    pub fn loadPng(allocator: std.mem.Allocator, path: []const u8) !?*Image {
-        var path_z: [512]u8 = undefined;
-        if (path.len >= path_z.len) return null;
-        @memcpy(path_z[0..path.len], path);
-        path_z[path.len] = 0;
-
-        const fp = c.fopen(path_z[0..path.len :0].ptr, "rb") orelse return null;
-        defer _ = c.fclose(fp);
-
+    pub fn loadPngFromFp(allocator: std.mem.Allocator, fp: *c.FILE) !?*Image {
         var header: [8]u8 = undefined;
         if (c.fread(&header, 1, 8, fp) != 8) return null;
         if (c.png_sig_cmp(&header, 0, 8) != 0) return null;
@@ -572,7 +564,7 @@ pub const Image = struct {
         return img;
     }
 
-    pub fn loadJpeg(allocator: std.mem.Allocator, path: []const u8) !?*Image {
+    pub fn loadPng(allocator: std.mem.Allocator, path: []const u8) !?*Image {
         var path_z: [512]u8 = undefined;
         if (path.len >= path_z.len) return null;
         @memcpy(path_z[0..path.len], path);
@@ -581,6 +573,10 @@ pub const Image = struct {
         const fp = c.fopen(path_z[0..path.len :0].ptr, "rb") orelse return null;
         defer _ = c.fclose(fp);
 
+        return loadPngFromFp(allocator, fp);
+    }
+
+    pub fn loadJpegFromFp(allocator: std.mem.Allocator, fp: *c.FILE) !?*Image {
         var cinfo: c.struct_jpeg_decompress_struct = undefined;
         var jerr: c.struct_jpeg_error_mgr = undefined;
         cinfo.err = c.jpeg_std_error(&jerr);
@@ -629,6 +625,29 @@ pub const Image = struct {
             .allocator = allocator,
         };
         return img;
+    }
+
+    pub fn loadJpeg(allocator: std.mem.Allocator, path: []const u8) !?*Image {
+        var path_z: [512]u8 = undefined;
+        if (path.len >= path_z.len) return null;
+        @memcpy(path_z[0..path.len], path);
+        path_z[path.len] = 0;
+
+        const fp = c.fopen(path_z[0..path.len :0].ptr, "rb") orelse return null;
+        defer _ = c.fclose(fp);
+
+        return loadJpegFromFp(allocator, fp);
+    }
+
+    pub fn loadMemory(allocator: std.mem.Allocator, data: []const u8) !?*Image {
+        if (data.len >= 8 and std.mem.startsWith(u8, data, "\x89PNG\r\n\x1a\n")) {
+            return loadPngFromMemory(allocator, data);
+        }
+        if (data.len >= 3 and std.mem.startsWith(u8, data, "\xFF\xD8\xFF")) {
+            return loadJpegFromMemory(allocator, data);
+        }
+        if (try loadPngFromMemory(allocator, data)) |img| return img;
+        return loadJpegFromMemory(allocator, data);
     }
 
     pub fn loadFile(allocator: std.mem.Allocator, path: []const u8) !?*Image {
@@ -1735,6 +1754,62 @@ pub const Renderer = struct {
                 }
             }
         }
+    }
+
+    pub fn drawStrokeLine(self: Renderer, x0: i32, y0: i32, x1: i32, y1: i32, stroke_width: u32, col: Color) void {
+        const radius: f64 = @floatFromInt(@max(1, stroke_width / 2));
+        const dx: i32 = @intCast(@abs(x1 - x0));
+        const dy: i32 = @intCast(@abs(y1 - y0));
+        const steps = @max(dx, dy);
+
+        if (steps == 0) {
+            self.fillCircle(@floatFromInt(x0), @floatFromInt(y0), radius, col);
+            return;
+        }
+
+        const step_f: f32 = @floatFromInt(steps);
+        const x_inc = @as(f32, @floatFromInt(x1 - x0)) / step_f;
+        const y_inc = @as(f32, @floatFromInt(y1 - y0)) / step_f;
+
+        var curr_x: f32 = @floatFromInt(x0);
+        var curr_y: f32 = @floatFromInt(y0);
+
+        var i: i32 = 0;
+        while (i <= steps) : (i += 1) {
+            self.fillCircle(@floatCast(curr_x), @floatCast(curr_y), radius, col);
+            curr_x += x_inc;
+            curr_y += y_inc;
+        }
+    }
+
+    pub fn drawArrow(self: Renderer, x0: i32, y0: i32, x1: i32, y1: i32, stroke_width: u32, col: Color) void {
+        self.drawStrokeLine(x0, y0, x1, y1, stroke_width, col);
+
+        const dx = @as(f32, @floatFromInt(x1 - x0));
+        const dy = @as(f32, @floatFromInt(y1 - y0));
+        const len = std.math.sqrt(dx * dx + dy * dy);
+        if (len < 4.0) return;
+
+        const ux = dx / len;
+        const uy = dy / len;
+
+        const head_len = @max(14.0, @as(f32, @floatFromInt(stroke_width)) * 3.5);
+        const head_width = head_len * 0.55;
+
+        const bx = @as(f32, @floatFromInt(x1)) - ux * head_len;
+        const by = @as(f32, @floatFromInt(y1)) - uy * head_len;
+
+        const nx = -uy;
+        const ny = ux;
+
+        const left_x: i32 = @intFromFloat(bx + nx * head_width);
+        const left_y: i32 = @intFromFloat(by + ny * head_width);
+        const right_x: i32 = @intFromFloat(bx - nx * head_width);
+        const right_y: i32 = @intFromFloat(by - ny * head_width);
+
+        self.drawStrokeLine(x1, y1, left_x, left_y, stroke_width, col);
+        self.drawStrokeLine(x1, y1, right_x, right_y, stroke_width, col);
+        self.drawStrokeLine(left_x, left_y, right_x, right_y, stroke_width, col);
     }
 
     pub fn drawText(self: Renderer, font: *Font, text: []const u8, x: i32, baseline_y: i32, color: Color) void {

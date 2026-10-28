@@ -18,6 +18,9 @@ const power_module = @import("panels/powermenu.zig");
 const notification_module = @import("panels/notifications.zig");
 const exec = @import("core/exec.zig");
 const caffeine_module = @import("services/caffeine.zig");
+const annotate_module = @import("apps/annotate.zig");
+const image_viewer_module = @import("apps/image_viewer.zig");
+const wallpaper_module = @import("wallpaper.zig");
 
 test {
     _ = @import("services/desktop_entries.zig");
@@ -40,6 +43,11 @@ test {
     _ = @import("panels/powermenu.zig");
     _ = @import("panels/notifications.zig");
     _ = @import("services/caffeine.zig");
+    _ = @import("graphics/image_ops.zig");
+    _ = @import("core/wayland_window.zig");
+    _ = @import("apps/annotate.zig");
+    _ = @import("apps/image_viewer.zig");
+    _ = @import("wallpaper.zig");
 }
 
 pub const VERSION = "0.1.0";
@@ -164,6 +172,9 @@ const Command = enum {
     power,
     session,
     caffeine,
+    annotate,
+    image,
+    wallpaper,
     list,
     help,
     version,
@@ -180,6 +191,10 @@ fn parseCommand(arg: []const u8) ?Command {
         return .session;
     } else if (std.mem.eql(u8, arg, "caffeine")) {
         return .caffeine;
+    } else if (std.mem.eql(u8, arg, "annotate") or std.mem.eql(u8, arg, "image") or std.mem.eql(u8, arg, "shot") or std.mem.eql(u8, arg, "draw") or std.mem.eql(u8, arg, "view") or std.mem.eql(u8, arg, "img")) {
+        return .annotate;
+    } else if (std.mem.eql(u8, arg, "wallpaper") or std.mem.eql(u8, arg, "wall") or std.mem.eql(u8, arg, "bg")) {
+        return .wallpaper;
     } else if (std.mem.eql(u8, arg, "launcher") or std.mem.eql(u8, arg, "-l") or std.mem.eql(u8, arg, "--launcher")) {
         return .launcher;
     } else if (std.mem.eql(u8, arg, "quicksettings") or std.mem.eql(u8, arg, "qs") or std.mem.eql(u8, arg, "panel") or std.mem.eql(u8, arg, "-q") or std.mem.eql(u8, arg, "--quicksettings")) {
@@ -224,6 +239,8 @@ fn printUsage() void {
         \\  system-monitor  Open the live system & process monitor (aliases: sysmon, memory-monitor, memmon)
         \\  calendar        Open interactive month/year calendar (aliases: cal, -c)
         \\  clipboard       Open clipboard history search & manager (aliases: clip)
+        \\  annotate        Open unified image annotator & editor (aliases: image, shot, draw, view, img)
+        \\  wallpaper       Set or switch wallpapers (mizu wallpaper [switch|set <path>])
         \\  notify          Show a desktop notification popup (mizu notify <title> [body])
         \\  theme           Switch or inspect themes (mizu theme [next|prev|set <name>|list])
         \\  keyoverlay      Show on-screen key combination overlay (aliases: keymap, keys)
@@ -468,6 +485,51 @@ pub fn main(init: std.process.Init.Minimal) u8 {
         },
         .caffeine => {
             return caffeine_module.run();
+        },
+        .annotate, .image => {
+            const allocator = std.heap.c_allocator;
+            var cfg = loadConfig(allocator);
+            defer cfg.deinit(allocator);
+
+            var screenshot_mode = false;
+            var file_to_open: ?[]const u8 = null;
+
+            while (arg_it.next()) |arg| {
+                if (std.mem.eql(u8, arg, "-s") or std.mem.eql(u8, arg, "--screenshot")) {
+                    screenshot_mode = true;
+                } else if (std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "--help")) {
+                    std.debug.print("Usage: mizu annotate [-s|--screenshot] [image_file|-]\n", .{});
+                    return 0;
+                } else if (std.mem.eql(u8, arg, "-")) {
+                    file_to_open = "-";
+                } else if (!std.mem.startsWith(u8, arg, "-")) {
+                    file_to_open = arg;
+                }
+            }
+
+            const ret = annotate_module.run(allocator, cfg, file_to_open, screenshot_mode) catch |err| {
+                std.debug.print("mizu annotate error: {any}\n", .{err});
+                return 1;
+            };
+            return ret;
+        },
+        .wallpaper => {
+            const allocator = std.heap.c_allocator;
+            const subcmd = arg_it.next();
+            if (subcmd == null or std.mem.eql(u8, subcmd.?, "switch")) {
+                return wallpaper_module.runSwitcher(allocator);
+            } else if (std.mem.eql(u8, subcmd.?, "set")) {
+                const path_arg = arg_it.next();
+                return wallpaper_module.runSetter(allocator, path_arg);
+            } else if (std.mem.eql(u8, subcmd.?, "daemon")) {
+                const path_arg = arg_it.next();
+                return wallpaper_module.runDaemon(allocator, path_arg);
+            } else if (std.mem.eql(u8, subcmd.?, "-h") or std.mem.eql(u8, subcmd.?, "--help") or std.mem.eql(u8, subcmd.?, "help")) {
+                wallpaper_module.printUsage();
+                return 0;
+            } else {
+                return wallpaper_module.runSetter(allocator, subcmd.?);
+            }
         },
         .version => {
             printVersion();
@@ -781,6 +843,11 @@ fn runBar(allocator: std.mem.Allocator, cfg: config.Config) !void {
         _ = c.fclose(f);
     }
     defer _ = c.unlink("/tmp/mizu-bar.pid");
+
+    // Automatically start the wallpaper daemon with mizu if not running
+    if (!wallpaper_module.isDaemonRunning()) {
+        _ = wallpaper_module.runSetter(allocator, null);
+    }
 
     var ipc = mango_ipc.MangoIpc.init();
     defer ipc.deinit();
@@ -1868,6 +1935,7 @@ fn runKeyOverlay(allocator: std.mem.Allocator, cfg: config.Config) !void {
             var fdsi: c.struct_signalfd_siginfo = undefined;
             _ = c.read(sig_fd, &fdsi, @sizeOf(c.struct_signalfd_siginfo));
             if (key_overlay.tick()) {
+                app.updateKeyOverlayPosition(key_overlay.cfg.keymap_position, key_overlay.width, key_overlay.height);
                 app.needs_redraw = true;
             }
         }

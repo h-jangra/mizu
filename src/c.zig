@@ -27,6 +27,7 @@ pub const c = @cImport({
     @cInclude("time.h");
     @cInclude("stdio.h");
     @cInclude("stdlib.h");
+    @cInclude("malloc.h");
     @cInclude("ft2build.h");
     @cInclude("freetype/freetype.h");
     @cInclude("fontconfig/fontconfig.h");

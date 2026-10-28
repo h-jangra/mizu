@@ -1,5 +1,6 @@
 const std = @import("std");
 const theme = @import("theme.zig");
+const c = @import("../c.zig").c;
 
 pub const CustomButton = struct {
     label: []const u8,
@@ -31,6 +32,9 @@ pub const KeymapPosition = enum {
     top_left,
     top_center,
     top_right,
+    center_left,
+    center,
+    center_right,
     bottom_left,
     bottom_center,
     bottom_right,
@@ -40,12 +44,102 @@ pub const KeymapPosition = enum {
         if (std.mem.eql(u8, s, "top-left") or std.mem.eql(u8, s, "top_left") or std.mem.eql(u8, s, "top-left-center")) return .top_left;
         if (std.mem.eql(u8, s, "top-center") or std.mem.eql(u8, s, "top_center") or std.mem.eql(u8, s, "top") or std.mem.eql(u8, s, "center-top")) return .top_center;
         if (std.mem.eql(u8, s, "top-right") or std.mem.eql(u8, s, "top_right")) return .top_right;
+        if (std.mem.eql(u8, s, "center-left") or std.mem.eql(u8, s, "center_left") or std.mem.eql(u8, s, "left") or std.mem.eql(u8, s, "middle-left")) return .center_left;
+        if (std.mem.eql(u8, s, "center") or std.mem.eql(u8, s, "middle") or std.mem.eql(u8, s, "center-center")) return .center;
+        if (std.mem.eql(u8, s, "center-right") or std.mem.eql(u8, s, "center_right") or std.mem.eql(u8, s, "right") or std.mem.eql(u8, s, "middle-right")) return .center_right;
         if (std.mem.eql(u8, s, "bottom-left") or std.mem.eql(u8, s, "bottom_left")) return .bottom_left;
-        if (std.mem.eql(u8, s, "bottom-center") or std.mem.eql(u8, s, "bottom_center") or std.mem.eql(u8, s, "bottom") or std.mem.eql(u8, s, "center-bottom") or std.mem.eql(u8, s, "center")) return .bottom_center;
+        if (std.mem.eql(u8, s, "bottom-center") or std.mem.eql(u8, s, "bottom_center") or std.mem.eql(u8, s, "bottom") or std.mem.eql(u8, s, "center-bottom")) return .bottom_center;
         if (std.mem.eql(u8, s, "bottom-right") or std.mem.eql(u8, s, "bottom_right")) return .bottom_right;
         return null;
     }
+
+    pub fn toString(self: KeymapPosition) []const u8 {
+        return switch (self) {
+            .top_left => "top-left",
+            .top_center => "top-center",
+            .top_right => "top-right",
+            .center_left => "center-left",
+            .center => "center",
+            .center_right => "center-right",
+            .bottom_left => "bottom-left",
+            .bottom_center => "bottom-center",
+            .bottom_right => "bottom-right",
+        };
+    }
 };
+
+pub fn saveKeymapPosition(pos: KeymapPosition) void {
+    var dir_buf: [512]u8 = undefined;
+    var file_buf: [512]u8 = undefined;
+    const home_opt = c.getenv("HOME");
+    if (home_opt == null) return;
+    const home = std.mem.span(home_opt.?);
+
+    const dir_path = std.fmt.bufPrintZ(&dir_buf, "{s}/.cache/mizu", .{home}) catch return;
+    _ = c.mkdir(dir_path.ptr, 0o755);
+
+    const file_path = std.fmt.bufPrintZ(&file_buf, "{s}/.cache/mizu/keymap_position", .{home}) catch return;
+    const f = c.fopen(file_path.ptr, "wb") orelse return;
+    defer _ = c.fclose(f);
+
+    const s = pos.toString();
+    _ = c.fwrite(s.ptr, 1, s.len, f);
+    _ = c.fwrite("\n", 1, 1, f);
+}
+
+pub fn loadSavedKeymapPosition() ?KeymapPosition {
+    var file_buf: [512]u8 = undefined;
+    const home_opt = c.getenv("HOME");
+    if (home_opt == null) return null;
+    const home = std.mem.span(home_opt.?);
+
+    const file_path = std.fmt.bufPrintZ(&file_buf, "{s}/.cache/mizu/keymap_position", .{home}) catch return null;
+    const f = c.fopen(file_path.ptr, "rb") orelse return null;
+    defer _ = c.fclose(f);
+
+    var buf: [64]u8 = undefined;
+    const n = c.fread(&buf, 1, buf.len - 1, f);
+    if (n == 0) return null;
+    buf[n] = 0;
+    return KeymapPosition.fromString(buf[0..n]);
+}
+
+pub fn saveKeymapSize(size: u32) void {
+    var dir_buf: [512]u8 = undefined;
+    var file_buf: [512]u8 = undefined;
+    const home_opt = c.getenv("HOME");
+    if (home_opt == null) return;
+    const home = std.mem.span(home_opt.?);
+
+    const dir_path = std.fmt.bufPrintZ(&dir_buf, "{s}/.cache/mizu", .{home}) catch return;
+    _ = c.mkdir(dir_path.ptr, 0o755);
+
+    const file_path = std.fmt.bufPrintZ(&file_buf, "{s}/.cache/mizu/keymap_size", .{home}) catch return;
+    const f = c.fopen(file_path.ptr, "wb") orelse return;
+    defer _ = c.fclose(f);
+
+    var num_buf: [16]u8 = undefined;
+    const s = std.fmt.bufPrint(&num_buf, "{d}\n", .{size}) catch return;
+    _ = c.fwrite(s.ptr, 1, s.len, f);
+}
+
+pub fn loadSavedKeymapSize() ?u32 {
+    var file_buf: [512]u8 = undefined;
+    const home_opt = c.getenv("HOME");
+    if (home_opt == null) return null;
+    const home = std.mem.span(home_opt.?);
+
+    const file_path = std.fmt.bufPrintZ(&file_buf, "{s}/.cache/mizu/keymap_size", .{home}) catch return null;
+    const f = c.fopen(file_path.ptr, "rb") orelse return null;
+    defer _ = c.fclose(f);
+
+    var buf: [32]u8 = undefined;
+    const n = c.fread(&buf, 1, buf.len - 1, f);
+    if (n == 0) return null;
+    buf[n] = 0;
+    const s = std.mem.trim(u8, buf[0..n], " \t\r\n");
+    return std.fmt.parseInt(u32, s, 10) catch null;
+}
 
 fn parseFontSize(val: []const u8, fallback: u32) u32 {
     const size = std.fmt.parseInt(u32, val, 10) catch return fallback;
@@ -156,8 +250,22 @@ pub const Config = struct {
         else
             theme.nordTheme();
 
+        var keymap_pos = KeymapPosition.bottom_center;
+        if (loadSavedKeymapPosition()) |pos| {
+            keymap_pos = pos;
+        }
+
+        var typography = Typography{
+            .keymap_text = 24,
+        };
+        if (loadSavedKeymapSize()) |sz| {
+            typography.keymap_text = sz;
+        }
+
         return .{
             .theme = initial_theme,
+            .typography = typography,
+            .keymap_position = keymap_pos,
             .buttons = buttons,
             .panels = panels,
             .modules_left = modules_left,
@@ -467,6 +575,39 @@ test "Config saved theme precedence" {
     var cfg = Config.init(allocator);
     defer cfg.deinit(allocator);
     try std.testing.expectEqual(theme.ThemeKind.catppuccin, cfg.theme.kind);
+}
+
+test "KeymapPosition all 9 places string conversion and parsing" {
+    const positions = [_]KeymapPosition{
+        .top_left,
+        .top_center,
+        .top_right,
+        .center_left,
+        .center,
+        .center_right,
+        .bottom_left,
+        .bottom_center,
+        .bottom_right,
+    };
+
+    for (positions) |pos| {
+        const s = pos.toString();
+        const parsed = KeymapPosition.fromString(s);
+        try std.testing.expect(parsed != null);
+        try std.testing.expectEqual(pos, parsed.?);
+    }
+
+    try std.testing.expectEqual(KeymapPosition.center_left, KeymapPosition.fromString("left").?);
+    try std.testing.expectEqual(KeymapPosition.center_right, KeymapPosition.fromString("right").?);
+    try std.testing.expectEqual(KeymapPosition.center, KeymapPosition.fromString("middle").?);
+}
+
+test "save and load KeymapPosition and KeymapSize" {
+    saveKeymapPosition(.center);
+    try std.testing.expectEqual(KeymapPosition.center, loadSavedKeymapPosition().?);
+
+    saveKeymapSize(24);
+    try std.testing.expectEqual(@as(u32, 24), loadSavedKeymapSize().?);
 }
 
 test "Typography defaults and font size validation" {

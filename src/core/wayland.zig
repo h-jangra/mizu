@@ -645,6 +645,17 @@ pub const WaylandApp = struct {
                 margin_top = 48;
                 margin_right = 24;
             },
+            .center_left => {
+                anchor = c.ZWLR_LAYER_SURFACE_V1_ANCHOR_LEFT;
+                margin_left = 24;
+            },
+            .center => {
+                anchor = 0;
+            },
+            .center_right => {
+                anchor = c.ZWLR_LAYER_SURFACE_V1_ANCHOR_RIGHT;
+                margin_right = 24;
+            },
             .bottom_left => {
                 anchor = c.ZWLR_LAYER_SURFACE_V1_ANCHOR_BOTTOM | c.ZWLR_LAYER_SURFACE_V1_ANCHOR_LEFT;
                 margin_bottom = 48;
@@ -671,6 +682,65 @@ pub const WaylandApp = struct {
 
         c.wl_surface_commit(surf);
         _ = c.wl_display_roundtrip(self.display.?);
+    }
+
+    pub fn updateKeyOverlayPosition(self: *WaylandApp, pos: config.KeymapPosition, w: u32, h: u32) void {
+        const layer_surf = self.layer_surface orelse return;
+        self.cfg.keymap_position = pos;
+        self.width = w;
+        self.height = h;
+
+        var anchor: u32 = 0;
+        var margin_top: u32 = 0;
+        var margin_bottom: u32 = 0;
+        var margin_left: u32 = 0;
+        var margin_right: u32 = 0;
+        switch (pos) {
+            .top_left => {
+                anchor = c.ZWLR_LAYER_SURFACE_V1_ANCHOR_TOP | c.ZWLR_LAYER_SURFACE_V1_ANCHOR_LEFT;
+                margin_top = 48;
+                margin_left = 24;
+            },
+            .top_center => {
+                anchor = c.ZWLR_LAYER_SURFACE_V1_ANCHOR_TOP;
+                margin_top = 48;
+            },
+            .top_right => {
+                anchor = c.ZWLR_LAYER_SURFACE_V1_ANCHOR_TOP | c.ZWLR_LAYER_SURFACE_V1_ANCHOR_RIGHT;
+                margin_top = 48;
+                margin_right = 24;
+            },
+            .center_left => {
+                anchor = c.ZWLR_LAYER_SURFACE_V1_ANCHOR_LEFT;
+                margin_left = 24;
+            },
+            .center => {
+                anchor = 0;
+            },
+            .center_right => {
+                anchor = c.ZWLR_LAYER_SURFACE_V1_ANCHOR_RIGHT;
+                margin_right = 24;
+            },
+            .bottom_left => {
+                anchor = c.ZWLR_LAYER_SURFACE_V1_ANCHOR_BOTTOM | c.ZWLR_LAYER_SURFACE_V1_ANCHOR_LEFT;
+                margin_bottom = 48;
+                margin_left = 24;
+            },
+            .bottom_center => {
+                anchor = c.ZWLR_LAYER_SURFACE_V1_ANCHOR_BOTTOM;
+                margin_bottom = 48;
+            },
+            .bottom_right => {
+                anchor = c.ZWLR_LAYER_SURFACE_V1_ANCHOR_BOTTOM | c.ZWLR_LAYER_SURFACE_V1_ANCHOR_RIGHT;
+                margin_bottom = 48;
+                margin_right = 24;
+            },
+        }
+        c.zwlr_layer_surface_v1_set_anchor(layer_surf, anchor);
+        c.zwlr_layer_surface_v1_set_size(layer_surf, w, h);
+        c.zwlr_layer_surface_v1_set_margin(layer_surf, @intCast(margin_top), @intCast(margin_right), @intCast(margin_bottom), @intCast(margin_left));
+        if (self.surface) |s| c.wl_surface_commit(s);
+        self.updateViewport();
     }
 
     pub fn createPowerSurface(self: *WaylandApp, w: u32, h: u32) !void {
@@ -729,6 +799,14 @@ pub const WaylandApp = struct {
             if (desired_h != self.height and self.layer_surface != null and self.surface != null) {
                 self.height = desired_h;
                 c.zwlr_layer_surface_v1_set_size(self.layer_surface.?, self.width, desired_h);
+                c.wl_surface_commit(self.surface.?);
+                self.updateViewport();
+            }
+        } else if (self.keyoverlay) |ko| {
+            if ((ko.height != self.height or ko.width != self.width) and self.layer_surface != null and self.surface != null) {
+                self.width = ko.width;
+                self.height = ko.height;
+                c.zwlr_layer_surface_v1_set_size(self.layer_surface.?, ko.width, ko.height);
                 c.wl_surface_commit(self.surface.?);
                 self.updateViewport();
             }

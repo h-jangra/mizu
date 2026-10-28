@@ -1,25 +1,9 @@
 const std = @import("std");
 const types = @import("context.zig");
-const c = @import("../c.zig").c;
 const ui_mod = @import("../core/ui.zig");
+const keymap_module = @import("../services/keymap.zig");
 
-pub fn isKeymapsActive() bool {
-    const pid_path = "/tmp/mizu-keyoverlay.pid";
-    if (c.fopen(pid_path, "rb")) |f| {
-        defer _ = c.fclose(f);
-        var buf: [32]u8 = undefined;
-        const n = c.fread(&buf, 1, buf.len - 1, f);
-        if (n > 0) {
-            buf[n] = 0;
-            const pid_str = std.mem.trim(u8, buf[0..n], " \t\r\n");
-            const pid = std.fmt.parseInt(c_int, pid_str, 10) catch return false;
-            if (pid > 0 and c.kill(pid, 0) == 0) {
-                return true;
-            }
-        }
-    }
-    return false;
-}
+pub const isKeymapsActive = keymap_module.isKeymapsActive;
 
 pub fn render(ctx: *types.BarContext, ui: *ui_mod.Ui) !void {
     const is_active = isKeymapsActive();

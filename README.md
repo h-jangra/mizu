@@ -11,6 +11,7 @@ Mizu uses native Wayland protocols and Clay for layout, with a custom Zig render
 - **Quick Settings** — Wi-Fi, Bluetooth, volume, brightness, media controls, and system metrics.
 - **Lock Screen** — Native Wayland session locking with PAM authentication.
 - **Panels** — Calendar, clipboard, notifications, power menu, and system monitor.
+- **Image Suite** — `mizu-annotate` (screenshots, markup, blurring, pixelation) and `mizu-image` (viewer, cropper, rotator, filters).
 - **Customizable** — INI configuration, themes, buttons, and custom panels.
 - **Lightweight** — Native rendering, on-demand panels, and minimal idle CPU usage.
 
@@ -19,6 +20,7 @@ Mizu uses native Wayland protocols and Clay for layout, with a custom Zig render
 - [Overview](docs/src/overview.md)
 - [Getting Started](docs/src/getting-started.md)
 - [User Guide](docs/src/user-guide.md)
+- [Image Applications](docs/src/image-apps.md)
 - [Configuration](docs/src/configuration.md)
 
 ## Dependencies
@@ -50,6 +52,8 @@ Install to your local PATH:
 ```bash
 mkdir -p ~/.local/bin
 ln -sf "$(pwd)/zig-out/bin/mizu" ~/.local/bin/mizu
+ln -sf "$(pwd)/zig-out/bin/mizu-annotate" ~/.local/bin/mizu-annotate
+ln -sf "$(pwd)/zig-out/bin/mizu-image" ~/.local/bin/mizu-image
 ```
 
 ## Usage
@@ -62,6 +66,9 @@ mizu lock            Lock the session
 mizu power           Power menu
 mizu calendar        Calendar
 mizu clipboard       Clipboard manager
+mizu annotate        Image annotation & screenshot markup tool
+mizu image           Image viewer, editor & transformer
+mizu wallpaper       Wallpaper manager (switch thumbnails or set image)
 mizu notify          Desktop notification
 mizu theme list      List available themes
 mizu help            Show available commands
