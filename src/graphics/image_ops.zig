@@ -569,6 +569,40 @@ pub const ImageBuffer = struct {
         }
     }
 
+    /// Composite another image scaled to (dest_w, dest_h) at (dest_x, dest_y)
+    pub fn compositeScaled(self: *ImageBuffer, src: *const ImageBuffer, dest_x: i32, dest_y: i32, dest_w: u32, dest_h: u32) void {
+        if (dest_w == 0 or dest_h == 0 or src.width == 0 or src.height == 0) return;
+
+        const dw_f = @as(f32, @floatFromInt(dest_w));
+        const dh_f = @as(f32, @floatFromInt(dest_h));
+        const sw_f = @as(f32, @floatFromInt(src.width));
+        const sh_f = @as(f32, @floatFromInt(src.height));
+
+        const min_x = @max(0, dest_x);
+        const max_x = @min(@as(i32, @intCast(self.width)), dest_x + @as(i32, @intCast(dest_w)));
+        const min_y = @max(0, dest_y);
+        const max_y = @min(@as(i32, @intCast(self.height)), dest_y + @as(i32, @intCast(dest_h)));
+
+        if (min_x >= max_x or min_y >= max_y) return;
+
+        var y: i32 = min_y;
+        while (y < max_y) : (y += 1) {
+            const sy_f = (@as(f32, @floatFromInt(y - dest_y)) / dh_f) * sh_f;
+            const sy = std.math.clamp(@as(usize, @intFromFloat(sy_f)), 0, src.height - 1);
+            const src_row = sy * src.width;
+
+            var x: i32 = min_x;
+            while (x < max_x) : (x += 1) {
+                const sx_f = (@as(f32, @floatFromInt(x - dest_x)) / dw_f) * sw_f;
+                const sx = std.math.clamp(@as(usize, @intFromFloat(sx_f)), 0, src.width - 1);
+
+                const src_px = src.pixels[src_row + sx];
+                const col = Color.fromArgb(src_px);
+                self.blendPixel(x, y, col);
+            }
+        }
+    }
+
     // ==========================================
     // Drawing Primitives (Annotations)
     // ==========================================
@@ -799,13 +833,13 @@ pub const ImageBuffer = struct {
         if (orig_w <= 0.0 or orig_h <= 0.0) return null;
 
         // Smart vector scale: small icons upscale to ~1200px so they are sharp;
-        // huge SVGs clamp to 2560px to keep RAM minimal (< 25MB)
+        // huge SVGs clamp to 2048px to keep RAM minimal (< 20MB)
         const max_dim = @max(orig_w, orig_h);
         var scale: f32 = 1.0;
         if (max_dim < 1000.0 and max_dim > 0.0) {
             scale = 1200.0 / max_dim;
-        } else if (max_dim > 2560.0) {
-            scale = 2560.0 / max_dim;
+        } else if (max_dim > 2048.0) {
+            scale = 2048.0 / max_dim;
         }
 
         const w: u32 = @intFromFloat(@max(1.0, orig_w * scale));
@@ -838,13 +872,13 @@ pub const ImageBuffer = struct {
         if (orig_w <= 0.0 or orig_h <= 0.0) return null;
 
         // Smart vector scale: small icons upscale to ~1200px so they are sharp;
-        // huge SVGs clamp to 2560px to keep RAM minimal (< 25MB)
+        // huge SVGs clamp to 2048px to keep RAM minimal (< 20MB)
         const max_dim = @max(orig_w, orig_h);
         var scale: f32 = 1.0;
         if (max_dim < 1000.0 and max_dim > 0.0) {
             scale = 1200.0 / max_dim;
-        } else if (max_dim > 2560.0) {
-            scale = 2560.0 / max_dim;
+        } else if (max_dim > 2048.0) {
+            scale = 2048.0 / max_dim;
         }
 
         const w: u32 = @intFromFloat(@max(1.0, orig_w * scale));
@@ -1059,6 +1093,73 @@ pub const ImageBuffer = struct {
 
         var status: c_int = 0;
         _ = c.waitpid(pid, &status, 0);
+    }
+
+    /// Read image from Wayland clipboard via `wl-paste`
+    pub fn loadFromClipboard(allocator: std.mem.Allocator) !?ImageBuffer {
+        // 1. Try reading raw binary image data (PNG, JPEG, WebP)
+        const img_cmd = "export PATH=\"$PATH:/usr/sbin:/sbin:/usr/local/bin:/usr/bin:$HOME/.local/bin\"; wl-paste --type image/png 2>/dev/null || wl-paste --type image/jpeg 2>/dev/null || wl-paste --type image/webp 2>/dev/null";
+        if (c.popen(img_cmd, "r")) |pipe| {
+            defer _ = c.pclose(pipe);
+            var list: std.ArrayListUnmanaged(u8) = .empty;
+            defer list.deinit(allocator);
+
+            var buf: [16384]u8 = undefined;
+            while (true) {
+                const n = c.fread(&buf, 1, buf.len, pipe);
+                if (n == 0) break;
+                try list.appendSlice(allocator, buf[0..n]);
+            }
+
+            if (list.items.len >= 4) {
+                const is_png = list.items.len >= 8 and std.mem.startsWith(u8, list.items, "\x89PNG\r\n\x1a\n");
+                const is_jpeg = list.items.len >= 2 and list.items[0] == 0xFF and list.items[1] == 0xD8;
+                const is_webp = list.items.len >= 12 and std.mem.startsWith(u8, list.items, "RIFF") and std.mem.eql(u8, list.items[8..12], "WEBP");
+                const is_svg = std.mem.startsWith(u8, list.items, "<svg") or std.mem.startsWith(u8, list.items, "<?xml") or std.mem.indexOf(u8, list.items[0..@min(list.items.len, 256)], "<svg") != null;
+
+                if (is_png or is_jpeg or is_webp or is_svg) {
+                    if (ImageBuffer.loadFromMemory(allocator, list.items)) |img| {
+                        return img;
+                    } else |_| {}
+                }
+            }
+        }
+
+        // 2. If no raw image data, check if clipboard contains a file path or URL pointing to an image file
+        const txt_cmd = "export PATH=\"$PATH:/usr/sbin:/sbin:/usr/local/bin:/usr/bin:$HOME/.local/bin\"; wl-paste --type text/plain 2>/dev/null || wl-paste 2>/dev/null";
+        if (c.popen(txt_cmd, "r")) |pipe| {
+            defer _ = c.pclose(pipe);
+            var list: std.ArrayListUnmanaged(u8) = .empty;
+            defer list.deinit(allocator);
+
+            var buf: [4096]u8 = undefined;
+            while (true) {
+                const n = c.fread(&buf, 1, buf.len, pipe);
+                if (n == 0) break;
+                try list.appendSlice(allocator, buf[0..n]);
+            }
+
+            if (list.items.len > 0) {
+                const trimmed = std.mem.trim(u8, list.items, " \t\r\n");
+                const path = if (std.mem.startsWith(u8, trimmed, "file://"))
+                    trimmed[7..]
+                else
+                    trimmed;
+
+                if (path.len > 0 and path[0] == '/' and path.len < 512) {
+                    var path_z: [512]u8 = undefined;
+                    @memcpy(path_z[0..path.len], path);
+                    path_z[path.len] = 0;
+                    if (c.access(&path_z, c.R_OK) == 0) {
+                        if (ImageBuffer.loadFromFile(allocator, path)) |img| {
+                            return img;
+                        } else |_| {}
+                    }
+                }
+            }
+        }
+
+        return null;
     }
 
     /// Capture screenshot region using `slurp` and `grim`
@@ -1346,3 +1447,74 @@ test "SVG vector rendering with colors and styles" {
     try std.testing.expectEqual(@as(u8, 0), center_pixel.b);
     try std.testing.expectEqual(@as(u8, 255), center_pixel.a);
 }
+
+test "SVG with oversized attribute and auto-bounding box" {
+    const alloc = std.testing.allocator;
+    // Generate an SVG path with commands exceeding 2500 bytes
+    var d_buf = std.ArrayList(u8).empty;
+    defer d_buf.deinit(alloc);
+
+    try d_buf.appendSlice(alloc, "M 0 0 ");
+    var i: usize = 0;
+    while (i < 250) : (i += 1) {
+        const x = (i % 25) * 10;
+        const y = (i / 25) * 10;
+        var num_buf: [64]u8 = undefined;
+        const seg = try std.fmt.bufPrint(&num_buf, "L {} {} ", .{ x, y });
+        try d_buf.appendSlice(alloc, seg);
+    }
+    try d_buf.appendSlice(alloc, "Z");
+    try std.testing.expect(d_buf.items.len > 2000);
+
+    const svg_str = try std.fmt.allocPrint(alloc, "<svg><path fill=\"#112233\" d=\"{s}\"/></svg>", .{d_buf.items});
+    defer alloc.free(svg_str);
+
+    var img = (try ImageBuffer.loadSvgFromMemory(alloc, svg_str)) orelse return error.SvgFailed;
+    defer img.deinit();
+
+    try std.testing.expect(img.width > 0);
+    try std.testing.expect(img.height > 0);
+}
+
+test "SVG load complex calf.svg with long paths" {
+    const alloc = std.testing.allocator;
+    const path = "/usr/share/icons/hicolor/scalable/apps/calf.svg";
+    const f = c.fopen(path, "rb") orelse return;
+    _ = c.fclose(f);
+
+    var ts0: c.struct_timespec = undefined;
+    _ = c.clock_gettime(c.CLOCK_MONOTONIC, &ts0);
+
+    var img = (try ImageBuffer.loadSvg(alloc, path)) orelse return error.SvgFailed;
+    defer img.deinit();
+
+    var ts1: c.struct_timespec = undefined;
+    _ = c.clock_gettime(c.CLOCK_MONOTONIC, &ts1);
+
+    const elapsed_ns = (@as(i128, ts1.tv_sec) - @as(i128, ts0.tv_sec)) * 1_000_000_000 + (@as(i128, ts1.tv_nsec) - @as(i128, ts0.tv_nsec));
+    const elapsed_ms = @divTrunc(elapsed_ns, 1_000_000);
+    try std.testing.expect(elapsed_ms < 5000);
+
+    try std.testing.expect(img.width > 0);
+    try std.testing.expect(img.height > 0);
+}
+
+test "Load assets/mizu.svg" {
+    const alloc = std.testing.allocator;
+    var img = (try ImageBuffer.loadSvg(alloc, "assets/mizu.svg")) orelse return error.SvgFailed;
+    defer img.deinit();
+    try std.testing.expect(img.width > 0);
+    try std.testing.expect(img.height > 0);
+}
+
+test "Paste non-image data does not crash or exit" {
+    const alloc = std.testing.allocator;
+    const non_img_text = "/home/hj/some/file/that/is/not/an/image.txt";
+    const res = try renderer.Image.loadMemory(alloc, non_img_text);
+    try std.testing.expect(res == null);
+
+    const buf_res = ImageBuffer.loadFromMemory(alloc, non_img_text);
+    try std.testing.expectError(error.ImageLoadFailed, buf_res);
+}
+
+

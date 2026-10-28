@@ -33,6 +33,15 @@ pub const Color = struct {
             @as(u32, self.b);
     }
 
+    pub fn fromArgb(val: u32) Color {
+        return .{
+            .a = @intCast((val >> 24) & 0xFF),
+            .r = @intCast((val >> 16) & 0xFF),
+            .g = @intCast((val >> 8) & 0xFF),
+            .b = @intCast(val & 0xFF),
+        };
+    }
+
     pub fn fromHex(str: []const u8) Color {
         var s = str;
         if (s.len > 0 and s[0] == '#') {

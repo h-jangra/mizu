@@ -79,7 +79,20 @@ pub fn build(b: *std.Build) void {
     configureMizuModule(b, exe.root_module);
     b.installArtifact(exe);
 
-    // Standalone Mizu Annotate executable
+    // Standalone Mizu Ink executable
+    const exe_ink = b.addExecutable(.{
+        .name = "mizu-ink",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/ink_main.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        }),
+    });
+    configureMizuModule(b, exe_ink.root_module);
+    b.installArtifact(exe_ink);
+
+    // Standalone Mizu Annotate executable (alias to ink)
     const exe_annotate = b.addExecutable(.{
         .name = "mizu-annotate",
         .root_module = b.createModule(.{
@@ -92,7 +105,7 @@ pub fn build(b: *std.Build) void {
     configureMizuModule(b, exe_annotate.root_module);
     b.installArtifact(exe_annotate);
 
-    // Standalone Mizu Image executable
+    // Standalone Mizu Image executable (alias to ink)
     const exe_image = b.addExecutable(.{
         .name = "mizu-image",
         .root_module = b.createModule(.{

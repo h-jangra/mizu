@@ -29,7 +29,7 @@ pub fn render(ctx: *types.BarContext, ui: *ui_mod.Ui) !void {
         .align_x = .center,
         .align_y = .center,
     });
-    ui.icon("launcher", icon_size, ctx.cfg.theme.launcher_fg, 0);
+    ui.icon("mizu", icon_size, ctx.cfg.theme.launcher_fg, 0);
     ui.close();
 
     try ctx.linkClick(ui, id, 0, .{ .command = "mizu launcher" }, null);

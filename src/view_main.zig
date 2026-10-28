@@ -1,7 +1,7 @@
 const std = @import("std");
 const c = @import("c.zig").c;
 const config = @import("core/config.zig");
-const image_viewer = @import("apps/image_viewer.zig");
+const view = @import("apps/view/view.zig");
 
 fn printUsage() void {
     const usage =
@@ -29,7 +29,7 @@ fn printUsage() void {
         \\  m                   Flip horizontally (mirror)
         \\  v                   Flip vertically
         \\  c / Ctrl+C          Copy image to Wayland clipboard (wl-copy)
-        \\  e / a               Open current image in Mizu Annotate
+        \\  e / a               Open current image in Mizu Ink
         \\  i                   Toggle minimal HUD info overlay
         \\  q / Esc             Quit
         \\
@@ -61,6 +61,7 @@ fn loadConfig(allocator: std.mem.Allocator) config.Config {
 
 pub fn main(init: std.process.Init.Minimal) u8 {
     const allocator = std.heap.c_allocator;
+
     var arg_it = init.args.iterate();
     _ = arg_it.next(); // skip binary name
 
@@ -71,7 +72,7 @@ pub fn main(init: std.process.Init.Minimal) u8 {
             printUsage();
             return 0;
         } else if (std.mem.eql(u8, arg, "-v") or std.mem.eql(u8, arg, "--version")) {
-            std.debug.print("mizu-view 0.2.0\n", .{});
+            std.debug.print("mizu-view 0.1.0\n", .{});
             return 0;
         } else if (std.mem.eql(u8, arg, "-")) {
             file_to_open = "-";
@@ -83,7 +84,7 @@ pub fn main(init: std.process.Init.Minimal) u8 {
     var cfg = loadConfig(allocator);
     defer cfg.deinit(allocator);
 
-    const ret = image_viewer.run(allocator, cfg, file_to_open) catch |err| {
+    const ret = view.run(allocator, cfg, file_to_open) catch |err| {
         std.debug.print("mizu-view error: {any}\n", .{err});
         return 1;
     };

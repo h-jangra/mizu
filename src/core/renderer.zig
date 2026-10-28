@@ -577,6 +577,11 @@ pub const Image = struct {
     }
 
     pub fn loadJpegFromFp(allocator: std.mem.Allocator, fp: *c.FILE) !?*Image {
+        var magic: [2]u8 = undefined;
+        if (c.fread(&magic, 1, 2, fp) != 2) return null;
+        if (magic[0] != 0xFF or magic[1] != 0xD8) return null;
+        _ = c.fseek(fp, 0, c.SEEK_SET);
+
         var cinfo: c.struct_jpeg_decompress_struct = undefined;
         var jerr: c.struct_jpeg_error_mgr = undefined;
         cinfo.err = c.jpeg_std_error(&jerr);
@@ -643,11 +648,10 @@ pub const Image = struct {
         if (data.len >= 8 and std.mem.startsWith(u8, data, "\x89PNG\r\n\x1a\n")) {
             return loadPngFromMemory(allocator, data);
         }
-        if (data.len >= 3 and std.mem.startsWith(u8, data, "\xFF\xD8\xFF")) {
+        if (data.len >= 2 and data[0] == 0xFF and data[1] == 0xD8) {
             return loadJpegFromMemory(allocator, data);
         }
-        if (try loadPngFromMemory(allocator, data)) |img| return img;
-        return loadJpegFromMemory(allocator, data);
+        return null;
     }
 
     pub fn loadFile(allocator: std.mem.Allocator, path: []const u8) !?*Image {
@@ -656,8 +660,25 @@ pub const Image = struct {
         } else if (std.mem.endsWith(u8, path, ".jpg") or std.mem.endsWith(u8, path, ".jpeg")) {
             return loadJpeg(allocator, path);
         }
-        if (try loadPng(allocator, path)) |img| return img;
-        return loadJpeg(allocator, path);
+
+        var path_z: [512]u8 = undefined;
+        if (path.len >= path_z.len) return null;
+        @memcpy(path_z[0..path.len], path);
+        path_z[path.len] = 0;
+
+        const fp = c.fopen(path_z[0..path.len :0].ptr, "rb") orelse return null;
+        defer _ = c.fclose(fp);
+
+        var header: [8]u8 = undefined;
+        const rd = c.fread(&header, 1, 8, fp);
+        _ = c.fseek(fp, 0, c.SEEK_SET);
+        if (rd >= 8 and std.mem.startsWith(u8, &header, "\x89PNG\r\n\x1a\n")) {
+            return loadPngFromFp(allocator, fp);
+        }
+        if (rd >= 2 and header[0] == 0xFF and header[1] == 0xD8) {
+            return loadJpegFromFp(allocator, fp);
+        }
+        return null;
     }
 
     // Custom error handler for libpng to avoid aborting on errors
@@ -794,7 +815,7 @@ pub const Image = struct {
     }
 
     pub fn loadJpegFromMemory(allocator: std.mem.Allocator, data: []const u8) !?*Image {
-        if (data.len < 2) return null;
+        if (data.len < 4 or data[0] != 0xFF or data[1] != 0xD8) return null;
 
         var cinfo: c.struct_jpeg_decompress_struct = undefined;
         var jerr: c.struct_jpeg_error_mgr = undefined;

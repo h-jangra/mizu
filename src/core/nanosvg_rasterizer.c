@@ -19,8 +19,16 @@
 /* Vertical sub-samples per pixel for filled paths. */
 #define NSVG_SS 4
 
+typedef struct {
+	float x;
+	int dir;
+} Crossing;
+
 typedef struct NSVGrasterizer {
-	int unused;
+	Crossing* cross;
+	int cross_cap;
+	float* acc;
+	int acc_cap;
 } NSVGrasterizer;
 
 /* ---- Small growable point buffer -------------------------------------- */
@@ -73,12 +81,15 @@ static void flattenCubic(PointBuf* out,
                          float tol,
                          int level)
 {
-	float d1x = c1x - x1, d1y = c1y - y1;
-	float d2x = c2x - c1x, d2y = c2y - c1y;
-	float d3x = x2 - c2x, d3y = y2 - c2y;
-	float dist = fabsf(d1x) + fabsf(d1y) + fabsf(d2x) + fabsf(d2y) + fabsf(d3x) + fabsf(d3y);
+	float dx = x2 - x1;
+	float dy = y2 - y1;
+	float d1 = fabsf((c1x - x2) * dy - (c1y - y2) * dx);
+	float d2 = fabsf((c2x - x2) * dy - (c2y - y2) * dx);
+	float len_sq = dx * dx + dy * dy;
 
-	if (dist < tol || level >= 16) {
+	if (level >= 10 || ((len_sq > 0.000001f) ?
+	    ((d1 + d2) * (d1 + d2) <= tol * tol * len_sq) :
+	    (fabsf(c1x - x1) + fabsf(c1y - y1) + fabsf(c2x - x1) + fabsf(c2y - y1) < tol))) {
 		bufAppend(out, x2, y2);
 		return;
 	}
@@ -160,11 +171,6 @@ static int nearStroke(const float* pts, int npts, int closed, float x, float y, 
 	return 0;
 }
 
-typedef struct {
-	float x;
-	int dir;
-} Crossing;
-
 static int crossingCmp(const void* a, const void* b)
 {
 	float xa = ((const Crossing*)a)->x;
@@ -189,16 +195,26 @@ static void addSpan(float* acc, int width, float scale, float tx, float xa, floa
 	int bx = (int)ceilf(pb);
 	if (ax < 0) ax = 0;
 	if (bx > width) bx = width;
-	for (int px = ax; px < bx; px++) {
-		float l = (float)px > pa ? (float)px : pa;
-		float r = (float)(px + 1) < pb ? (float)(px + 1) : pb;
-		if (r > l) acc[px] += (r - l) / (float)NSVG_SS;
+
+	const float inv_ss = 1.0f / (float)NSVG_SS;
+	if (bx - ax == 1) {
+		acc[ax] += (pb - pa) * inv_ss;
+		return;
+	}
+
+	acc[ax] += ((float)(ax + 1) - pa) * inv_ss;
+	for (int px = ax + 1; px < bx - 1; px++) {
+		acc[px] += inv_ss;
+	}
+	if (bx - 1 > ax) {
+		acc[bx - 1] += (pb - (float)(bx - 1)) * inv_ss;
 	}
 }
 
 /* Analytic horizontal coverage with vertical supersampling, evaluated across
  * all subpaths of a shape so holes (opposite winding / even-odd) work. */
-static void fillShape(unsigned char* dst, int width, int height, int stride,
+static void fillShape(NSVGrasterizer* rast,
+                      unsigned char* dst, int width, int height, int stride,
                       const SubPathList* subs, int evenodd,
                       float tx, float ty, float scale, float alpha,
                       int px0, int py0, int px1, int py1)
@@ -207,16 +223,26 @@ static void fillShape(unsigned char* dst, int width, int height, int stride,
 	for (int s = 0; s < subs->count; s++) total_edges += subs->items[s].poly.count / 2;
 	if (total_edges < 3) return;
 
-	Crossing* cross = (Crossing*)malloc(sizeof(Crossing) * (size_t)(total_edges + 4));
-	float* acc = (float*)calloc((size_t)width, sizeof(float));
-	if (!cross || !acc) {
-		free(cross);
-		free(acc);
-		return;
+	if (rast->cross_cap < total_edges + 8) {
+		int ncap = (rast->cross_cap == 0) ? (total_edges + 64) : rast->cross_cap * 2;
+		if (ncap < total_edges + 8) ncap = total_edges + 8;
+		Crossing* c = (Crossing*)realloc(rast->cross, sizeof(Crossing) * (size_t)ncap);
+		if (!c) return;
+		rast->cross = c;
+		rast->cross_cap = ncap;
 	}
+	Crossing* cross = rast->cross;
+
+	if (rast->acc_cap < width) {
+		float* a = (float*)realloc(rast->acc, sizeof(float) * (size_t)width);
+		if (!a) return;
+		rast->acc = a;
+		rast->acc_cap = width;
+	}
+	float* acc = rast->acc;
 
 	for (int py = py0; py < py1; py++) {
-		memset(acc, 0, (size_t)width * sizeof(float));
+		memset(acc + px0, 0, (size_t)(px1 - px0) * sizeof(float));
 
 		for (int sy = 0; sy < NSVG_SS; sy++) {
 			int srow = py * NSVG_SS + sy;
@@ -275,9 +301,6 @@ static void fillShape(unsigned char* dst, int width, int height, int stride,
 			if ((unsigned char)c > row[px]) row[px] = (unsigned char)c;
 		}
 	}
-
-	free(cross);
-	free(acc);
 }
 
 /* ---- Stroked path rasterization --------------------------------------- */
@@ -319,6 +342,9 @@ NSVGrasterizer* nsvgCreateRasterizer(void)
 
 void nsvgDeleteRasterizer(NSVGrasterizer* rast)
 {
+	if (!rast) return;
+	free(rast->cross);
+	free(rast->acc);
 	free(rast);
 }
 
@@ -349,8 +375,6 @@ int nsvgRasterize(NSVGrasterizer* rast,
 
 	if (image->width <= 0.0f || image->height <= 0.0f) return -1;
 
-	/* Aim for roughly a third of a device pixel of error. Tolerance is in SVG
-	 * user units, so it must counteract the output scale. */
 	float tol = 0.35f / scale;
 	if (tol < 0.02f) tol = 0.02f;
 	if (tol > 16.0f) tol = 16.0f;
@@ -405,7 +429,7 @@ int nsvgRasterize(NSVGrasterizer* rast,
 
 			if (px0 < px1 && py0 < py1) {
 				if (fill_on) {
-					fillShape(dst, width, height, stride, &subs,
+					fillShape(rast, dst, width, height, stride, &subs,
 					          shape->fillRule == NSVG_FILLRULE_EVENODD,
 					          dx, dy, scale, fill_alpha, px0, py0, px1, py1);
 				}
@@ -430,7 +454,8 @@ int nsvgRasterize(NSVGrasterizer* rast,
 
 /* ---- 32-bit ARGB Vector Rasterization ---------------------------------- */
 
-static void fillShapeArgb(unsigned int* dst, int width, int height, int stride_pixels,
+static void fillShapeArgb(NSVGrasterizer* rast,
+                          unsigned int* dst, int width, int height, int stride_pixels,
                           const SubPathList* subs, int evenodd,
                           float tx, float ty, float scale,
                           unsigned int color, float opacity,
@@ -440,13 +465,23 @@ static void fillShapeArgb(unsigned int* dst, int width, int height, int stride_p
 	for (int s = 0; s < subs->count; s++) total_edges += subs->items[s].poly.count / 2;
 	if (total_edges < 3) return;
 
-	Crossing* cross = (Crossing*)malloc(sizeof(Crossing) * (size_t)(total_edges + 4));
-	float* acc = (float*)calloc((size_t)width, sizeof(float));
-	if (!cross || !acc) {
-		free(cross);
-		free(acc);
-		return;
+	if (rast->cross_cap < total_edges + 8) {
+		int ncap = (rast->cross_cap == 0) ? (total_edges + 64) : rast->cross_cap * 2;
+		if (ncap < total_edges + 8) ncap = total_edges + 8;
+		Crossing* c = (Crossing*)realloc(rast->cross, sizeof(Crossing) * (size_t)ncap);
+		if (!c) return;
+		rast->cross = c;
+		rast->cross_cap = ncap;
 	}
+	Crossing* cross = rast->cross;
+
+	if (rast->acc_cap < width) {
+		float* a = (float*)realloc(rast->acc, sizeof(float) * (size_t)width);
+		if (!a) return;
+		rast->acc = a;
+		rast->acc_cap = width;
+	}
+	float* acc = rast->acc;
 
 	const float fill_a = (((color >> 24) & 0xFF) / 255.0f) * opacity;
 	const unsigned int sr = (color >> 16) & 0xFF;
@@ -454,7 +489,7 @@ static void fillShapeArgb(unsigned int* dst, int width, int height, int stride_p
 	const unsigned int sb = color & 0xFF;
 
 	for (int py = py0; py < py1; py++) {
-		memset(acc, 0, (size_t)width * sizeof(float));
+		memset(acc + px0, 0, (size_t)(px1 - px0) * sizeof(float));
 
 		for (int sy = 0; sy < NSVG_SS; sy++) {
 			int srow = py * NSVG_SS + sy;
@@ -546,9 +581,6 @@ static void fillShapeArgb(unsigned int* dst, int width, int height, int stride_p
 			}
 		}
 	}
-
-	free(cross);
-	free(acc);
 }
 
 static void strokePathArgb(unsigned int* dst, int width, int height, int stride_pixels,
@@ -570,12 +602,23 @@ static void strokePathArgb(unsigned int* dst, int width, int height, int stride_
 	float pad = (half_width + 1.0f) * scale;
 	float half_width_sq = half_width * half_width;
 
+	float r_diag = 0.7071f / scale;
+	float outer_r = half_width + r_diag;
+	float outer_r_sq = outer_r * outer_r;
+	float inner_r = half_width - r_diag;
+	float inner_r_sq = (inner_r > 0.0f) ? (inner_r * inner_r) : 0.0f;
+
 	for (int e = 0; e < num_edges; e++) {
 		int next_idx = (e + 1) % count;
-		float x1 = poly->pts[e * 2 + 0] * scale + tx;
-		float y1 = poly->pts[e * 2 + 1] * scale + ty;
-		float x2 = poly->pts[next_idx * 2 + 0] * scale + tx;
-		float y2 = poly->pts[next_idx * 2 + 1] * scale + ty;
+		float orig_x1 = poly->pts[e * 2 + 0];
+		float orig_y1 = poly->pts[e * 2 + 1];
+		float orig_x2 = poly->pts[next_idx * 2 + 0];
+		float orig_y2 = poly->pts[next_idx * 2 + 1];
+
+		float x1 = orig_x1 * scale + tx;
+		float y1 = orig_y1 * scale + ty;
+		float x2 = orig_x2 * scale + tx;
+		float y2 = orig_y2 * scale + ty;
 
 		int min_px = (int)floorf(fminf(x1, x2) - pad);
 		int max_px = (int)ceilf(fmaxf(x1, x2) + pad);
@@ -588,25 +631,33 @@ static void strokePathArgb(unsigned int* dst, int width, int height, int stride_
 		if (max_py > height) max_py = height;
 		if (min_px >= max_px || min_py >= max_py) continue;
 
-		float orig_x1 = poly->pts[e * 2 + 0];
-		float orig_y1 = poly->pts[e * 2 + 1];
-		float orig_x2 = poly->pts[next_idx * 2 + 0];
-		float orig_y2 = poly->pts[next_idx * 2 + 1];
-
 		for (int py = min_py; py < max_py; py++) {
 			unsigned int* row = dst + (size_t)py * (size_t)stride_pixels;
+			float center_y = ((float)py + 0.5f - ty) / scale;
+
 			for (int px = min_px; px < max_px; px++) {
-				int hits = 0;
-				for (int sy = 0; sy < NSVG_SS; sy++) {
-					float fy = (float)py + (float)sy * sub_step + sub_step * 0.5f;
-					float syv = (fy - ty) / scale;
-					for (int sx = 0; sx < NSVG_SS; sx++) {
-						float fx = (float)px + (float)sx * sub_step + sub_step * 0.5f;
-						float sxv = (fx - tx) / scale;
-						float d = distToSegmentSq(sxv, syv, orig_x1, orig_y1, orig_x2, orig_y2);
-						if (d <= half_width_sq) hits++;
+				float center_x = ((float)px + 0.5f - tx) / scale;
+				float cd = distToSegmentSq(center_x, center_y, orig_x1, orig_y1, orig_x2, orig_y2);
+
+				if (cd > outer_r_sq) continue;
+
+				int hits;
+				if (inner_r > 0.0f && cd < inner_r_sq) {
+					hits = total;
+				} else {
+					hits = 0;
+					for (int sy = 0; sy < NSVG_SS; sy++) {
+						float fy = (float)py + (float)sy * sub_step + sub_step * 0.5f;
+						float syv = (fy - ty) / scale;
+						for (int sx = 0; sx < NSVG_SS; sx++) {
+							float fx = (float)px + (float)sx * sub_step + sub_step * 0.5f;
+							float sxv = (fx - tx) / scale;
+							float d = distToSegmentSq(sxv, syv, orig_x1, orig_y1, orig_x2, orig_y2);
+							if (d <= half_width_sq) hits++;
+						}
 					}
 				}
+
 				if (hits == 0) continue;
 				float cov = (float)hits / (float)total;
 				float src_a = stroke_a * cov;
@@ -699,7 +750,7 @@ int nsvgRasterizeArgb(NSVGrasterizer* rast,
 
 			if (px0 < px1 && py0 < py1) {
 				if (fill_on) {
-					fillShapeArgb(dst, width, height, stride_pixels, &subs,
+					fillShapeArgb(rast, dst, width, height, stride_pixels, &subs,
 					              shape->fillRule == NSVG_FILLRULE_EVENODD,
 					              dx, dy, scale, shape->fill.color, shape->opacity, px0, py0, px1, py1);
 				}

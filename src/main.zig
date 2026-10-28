@@ -18,8 +18,9 @@ const power_module = @import("panels/powermenu.zig");
 const notification_module = @import("panels/notifications.zig");
 const exec = @import("core/exec.zig");
 const caffeine_module = @import("services/caffeine.zig");
-const annotate_module = @import("apps/annotate.zig");
-const image_viewer_module = @import("apps/image_viewer.zig");
+const ink_module = @import("apps/ink/ink.zig");
+const annotate_module = ink_module;
+const image_viewer_module = @import("apps/view/view.zig");
 const wallpaper_module = @import("wallpaper.zig");
 
 test {
@@ -172,6 +173,7 @@ const Command = enum {
     power,
     session,
     caffeine,
+    ink,
     annotate,
     image,
     view,
@@ -194,8 +196,8 @@ fn parseCommand(arg: []const u8) ?Command {
         return .caffeine;
     } else if (std.mem.eql(u8, arg, "view") or std.mem.eql(u8, arg, "v")) {
         return .view;
-    } else if (std.mem.eql(u8, arg, "annotate") or std.mem.eql(u8, arg, "image") or std.mem.eql(u8, arg, "shot") or std.mem.eql(u8, arg, "draw") or std.mem.eql(u8, arg, "img")) {
-        return .annotate;
+    } else if (std.mem.eql(u8, arg, "ink") or std.mem.eql(u8, arg, "annotate") or std.mem.eql(u8, arg, "image") or std.mem.eql(u8, arg, "shot") or std.mem.eql(u8, arg, "draw") or std.mem.eql(u8, arg, "img")) {
+        return .ink;
     } else if (std.mem.eql(u8, arg, "wallpaper") or std.mem.eql(u8, arg, "wall") or std.mem.eql(u8, arg, "bg")) {
         return .wallpaper;
     } else if (std.mem.eql(u8, arg, "launcher") or std.mem.eql(u8, arg, "-l") or std.mem.eql(u8, arg, "--launcher")) {
@@ -243,7 +245,7 @@ fn printUsage() void {
         \\  calendar        Open interactive month/year calendar (aliases: cal, -c)
         \\  clipboard       Open clipboard history search & manager (aliases: clip)
         \\  view            Fast, minimal image viewer with low RAM usage (aliases: v)
-        \\  annotate        Open unified image annotator & editor (aliases: image, shot, draw, img)
+        \\  ink             Open unified image annotator & editor (aliases: annotate, image, shot, draw, img)
         \\  wallpaper       Set or switch wallpapers (mizu wallpaper [switch|set <path>])
         \\  notify          Show a desktop notification popup (mizu notify <title> [body])
         \\  theme           Switch or inspect themes (mizu theme [next|prev|set <name>|list])
@@ -514,7 +516,7 @@ pub fn main(init: std.process.Init.Minimal) u8 {
             };
             return ret;
         },
-        .annotate, .image => {
+        .ink, .annotate, .image => {
             const allocator = std.heap.c_allocator;
             var cfg = loadConfig(allocator);
             defer cfg.deinit(allocator);
@@ -526,7 +528,7 @@ pub fn main(init: std.process.Init.Minimal) u8 {
                 if (std.mem.eql(u8, arg, "-s") or std.mem.eql(u8, arg, "--screenshot")) {
                     screenshot_mode = true;
                 } else if (std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "--help")) {
-                    std.debug.print("Usage: mizu annotate [-s|--screenshot] [image_file|-]\n", .{});
+                    std.debug.print("Usage: mizu ink [-s|--screenshot] [image_file|-]\n", .{});
                     return 0;
                 } else if (std.mem.eql(u8, arg, "-")) {
                     file_to_open = "-";
@@ -535,8 +537,8 @@ pub fn main(init: std.process.Init.Minimal) u8 {
                 }
             }
 
-            const ret = annotate_module.run(allocator, cfg, file_to_open, screenshot_mode) catch |err| {
-                std.debug.print("mizu annotate error: {any}\n", .{err});
+            const ret = ink_module.run(allocator, cfg, file_to_open, screenshot_mode) catch |err| {
+                std.debug.print("mizu ink error: {any}\n", .{err});
                 return 1;
             };
             return ret;
