@@ -40,8 +40,15 @@ keymap_text = 16
 # If not specified, Mizu auto-detects and reuses the active desktop wallpaper without duplicating assets
 # wallpaper = /path/to/wallpaper.jpg
 
-# Active theme preset: frosted_neumorphic, nord, catppuccin, tokyo_night, gruvbox, rose_pine
-# Aliases: mizu, pastel, frost -> frosted_neumorphic; noctalia -> tokyo_night; material_you -> catppuccin
+# Theme System
+# Built-in themes: nord, dracula, catppuccin, tokyo-night, rose-pine, frosted-neumorphic
+# Built-in themes ship in /usr/share/mizu/themes/ (or <prefix>/share/mizu/themes/).
+# When selected, the theme is copied to ~/.config/mizu/themes/<theme_name>/ and loaded
+# from your user copy, preserving your local modifications.
+# Each theme directory contains:
+#   - theme.css: CSS custom properties (--mizu-base, --mizu-accent, etc.) and GTK colors
+#   - icons/: Theme-specific SVG icons (with automatic SVG recoloring via active theme palette)
+# Custom user themes can be placed in ~/.config/mizu/themes/<custom_name>/.
 theme = nord
 
 # On-screen keymap overlay (mizu keyoverlay)

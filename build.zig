@@ -149,6 +149,13 @@ pub fn build(b: *std.Build) void {
     configureMizuModule(b, exe_view.root_module, c_module);
     b.installArtifact(exe_view);
 
+    // Install built-in themes into share/mizu/themes
+    b.installDirectory(.{
+        .source_dir = b.path("themes"),
+        .install_dir = .{ .custom = "share/mizu" },
+        .install_subdir = "themes",
+    });
+
     const run_cmd = b.addRunArtifact(exe);
     run_cmd.step.dependOn(b.getInstallStep());
     run_cmd.addPassthruArgs();
@@ -187,6 +194,14 @@ pub fn build(b: *std.Build) void {
     draw_test_mod.linkSystemLibrary("xkbcommon", .{ .use_pkg_config = .no });
     draw_test_mod.linkSystemLibrary("png16", .{ .use_pkg_config = .no });
     draw_test_mod.linkSystemLibrary("c", .{ .use_pkg_config = .no });
+    draw_test_mod.addCSourceFile(.{
+        .file = b.path("src/core/nanosvg.c"),
+        .flags = &.{"-O2"},
+    });
+    draw_test_mod.addCSourceFile(.{
+        .file = b.path("src/core/nanosvg_rasterizer.c"),
+        .flags = &.{"-O2"},
+    });
 
     const draw_tests = b.addTest(.{
         .root_module = draw_test_mod,

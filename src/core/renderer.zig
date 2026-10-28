@@ -2099,6 +2099,42 @@ pub const Renderer = struct {
             }
         }
     }
+
+    /// Draw rasterized 32-bit ARGB icon directly blended over destination.
+    pub fn drawIconArgb(
+        self: Renderer,
+        width: u32,
+        height: u32,
+        stride_pixels: u32,
+        argb: []const u32,
+        dest_x: i32,
+        dest_y: i32,
+    ) void {
+        if (width == 0 or height == 0 or argb.len == 0) return;
+        const src_stride = @as(usize, stride_pixels);
+        const dst_stride = @as(usize, self.stride) / 4;
+        const x0 = @max(0, dest_x);
+        const y0 = @max(0, dest_y);
+        const x1 = @min(@as(i32, @intCast(self.width)), dest_x + @as(i32, @intCast(width)));
+        const y1 = @min(@as(i32, @intCast(self.height)), dest_y + @as(i32, @intCast(height)));
+        if (x0 >= x1 or y0 >= y1) return;
+        var dy = y0;
+        while (dy < y1) : (dy += 1) {
+            const src_row = @as(usize, @intCast(dy - dest_y)) * src_stride;
+            const dst_row = @as(usize, @intCast(dy)) * dst_stride;
+            var dx = x0;
+            while (dx < x1) : (dx += 1) {
+                const px = argb[src_row + @as(usize, @intCast(dx - dest_x))];
+                const sa = @as(u8, @truncate((px >> 24) & 0xFF));
+                if (sa == 0) continue;
+                const sr = @as(u8, @truncate((px >> 16) & 0xFF));
+                const sg = @as(u8, @truncate((px >> 8) & 0xFF));
+                const sb = @as(u8, @truncate(px & 0xFF));
+                const idx = dst_row + @as(usize, @intCast(dx));
+                self.pixels[idx] = blendOver(self.pixels[idx], Color.init(sa, sr, sg, sb));
+            }
+        }
+    }
 };
 
 test "Font fallback renders unicode ornament ❫ and symbols" {

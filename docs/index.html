@@ -57,7 +57,7 @@
 <li><strong>Software Rasterizer (<code>src/core/renderer.zig</code>)</strong>: 2D software rasterizer writing ARGB8888 pixels directly into double-buffered <code>wl_shm</code> memory pools (<code>src/core/buffer.zig</code>).</li>
 <li><strong>Declarative UI (<code>src/core/ui.zig</code>, <code>src/core/clay.zig</code>)</strong>: Wraps Clay 0.14 to build declarative UI trees, register input hitboxes, and measure FreeType font glyphs.</li>
 <li><strong>Async Workers (<code>src/core/async.zig</code>)</strong>: Offloads hardware scans (Wi-Fi, Bluetooth, PAM authentication) to worker threads using a non-blocking self-pipe wakeup mechanism for 0% idle CPU and stutter-free UI.</li>
-<li><strong>Theme Engine (<code>src/core/theme.zig</code>)</strong>: Six curated palettes (Nord, Catppuccin, Tokyo Night, Gruvbox, Rosé Pine, Frosted Neumorphic) with dynamic runtime switching.</li>
+<li><strong>Theme Engine (<code>src/core/theme.zig</code>)</strong>: Built-in CSS-based themes (Nord, Dracula, Catppuccin, Tokyo Night, Rosé Pine, Frosted Neumorphic) installed in <code>/usr/share/mizu/themes/</code>, automatic copying to <code>~/.config/mizu/themes/</code>, dynamic runtime switching, and automatic SVG icon recoloring using the active theme's palette.</li>
 </ul>
     </main>
   </div>

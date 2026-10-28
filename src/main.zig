@@ -387,49 +387,52 @@ fn handleThemeCommand(arg_it: anytype) u8 {
     const sub1 = arg_it.next();
     if (sub1 == null or std.mem.eql(u8, sub1.?, "get") or std.mem.eql(u8, sub1.?, "current")) {
         const current = theme.loadSavedTheme() orelse .nord;
-        std.debug.print("Current theme: {s} {s}\n", .{ current.icon(), current.name() });
+        std.debug.print("Current theme: {s} {s} ({s})\n", .{ current.icon(), current.name(), current.id() });
         return 0;
     } else if (std.mem.eql(u8, sub1.?, "list")) {
         std.debug.print("Available themes:\n", .{});
         var idx: u8 = 0;
         while (idx < theme.ThemeKind.count) : (idx += 1) {
             const k: theme.ThemeKind = @enumFromInt(idx);
-            std.debug.print("  {s}  {s}\n", .{ k.icon(), k.name() });
+            std.debug.print("  {s}  {s} ({s})\n", .{ k.icon(), k.name(), k.id() });
         }
         return 0;
     } else if (std.mem.eql(u8, sub1.?, "next")) {
         const cur = theme.loadSavedTheme() orelse .nord;
         const nxt = cur.next();
-        theme.saveCurrentTheme(nxt);
+        _ = theme.selectTheme(nxt.id());
         std.debug.print("Switched theme to {s} {s}\n", .{ nxt.icon(), nxt.name() });
         return 0;
     } else if (std.mem.eql(u8, sub1.?, "prev")) {
         const cur = theme.loadSavedTheme() orelse .nord;
         const prv = cur.prev();
-        theme.saveCurrentTheme(prv);
+        _ = theme.selectTheme(prv.id());
         std.debug.print("Switched theme to {s} {s}\n", .{ prv.icon(), prv.name() });
         return 0;
+    } else if (std.mem.eql(u8, sub1.?, "generate") or std.mem.eql(u8, sub1.?, "gen")) {
+        const target = arg_it.next();
+        if (target == null or std.mem.eql(u8, target.?, "all")) {
+            theme.generateAllThemes();
+            std.debug.print("Generated configuration bundles for all built-in themes in themes/<theme>/\n", .{});
+            return 0;
+        } else {
+            const th = theme.loadTheme(target.?);
+            theme.generateThemeDirectory(target.?, &th);
+            std.debug.print("Generated configuration bundle for theme '{s}' in themes/{s}/\n", .{ target.?, target.? });
+            return 0;
+        }
     } else if (std.mem.eql(u8, sub1.?, "set")) {
         const target_theme = arg_it.next() orelse {
             std.debug.print("Usage: mizu theme set <theme_name>\n", .{});
             return 1;
         };
-        if (theme.ThemeKind.fromString(target_theme)) |k| {
-            theme.saveCurrentTheme(k);
-            std.debug.print("Set theme to {s} {s}\n", .{ k.icon(), k.name() });
-            return 0;
-        } else {
-            std.debug.print("Unknown theme '{s}'. Run 'mizu theme list' to see available themes.\n", .{target_theme});
-            return 1;
-        }
+        const th = theme.selectTheme(target_theme);
+        std.debug.print("Set theme to {s} {s}\n", .{ th.kind.icon(), target_theme });
+        return 0;
     } else {
-        if (theme.ThemeKind.fromString(sub1.?)) |k| {
-            theme.saveCurrentTheme(k);
-            std.debug.print("Set theme to {s} {s}\n", .{ k.icon(), k.name() });
-            return 0;
-        }
-        std.debug.print("Usage: mizu theme [get | set <theme> | next | prev | list]\n", .{});
-        return 1;
+        const th = theme.selectTheme(sub1.?);
+        std.debug.print("Set theme to {s} {s}\n", .{ th.kind.icon(), sub1.? });
+        return 0;
     }
 }
 

@@ -1,0 +1,63 @@
+/* ===================================================================
+ * Mizu Theme Stylesheet: Dracula
+ * =================================================================== */
+
+:root {
+  --mizu-theme-name: "Dracula";
+  --mizu-base: #282a36;
+  --mizu-surface: #21222c;
+  --mizu-elevated: #44475a;
+  --mizu-accent: #bd93f9;
+  --mizu-accent-fg: #282a36;
+  --mizu-secondary: #8be9fd;
+  --mizu-text: #f8f8f2;
+  --mizu-text-muted: #6272a4;
+  --mizu-text-bright: #f8f8f2;
+  --mizu-border: #44475a;
+  --mizu-border-focused: #bd93f9;
+  --mizu-card-bg: #21222c;
+  --mizu-bar-bg: #282a36;
+  --mizu-panel-bg: #282a36;
+  --mizu-error: #ff5555;
+  --mizu-warning: #ffb86c;
+  --mizu-success: #50fa7b;
+
+  /* Corner Radii */
+  --mizu-radius-bar: 12px;
+  --mizu-radius-panel: 20px;
+  --mizu-radius-card: 14px;
+  --mizu-radius-pill: 12px;
+  --mizu-radius-button: 10px;
+  --mizu-radius-slider: 8px;
+
+  /* Spacing */
+  --mizu-spacing-xs: 4px;
+  --mizu-spacing-sm: 8px;
+  --mizu-spacing-md: 12px;
+  --mizu-spacing-lg: 16px;
+  --mizu-spacing-xl: 20px;
+}
+/* GTK Standard Palette */
+@define-color theme_bg_color #21222c;
+@define-color theme_fg_color #f8f8f2;
+@define-color theme_base_color #282a36;
+@define-color theme_text_color #f8f8f2;
+@define-color theme_selected_bg_color #bd93f9;
+@define-color theme_selected_fg_color #282a36;
+@define-color accent_color #bd93f9;
+@define-color accent_bg_color #bd93f9;
+@define-color accent_fg_color #282a36;
+@define-color window_bg_color #282a36;
+@define-color window_fg_color #f8f8f2;
+@define-color view_bg_color #21222c;
+@define-color view_fg_color #f8f8f2;
+@define-color headerbar_bg_color #44475a;
+@define-color headerbar_fg_color #f8f8f2;
+@define-color headerbar_border_color #44475a;
+@define-color card_bg_color #21222c;
+@define-color card_fg_color #f8f8f2;
+@define-color card_border_color #44475a;
+@define-color borders #44475a;
+@define-color destructive_color #ff5555;
+@define-color warning_color #ffb86c;
+@define-color success_color #50fa7b;

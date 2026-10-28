@@ -473,6 +473,7 @@ pub const RasterIcon = struct {
     asset: []u8,
     size_px: u32,
     scale: u32,
+    is_argb: bool = false,
 
     pub fn deinit(self: *RasterIcon) void {
         if (self.pixels.len > 0) self.allocator.free(self.pixels);
@@ -489,6 +490,45 @@ pub const RasterIcon = struct {
 const icon_allocator = std.heap.c_allocator;
 const max_cached_icons = 64;
 const max_icon_name = 48;
+
+var g_active_theme_name: [64]u8 = undefined;
+var g_active_theme_name_len: usize = 0;
+var g_active_theme_palette_set: bool = false;
+var g_palette_accent: theme.Color = theme.Color.hex(0x88C0D0);
+var g_palette_text: theme.Color = theme.Color.hex(0xECEFF4);
+var g_palette_base: theme.Color = theme.Color.hex(0x2E3440);
+var g_palette_surface: theme.Color = theme.Color.hex(0x3B4252);
+var g_palette_secondary: theme.Color = theme.Color.hex(0x81A1C1);
+var g_palette_error: theme.Color = theme.Color.hex(0xBF616A);
+var g_palette_warning: theme.Color = theme.Color.hex(0xEBCB8B);
+var g_palette_success: theme.Color = theme.Color.hex(0xA3BE8C);
+
+pub fn setActiveTheme(name: []const u8, th: theme.Theme) void {
+    const copy_len = @min(name.len, g_active_theme_name.len);
+    @memcpy(g_active_theme_name[0..copy_len], name[0..copy_len]);
+    g_active_theme_name_len = copy_len;
+    g_active_theme_palette_set = true;
+    g_palette_accent = th.accent;
+    g_palette_text = th.text_main;
+    g_palette_base = th.base;
+    g_palette_surface = th.surface;
+    g_palette_secondary = th.secondary;
+    g_palette_error = th.error_color;
+    g_palette_warning = th.warning_color;
+    g_palette_success = th.success_color;
+    clearCache();
+}
+
+pub fn clearCache() void {
+    for (&g_cache) |*entry| {
+        if (entry.used) {
+            if (entry.icon) |*ic| ic.deinit();
+            entry.used = false;
+            entry.icon = null;
+        }
+    }
+    g_cache_seq = 0;
+}
 
 const CacheEntry = struct {
     used: bool = false,
@@ -523,6 +563,35 @@ fn existingPath(allocator: std.mem.Allocator, dir: []const u8, name: []const u8)
     return allocator.dupe(u8, path) catch null;
 }
 
+fn tryDir(allocator: std.mem.Allocator, dir: []const u8, name: []const u8) ?[]u8 {
+    return existingPath(allocator, dir, name);
+}
+
+fn tryDirWithAliases(allocator: std.mem.Allocator, dir: []const u8, name: []const u8) ?[]u8 {
+    if (tryDir(allocator, dir, name)) |p| return p;
+
+    // Common freedesktop and Mizu icon aliases
+    if (std.mem.eql(u8, name, "trash")) {
+        if (tryDir(allocator, dir, "user-trash")) |p| return p;
+        if (tryDir(allocator, dir, "user-trash-full")) |p| return p;
+    } else if (std.mem.eql(u8, name, "power")) {
+        if (tryDir(allocator, dir, "shutdown")) |p| return p;
+        if (tryDir(allocator, dir, "system-shutdown")) |p| return p;
+    } else if (std.mem.eql(u8, name, "restart")) {
+        if (tryDir(allocator, dir, "system-reboot")) |p| return p;
+    } else if (std.mem.eql(u8, name, "home")) {
+        if (tryDir(allocator, dir, "user-home")) |p| return p;
+        if (tryDir(allocator, dir, "folder-home")) |p| return p;
+    } else if (std.mem.eql(u8, name, "search")) {
+        if (tryDir(allocator, dir, "edit-find")) |p| return p;
+    } else if (std.mem.eql(u8, name, "spinner")) {
+        if (tryDir(allocator, dir, "process-working")) |p| return p;
+    } else if (std.mem.eql(u8, name, "folder")) {
+        if (tryDir(allocator, dir, "folder-blue")) |p| return p;
+    }
+    return null;
+}
+
 fn exeDir(buf: []u8) ?[]const u8 {
     const n = c.readlink("/proc/self/exe", buf.ptr, buf.len - 1);
     if (n <= 0) return null;
@@ -532,26 +601,74 @@ fn exeDir(buf: []u8) ?[]const u8 {
     return path[0..slash];
 }
 
-fn tryDir(allocator: std.mem.Allocator, dir: []const u8, name: []const u8) ?[]u8 {
-    return existingPath(allocator, dir, name);
-}
-
 fn tryRelative(allocator: std.mem.Allocator, base: []const u8, suffix: []const u8, name: []const u8) ?[]u8 {
     var buf: [512]u8 = undefined;
     const dir = std.fmt.bufPrint(&buf, "{s}/{s}", .{ base, suffix }) catch return null;
-    return existingPath(allocator, dir, name);
+    return tryDirWithAliases(allocator, dir, name);
+}
+
+fn tryIconTheme(allocator: std.mem.Allocator, base_dir: []const u8, name: []const u8) ?[]u8 {
+    const subdirs = [_][]const u8{
+        "64x64/places",
+        "64x64/apps",
+        "64x64/devices",
+        "64x64/mimetypes",
+        "symbolic/actions",
+        "symbolic/apps",
+        "symbolic/status",
+        "symbolic/places",
+        "symbolic/devices",
+    };
+    for (subdirs) |sub| {
+        var buf: [512]u8 = undefined;
+        if (std.fmt.bufPrint(&buf, "{s}/{s}", .{ base_dir, sub })) |dir| {
+            if (tryDirWithAliases(allocator, dir, name)) |path| return path;
+        } else |_| {}
+    }
+    return null;
 }
 
 /// Resolve an SVG asset path for `name` (caller frees).
 pub fn resolveIconPath(allocator: std.mem.Allocator, name: []const u8) ![]u8 {
     if (c.getenv("MIZU_ICON_DIR")) |raw| {
         const dir = std.mem.span(raw);
-        if (tryDir(allocator, dir, name)) |path| return path;
+        if (tryDirWithAliases(allocator, dir, name)) |path| return path;
     }
-    if (tryDir(allocator, "assets", name)) |path| return path;
+
+    // 1. Check themes/icons directly
+    if (tryIconTheme(allocator, "themes/icons", name)) |path| return path;
+    if (tryIconTheme(allocator, "../themes/icons", name)) |path| return path;
+
+    // 2. Check active user theme icon folder: ~/.config/mizu/themes/<active_theme>/icons/
+    if (g_active_theme_name_len > 0) {
+        const active_theme = g_active_theme_name[0..g_active_theme_name_len];
+        var user_dir_buf: [512]u8 = undefined;
+        if (theme.getUserThemesDir(&user_dir_buf)) |ub| {
+            var path_buf: [512]u8 = undefined;
+            if (std.fmt.bufPrint(&path_buf, "{s}/{s}/icons", .{ ub, active_theme })) |theme_icons_dir| {
+                if (tryDirWithAliases(allocator, theme_icons_dir, name)) |path| return path;
+            } else |_| {}
+        }
+
+        // 3. Check active built-in theme icon folder: /usr/share/mizu/themes/<active_theme>/icons/
+        var builtin_dir_buf: [512]u8 = undefined;
+        if (theme.resolveBuiltinThemesDir(&builtin_dir_buf)) |bb| {
+            var path_buf: [512]u8 = undefined;
+            if (std.fmt.bufPrint(&path_buf, "{s}/{s}/icons", .{ bb, active_theme })) |theme_icons_dir| {
+                if (tryDirWithAliases(allocator, theme_icons_dir, name)) |path| return path;
+            } else |_| {}
+        }
+    }
+
+    // 4. Fallback to standard asset search directories
+    if (tryDirWithAliases(allocator, "assets", name)) |path| return path;
 
     var exe_buf: [4096]u8 = undefined;
     if (exeDir(&exe_buf)) |base| {
+        var pbuf: [512]u8 = undefined;
+        if (std.fmt.bufPrint(&pbuf, "{s}/../share/mizu/themes/icons", .{base})) |p| {
+            if (tryIconTheme(allocator, p, name)) |path| return path;
+        } else |_| {}
         if (tryRelative(allocator, base, "assets", name)) |path| return path;
         if (tryRelative(allocator, base, "../assets", name)) |path| return path;
         if (tryRelative(allocator, base, "../../assets", name)) |path| return path;
@@ -564,22 +681,158 @@ pub fn resolveIconPath(allocator: std.mem.Allocator, name: []const u8) ![]u8 {
         const xdg = std.mem.span(raw);
         var dir_buf: [512]u8 = undefined;
         if (std.fmt.bufPrint(&dir_buf, "{s}/mizu/assets", .{xdg})) |dir| {
-            if (tryDir(allocator, dir, name)) |path| return path;
+            if (tryDirWithAliases(allocator, dir, name)) |path| return path;
         } else |_| {}
     }
     if (c.getenv("HOME")) |raw| {
         const home = std.mem.span(raw);
         var dir_buf: [512]u8 = undefined;
+        if (std.fmt.bufPrint(&dir_buf, "{s}/.local/share/icons/Papirus-Custom", .{home})) |dir| {
+            if (tryIconTheme(allocator, dir, name)) |path| return path;
+        } else |_| {}
+        if (std.fmt.bufPrint(&dir_buf, "{s}/.icons/Papirus-Custom", .{home})) |dir| {
+            if (tryIconTheme(allocator, dir, name)) |path| return path;
+        } else |_| {}
         if (std.fmt.bufPrint(&dir_buf, "{s}/.local/share/mizu/assets", .{home})) |dir| {
-            if (tryDir(allocator, dir, name)) |path| return path;
+            if (tryDirWithAliases(allocator, dir, name)) |path| return path;
         } else |_| {}
     }
-    if (tryDir(allocator, "/usr/local/share/mizu/assets", name)) |path| return path;
-    if (tryDir(allocator, "/usr/share/mizu/assets", name)) |path| return path;
+    if (tryIconTheme(allocator, "/usr/share/mizu/themes/icons", name)) |path| return path;
+    if (tryIconTheme(allocator, "/usr/local/share/mizu/themes/icons", name)) |path| return path;
+    if (tryIconTheme(allocator, "/usr/share/icons/Papirus-Custom", name)) |path| return path;
+    if (tryIconTheme(allocator, "/usr/local/share/icons/Papirus-Custom", name)) |path| return path;
+    if (tryDirWithAliases(allocator, "/usr/local/share/mizu/assets", name)) |path| return path;
+    if (tryDirWithAliases(allocator, "/usr/share/mizu/assets", name)) |path| return path;
 
     // Not found: return the default location so callers get a consistent path
     // (parsing will fail and the caller falls back gracefully).
     return try std.fmt.allocPrint(allocator, "assets/{s}.svg", .{name});
+}
+
+fn isMultiColor(image: *c.NSVGimage) bool {
+    var shape = image.shapes;
+    var first_color: ?u32 = null;
+    while (shape != null) : (shape = shape.*.next) {
+        if ((shape.*.flags & c.NSVG_FLAGS_VISIBLE) == 0) continue;
+        if (shape.*.fill.type == c.NSVG_PAINT_LINEAR_GRADIENT or shape.*.fill.type == c.NSVG_PAINT_RADIAL_GRADIENT) {
+            return true;
+        }
+        if (shape.*.stroke.type == c.NSVG_PAINT_LINEAR_GRADIENT or shape.*.stroke.type == c.NSVG_PAINT_RADIAL_GRADIENT) {
+            return true;
+        }
+        if (shape.*.fill.type == c.NSVG_PAINT_COLOR) {
+            const col = shape.*.fill.unnamed_0.color;
+            if (((col >> 24) & 0xFF) > 0) {
+                if (first_color) |fc| {
+                    if (fc != col) return true;
+                } else {
+                    first_color = col;
+                }
+            }
+        }
+        if (shape.*.stroke.type == c.NSVG_PAINT_COLOR) {
+            const col = shape.*.stroke.unnamed_0.color;
+            if (((col >> 24) & 0xFF) > 0 and shape.*.strokeWidth > 0.0) {
+                if (first_color) |fc| {
+                    if (fc != col) return true;
+                } else {
+                    first_color = col;
+                }
+            }
+        }
+    }
+    return false;
+}
+
+pub fn recolorSvg(allocator: std.mem.Allocator, svg_bytes: []const u8) ![]u8 {
+    if (!g_active_theme_palette_set) {
+        return try allocator.dupe(u8, svg_bytes);
+    }
+
+    var b_acc: [8]u8 = undefined;
+    var b_txt: [8]u8 = undefined;
+    var b_base: [8]u8 = undefined;
+    var b_surf: [8]u8 = undefined;
+    var b_sec: [8]u8 = undefined;
+    var b_err: [8]u8 = undefined;
+    var b_warn: [8]u8 = undefined;
+    var b_succ: [8]u8 = undefined;
+
+    const acc_hex = g_palette_accent.formatHexRgb(&b_acc);
+    const txt_hex = g_palette_text.formatHexRgb(&b_txt);
+    const base_hex = g_palette_base.formatHexRgb(&b_base);
+    const surf_hex = g_palette_surface.formatHexRgb(&b_surf);
+    const sec_hex = g_palette_secondary.formatHexRgb(&b_sec);
+    const err_hex = g_palette_error.formatHexRgb(&b_err);
+    const warn_hex = g_palette_warning.formatHexRgb(&b_warn);
+    const succ_hex = g_palette_success.formatHexRgb(&b_succ);
+
+    var result = std.ArrayList(u8).empty;
+    errdefer result.deinit(allocator);
+
+    var i: usize = 0;
+    while (i < svg_bytes.len) {
+        if (std.mem.startsWith(u8, svg_bytes[i..], "var(--mizu-accent)")) {
+            try result.appendSlice(allocator, acc_hex);
+            i += "var(--mizu-accent)".len;
+        } else if (std.mem.startsWith(u8, svg_bytes[i..], "var(--mizu-text)")) {
+            try result.appendSlice(allocator, txt_hex);
+            i += "var(--mizu-text)".len;
+        } else if (std.mem.startsWith(u8, svg_bytes[i..], "var(--mizu-base)")) {
+            try result.appendSlice(allocator, base_hex);
+            i += "var(--mizu-base)".len;
+        } else if (std.mem.startsWith(u8, svg_bytes[i..], "var(--mizu-surface)")) {
+            try result.appendSlice(allocator, surf_hex);
+            i += "var(--mizu-surface)".len;
+        } else if (std.mem.startsWith(u8, svg_bytes[i..], "var(--mizu-secondary)")) {
+            try result.appendSlice(allocator, sec_hex);
+            i += "var(--mizu-secondary)".len;
+        } else if (std.mem.startsWith(u8, svg_bytes[i..], "var(--mizu-error)")) {
+            try result.appendSlice(allocator, err_hex);
+            i += "var(--mizu-error)".len;
+        } else if (std.mem.startsWith(u8, svg_bytes[i..], "var(--mizu-warning)")) {
+            try result.appendSlice(allocator, warn_hex);
+            i += "var(--mizu-warning)".len;
+        } else if (std.mem.startsWith(u8, svg_bytes[i..], "var(--mizu-success)")) {
+            try result.appendSlice(allocator, succ_hex);
+            i += "var(--mizu-success)".len;
+        } else if (std.mem.startsWith(u8, svg_bytes[i..], ".ColorScheme-Text")) {
+            try result.appendSlice(allocator, ".ColorScheme-Text { color:");
+            try result.appendSlice(allocator, txt_hex);
+            try result.appendSlice(allocator, "; }");
+            const close_brace = std.mem.indexOfScalar(u8, svg_bytes[i..], '}');
+            if (close_brace) |cb| {
+                i += cb + 1;
+            } else {
+                i += ".ColorScheme-Text".len;
+            }
+        } else if (std.mem.startsWith(u8, svg_bytes[i..], ".ColorScheme-Highlight")) {
+            try result.appendSlice(allocator, ".ColorScheme-Highlight { color:");
+            try result.appendSlice(allocator, acc_hex);
+            try result.appendSlice(allocator, "; }");
+            const close_brace = std.mem.indexOfScalar(u8, svg_bytes[i..], '}');
+            if (close_brace) |cb| {
+                i += cb + 1;
+            } else {
+                i += ".ColorScheme-Highlight".len;
+            }
+        } else if (std.mem.startsWith(u8, svg_bytes[i..], ".ColorScheme-Background")) {
+            try result.appendSlice(allocator, ".ColorScheme-Background { color:");
+            try result.appendSlice(allocator, base_hex);
+            try result.appendSlice(allocator, "; }");
+            const close_brace = std.mem.indexOfScalar(u8, svg_bytes[i..], '}');
+            if (close_brace) |cb| {
+                i += cb + 1;
+            } else {
+                i += ".ColorScheme-Background".len;
+            }
+        } else {
+            try result.append(allocator, svg_bytes[i]);
+            i += 1;
+        }
+    }
+
+    return result.toOwnedSlice(allocator);
 }
 
 /// Load and rasterize an SVG asset at the given physical size.
@@ -593,22 +846,35 @@ pub fn loadSvgIcon(allocator: std.mem.Allocator, name: []const u8, size_px: u32,
     @memcpy(c_path[0..path.len], path);
     c_path[path.len] = 0;
 
+    const fp = c.fopen(c_path.ptr, "rb") orelse return null;
+    defer _ = c.fclose(fp);
+    _ = c.fseek(fp, 0, c.SEEK_END);
+    const sz = c.ftell(fp);
+    _ = c.fseek(fp, 0, c.SEEK_SET);
+    if (sz <= 0 or sz > 2 * 1024 * 1024) return null;
+
+    const file_bytes = allocator.alloc(u8, @intCast(sz)) catch return null;
+    defer allocator.free(file_bytes);
+    const rd = c.fread(file_bytes.ptr, 1, file_bytes.len, fp);
+    if (rd != file_bytes.len) return null;
+
+    const recolored = recolorSvg(allocator, file_bytes) catch return null;
+    defer allocator.free(recolored);
+
+    const recolored_z = allocator.alloc(u8, recolored.len + 1) catch return null;
+    defer allocator.free(recolored_z);
+    @memcpy(recolored_z[0..recolored.len], recolored);
+    recolored_z[recolored.len] = 0;
+
     const phys_w = size_px;
     const phys_h = size_px;
 
-    const image = c.nsvgParseFromFile(c_path.ptr, "px", 96.0) orelse return null;
+    const image = c.nsvgParse(recolored_z.ptr, "px", 96.0) orelse return null;
     defer c.nsvgDelete(image);
 
     if (image.*.width <= 0 or image.*.height <= 0) return null;
 
-    const stride = phys_w;
-    const pixels = allocator.alloc(u8, @as(usize, stride) * @as(usize, phys_h)) catch return null;
-    @memset(pixels, 0);
-
-    const rast = c.nsvgCreateRasterizer() orelse {
-        allocator.free(pixels);
-        return null;
-    };
+    const rast = c.nsvgCreateRasterizer() orelse return null;
     defer c.nsvgDeleteRasterizer(rast);
 
     // Center the icon within the physical cell, preserving aspect ratio.
@@ -618,9 +884,30 @@ pub fn loadSvgIcon(allocator: std.mem.Allocator, name: []const u8, size_px: u32,
     const dx = (@as(f32, @floatFromInt(phys_w)) - image.*.width * use_scale) / 2.0;
     const dy = (@as(f32, @floatFromInt(phys_h)) - image.*.height * use_scale) / 2.0;
 
-    if (c.nsvgRasterize(rast, pixels.ptr, @intCast(phys_w), @intCast(phys_h), @intCast(stride), image, dx, dy, use_scale) != 0) {
-        allocator.free(pixels);
-        return null;
+    const is_argb = isMultiColor(image);
+    var pixels: []u8 = undefined;
+    var stride: u32 = undefined;
+
+    if (is_argb) {
+        stride = phys_w; // pixels per row
+        const total_bytes = @as(usize, stride) * @as(usize, phys_h) * 4;
+        pixels = allocator.alloc(u8, total_bytes) catch return null;
+        @memset(pixels, 0);
+
+        if (c.nsvgRasterizeArgb(rast, @ptrCast(@alignCast(pixels.ptr)), @intCast(phys_w), @intCast(phys_h), @intCast(stride), image, dx, dy, use_scale) != 0) {
+            allocator.free(pixels);
+            return null;
+        }
+    } else {
+        stride = phys_w; // bytes per row
+        const total_bytes = @as(usize, stride) * @as(usize, phys_h);
+        pixels = allocator.alloc(u8, total_bytes) catch return null;
+        @memset(pixels, 0);
+
+        if (c.nsvgRasterize(rast, pixels.ptr, @intCast(phys_w), @intCast(phys_h), @intCast(stride), image, dx, dy, use_scale) != 0) {
+            allocator.free(pixels);
+            return null;
+        }
     }
 
     const key_asset = allocator.dupe(u8, name) catch {
@@ -637,6 +924,7 @@ pub fn loadSvgIcon(allocator: std.mem.Allocator, name: []const u8, size_px: u32,
         .asset = key_asset,
         .size_px = size_px,
         .scale = scale,
+        .is_argb = is_argb,
     };
 }
 
@@ -697,13 +985,25 @@ pub fn drawIconRaster(target: renderer.Renderer, icon: *const RasterIcon, cx: i3
     if (icon.pixels.len == 0) return;
     const dx = cx - @as(i32, @intCast(icon.width / 2));
     const dy = cy - @as(i32, @intCast(icon.height / 2));
-    target.drawIconAlpha(icon.width, icon.height, icon.stride, icon.pixels, dx, dy, color);
+    if (icon.is_argb) {
+        const u32_ptr: [*]const u32 = @ptrCast(@alignCast(icon.pixels.ptr));
+        const num_pixels = @as(usize, icon.stride) * @as(usize, icon.height);
+        target.drawIconArgb(icon.width, icon.height, icon.stride, u32_ptr[0..num_pixels], dx, dy);
+    } else {
+        target.drawIconAlpha(icon.width, icon.height, icon.stride, icon.pixels, dx, dy, color);
+    }
 }
 
 /// Draw a rasterized SVG icon at top-left (x, y), tinted with `color`.
 pub fn drawIconRasterAt(target: renderer.Renderer, icon: *const RasterIcon, x: i32, y: i32, color: theme.Color) void {
     if (icon.pixels.len == 0) return;
-    target.drawIconAlpha(icon.width, icon.height, icon.stride, icon.pixels, x, y, color);
+    if (icon.is_argb) {
+        const u32_ptr: [*]const u32 = @ptrCast(@alignCast(icon.pixels.ptr));
+        const num_pixels = @as(usize, icon.stride) * @as(usize, icon.height);
+        target.drawIconArgb(icon.width, icon.height, icon.stride, u32_ptr[0..num_pixels], x, y);
+    } else {
+        target.drawIconAlpha(icon.width, icon.height, icon.stride, icon.pixels, x, y, color);
+    }
 }
 
 /// Draw an SVG icon centered at (cx, cy). `size_px` is the physical pixel
@@ -783,6 +1083,23 @@ pub fn drawIconRasterRotated(
             const sx = @as(u32, @intFromFloat(src_x + half_w));
             const sy = @as(u32, @intFromFloat(src_y + half_h));
             if (sx >= w or sy >= h) continue;
+
+            if (icon.is_argb) {
+                const u32_ptr: [*]const u32 = @ptrCast(@alignCast(icon.pixels.ptr));
+                const pix = u32_ptr[sy * stride + sx];
+                const sa = @as(u8, @truncate((pix >> 24) & 0xFF));
+                if (sa == 0) continue;
+                const sr = @as(u8, @truncate((pix >> 16) & 0xFF));
+                const sg = @as(u8, @truncate((pix >> 8) & 0xFF));
+                const sb = @as(u8, @truncate(pix & 0xFF));
+                const dst_x = start_x + @as(i32, @intCast(dx));
+                const dst_y = start_y + @as(i32, @intCast(dy));
+                if (dst_x < 0 or @as(u32, @intCast(dst_x)) >= target.width or dst_y < 0 or @as(u32, @intCast(dst_y)) >= target.height) continue;
+                const idx = @as(usize, @intCast(dst_y)) * (@as(usize, target.stride) / 4) + @as(usize, @intCast(dst_x));
+                target.pixels[idx] = blendOver(target.pixels[idx], theme.Color.init(sa, sr, sg, sb));
+                continue;
+            }
+
             const cov = icon.pixels[sy * stride + sx];
             if (cov == 0) continue;
             var col = color;
@@ -858,5 +1175,56 @@ test "SVG assets rasterize to visible alpha and are cached" {
         // Repeated lookups must return the same cached raster, not reload it.
         const again = getIcon(allocator, name, 24, 1) orelse return error.TestUnexpectedResult;
         try std.testing.expect(again == icon);
+    }
+}
+
+test "Automatic SVG icon recoloring with theme palette" {
+    const allocator = std.testing.allocator;
+    const test_th = theme.draculaTheme();
+    setActiveTheme("dracula", test_th);
+    defer clearCache();
+
+    const sample_svg =
+        \\<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64">
+        \\  <style>.ColorScheme-Highlight { color:#123456; } .ColorScheme-Text { color:#abcdef; }</style>
+        \\  <path fill="var(--mizu-accent)" d="M 0 0 L 10 10"/>
+        \\  <path fill="var(--mizu-text)" d="M 10 10 L 20 20"/>
+        \\</svg>
+    ;
+
+    const recolored = try recolorSvg(allocator, sample_svg);
+    defer allocator.free(recolored);
+
+    // var(--mizu-accent) should be replaced with Dracula accent #bd93f9
+    try std.testing.expect(std.mem.indexOf(u8, recolored, "#bd93f9") != null);
+    // var(--mizu-text) should be replaced with Dracula text #f8f8f2
+    try std.testing.expect(std.mem.indexOf(u8, recolored, "#f8f8f2") != null);
+}
+
+test "Load integrated theme icons" {
+    const allocator = std.testing.allocator;
+    const nord_th = theme.nordTheme();
+    setActiveTheme("nord", nord_th);
+
+    // Test folder icon resolution from themes/nord/icons/
+    const folder_icon = getIcon(allocator, "folder", 32, 1);
+    try std.testing.expect(folder_icon != null);
+    if (folder_icon) |ic| {
+        try std.testing.expectEqual(@as(u32, 32), ic.width);
+        try std.testing.expectEqual(@as(u32, 32), ic.height);
+        try std.testing.expect(ic.pixels.len > 0);
+    }
+
+    // Switch to Dracula theme
+    const drac_th = theme.draculaTheme();
+    setActiveTheme("dracula", drac_th);
+
+    // Test Dracula power icon resolution from themes/dracula/icons/
+    const power_icon = getIcon(allocator, "power", 32, 1);
+    try std.testing.expect(power_icon != null);
+    if (power_icon) |ic| {
+        try std.testing.expectEqual(@as(u32, 32), ic.width);
+        try std.testing.expectEqual(@as(u32, 32), ic.height);
+        try std.testing.expect(ic.pixels.len > 0);
     }
 }

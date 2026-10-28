@@ -245,10 +245,7 @@ pub const Config = struct {
         const modules_center = std.ArrayList(ModuleKind).empty;
         const modules_right = std.ArrayList(ModuleKind).empty;
 
-        const initial_theme = if (theme.loadSavedTheme()) |saved|
-            saved.toTheme()
-        else
-            theme.nordTheme();
+        const initial_theme = theme.loadSavedThemeStruct();
 
         var keymap_pos = KeymapPosition.bottom_center;
         if (loadSavedKeymapPosition()) |pos| {
@@ -423,9 +420,7 @@ pub const Config = struct {
                 } else if (std.mem.eql(u8, key, "border_width")) {
                     cfg.border_width = std.fmt.parseInt(u32, val, 10) catch cfg.border_width;
                 } else if (std.mem.eql(u8, key, "theme") or std.mem.eql(u8, key, "theme_name")) {
-                    if (theme.ThemeKind.fromString(val)) |k| {
-                        cfg.theme = k.toTheme();
-                    }
+                    cfg.theme = theme.loadTheme(val);
                 } else if (std.mem.eql(u8, key, "clock_format")) {
                     cfg.clock_format = allocator.dupe(u8, val) catch cfg.clock_format;
                 } else if (std.mem.eql(u8, key, "calendar_file")) {
@@ -530,7 +525,7 @@ pub const Config = struct {
 
         // Saved runtime theme takes precedence over static config.ini setting
         if (theme.loadSavedTheme()) |saved| {
-            cfg.theme = saved.toTheme();
+            cfg.theme = theme.loadTheme(saved.id());
         }
 
         if (configured_font_family) |fam| {

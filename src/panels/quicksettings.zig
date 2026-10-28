@@ -1141,8 +1141,7 @@ pub const QuickSettings = struct {
                     },
                     .cycle_theme => {
                         const next_th = self.cfg.theme.kind.next();
-                        self.cfg.theme = next_th.toTheme();
-                        theme.saveCurrentTheme(next_th);
+                        self.cfg.theme = theme.selectTheme(next_th.id());
                         return true;
                     },
                     .open_keymap_menu => {

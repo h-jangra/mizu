@@ -71,6 +71,8 @@ mizu image           Image viewer, editor & transformer
 mizu wallpaper       Wallpaper manager (switch thumbnails or set image)
 mizu notify          Desktop notification
 mizu theme list      List available themes
+mizu theme set <t>   Switch active theme (nord, dracula, catppuccin, tokyo-night, rose-pine, frosted-neumorphic)
+mizu theme next      Cycle to next theme
 mizu help            Show available commands
 ```
 

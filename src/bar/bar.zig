@@ -80,7 +80,7 @@ pub const Bar = struct {
         const saved = theme.loadSavedTheme() orelse return false;
         if (saved == self.current_theme_kind) return false;
         self.current_theme_kind = saved;
-        self.cfg.theme = saved.toTheme();
+        self.cfg.theme = theme.loadTheme(saved.id());
         self.last_visual_hash = 0;
         return true;
     }
@@ -273,9 +273,8 @@ pub const Bar = struct {
         else
             self.current_theme_kind.prev();
 
-        const new_th = self.current_theme_kind.toTheme();
+        const new_th = theme.selectTheme(self.current_theme_kind.id());
         self.cfg.theme = new_th;
-        theme.saveCurrentTheme(self.current_theme_kind);
     }
 
     fn renderLeftModule(self: *Bar, mod: config.ModuleKind, ctx: *types.BarContext, ui: *ui_mod.Ui) !void {

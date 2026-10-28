@@ -32,4 +32,4 @@ Wayland Server (MangoWC)
 * **Software Rasterizer (`src/core/renderer.zig`)**: 2D software rasterizer writing ARGB8888 pixels directly into double-buffered `wl_shm` memory pools (`src/core/buffer.zig`).
 * **Declarative UI (`src/core/ui.zig`, `src/core/clay.zig`)**: Wraps Clay 0.14 to build declarative UI trees, register input hitboxes, and measure FreeType font glyphs.
 * **Async Workers (`src/core/async.zig`)**: Offloads hardware scans (Wi-Fi, Bluetooth, PAM authentication) to worker threads using a non-blocking self-pipe wakeup mechanism for 0% idle CPU and stutter-free UI.
-* **Theme Engine (`src/core/theme.zig`)**: Six curated palettes (Nord, Catppuccin, Tokyo Night, Gruvbox, Rosé Pine, Frosted Neumorphic) with dynamic runtime switching.
+* **Theme Engine (`src/core/theme.zig`)**: Built-in CSS-based themes (Nord, Dracula, Catppuccin, Tokyo Night, Rosé Pine, Frosted Neumorphic) installed in `/usr/share/mizu/themes/`, automatic copying to `~/.config/mizu/themes/`, dynamic runtime switching, and automatic SVG icon recoloring using the active theme's palette.

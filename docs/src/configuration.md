@@ -23,8 +23,14 @@ Logical pixel font sizes (clamped to 8–96):
 * `quicksettings_text`, `quicksettings_icon`: Quick Settings text and icons.
 * `calendar_text`, `calendar_heading`: Calendar day numbers and navigation.
 
-### 3. Themes & Presets
-* `theme`: Active palette preset (`nord`, `catppuccin`, `tokyo_night`, `gruvbox`, `rose_pine`, `frosted_neumorphic`).
+### 3. Themes & Theme System
+* `theme`: Active theme name (default: `nord`).
+  * Built-in themes: `nord`, `dracula`, `catppuccin`, `tokyo-night`, `rose-pine`, `frosted-neumorphic`.
+  * **Built-in Location**: Shipped in `/usr/share/mizu/themes/`.
+  * **User Overrides**: When a theme is selected, its files are copied to `~/.config/mizu/themes/<theme_name>/` and loaded from the user copy. User modifications are preserved and never overwritten on theme changes.
+  * **CSS-based Colors & Styling**: Each theme directory includes a `theme.css` file defining CSS variables (`--mizu-base`, `--mizu-accent`, `--mizu-radius-bar`, etc.) and GTK `@define-color` rules.
+  * **Automatic SVG Recoloring**: SVG icons in theme directories and asset paths are automatically recolored using the active theme's palette where appropriate, with full anti-aliased rendering via Mizu's NanoSVG renderer.
+  * **Fallback Handling**: If a user theme is missing or invalid, Mizu safely falls back to built-in themes without overwriting user customizations.
 * `font_family`: Primary font family (e.g. `Maple Mono NF, monospace`).
 * `clock_format`: Standard strftime format string (e.g. `%a %b %d %H:%M`).
 * `calendar_file`: Optional custom `.ics` calendar file for holiday dates.
