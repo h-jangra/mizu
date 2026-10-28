@@ -174,6 +174,7 @@ const Command = enum {
     caffeine,
     annotate,
     image,
+    view,
     wallpaper,
     list,
     help,
@@ -191,7 +192,9 @@ fn parseCommand(arg: []const u8) ?Command {
         return .session;
     } else if (std.mem.eql(u8, arg, "caffeine")) {
         return .caffeine;
-    } else if (std.mem.eql(u8, arg, "annotate") or std.mem.eql(u8, arg, "image") or std.mem.eql(u8, arg, "shot") or std.mem.eql(u8, arg, "draw") or std.mem.eql(u8, arg, "view") or std.mem.eql(u8, arg, "img")) {
+    } else if (std.mem.eql(u8, arg, "view") or std.mem.eql(u8, arg, "v")) {
+        return .view;
+    } else if (std.mem.eql(u8, arg, "annotate") or std.mem.eql(u8, arg, "image") or std.mem.eql(u8, arg, "shot") or std.mem.eql(u8, arg, "draw") or std.mem.eql(u8, arg, "img")) {
         return .annotate;
     } else if (std.mem.eql(u8, arg, "wallpaper") or std.mem.eql(u8, arg, "wall") or std.mem.eql(u8, arg, "bg")) {
         return .wallpaper;
@@ -239,7 +242,8 @@ fn printUsage() void {
         \\  system-monitor  Open the live system & process monitor (aliases: sysmon, memory-monitor, memmon)
         \\  calendar        Open interactive month/year calendar (aliases: cal, -c)
         \\  clipboard       Open clipboard history search & manager (aliases: clip)
-        \\  annotate        Open unified image annotator & editor (aliases: image, shot, draw, view, img)
+        \\  view            Fast, minimal image viewer with low RAM usage (aliases: v)
+        \\  annotate        Open unified image annotator & editor (aliases: image, shot, draw, img)
         \\  wallpaper       Set or switch wallpapers (mizu wallpaper [switch|set <path>])
         \\  notify          Show a desktop notification popup (mizu notify <title> [body])
         \\  theme           Switch or inspect themes (mizu theme [next|prev|set <name>|list])
@@ -485,6 +489,30 @@ pub fn main(init: std.process.Init.Minimal) u8 {
         },
         .caffeine => {
             return caffeine_module.run();
+        },
+        .view => {
+            const allocator = std.heap.c_allocator;
+            var cfg = loadConfig(allocator);
+            defer cfg.deinit(allocator);
+
+            var file_to_open: ?[]const u8 = null;
+
+            while (arg_it.next()) |arg| {
+                if (std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "--help")) {
+                    std.debug.print("Usage: mizu view [image_file|-]\n\nFast, minimal Wayland image viewer with low RAM usage.\n", .{});
+                    return 0;
+                } else if (std.mem.eql(u8, arg, "-")) {
+                    file_to_open = "-";
+                } else if (!std.mem.startsWith(u8, arg, "-")) {
+                    file_to_open = arg;
+                }
+            }
+
+            const ret = image_viewer_module.run(allocator, cfg, file_to_open) catch |err| {
+                std.debug.print("mizu view error: {any}\n", .{err});
+                return 1;
+            };
+            return ret;
         },
         .annotate, .image => {
             const allocator = std.heap.c_allocator;

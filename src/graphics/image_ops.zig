@@ -794,8 +794,22 @@ pub const ImageBuffer = struct {
         const svg_img = c.nsvgParse(c_data.ptr, "px", 96.0) orelse return null;
         defer c.nsvgDelete(svg_img);
 
-        const w: u32 = @intFromFloat(@max(1.0, svg_img.*.width));
-        const h: u32 = @intFromFloat(@max(1.0, svg_img.*.height));
+        const orig_w = svg_img.*.width;
+        const orig_h = svg_img.*.height;
+        if (orig_w <= 0.0 or orig_h <= 0.0) return null;
+
+        // Smart vector scale: small icons upscale to ~1200px so they are sharp;
+        // huge SVGs clamp to 2560px to keep RAM minimal (< 25MB)
+        const max_dim = @max(orig_w, orig_h);
+        var scale: f32 = 1.0;
+        if (max_dim < 1000.0 and max_dim > 0.0) {
+            scale = 1200.0 / max_dim;
+        } else if (max_dim > 2560.0) {
+            scale = 2560.0 / max_dim;
+        }
+
+        const w: u32 = @intFromFloat(@max(1.0, orig_w * scale));
+        const h: u32 = @intFromFloat(@max(1.0, orig_h * scale));
 
         const rast = c.nsvgCreateRasterizer() orelse return null;
         defer c.nsvgDeleteRasterizer(rast);
@@ -803,20 +817,10 @@ pub const ImageBuffer = struct {
         var buf = try ImageBuffer.init(allocator, w, h, Color.transparent);
         errdefer buf.deinit();
 
-        const stride: usize = @as(usize, w) * 4;
-        const raw_bytes: [*c]u8 = @ptrCast(buf.pixels.ptr);
-        if (c.nsvgRasterize(rast, raw_bytes, @intCast(w), @intCast(h), @intCast(stride), svg_img, 0, 0, 1.0) != 0) {
+        const stride: usize = @as(usize, w);
+        if (c.nsvgRasterizeArgb(rast, @ptrCast(buf.pixels.ptr), @intCast(w), @intCast(h), @intCast(stride), svg_img, 0, 0, scale) != 0) {
             buf.deinit();
             return null;
-        }
-
-        for (buf.pixels) |*px| {
-            const raw = px.*;
-            const r = raw & 0xFF;
-            const g = (raw >> 8) & 0xFF;
-            const b = (raw >> 16) & 0xFF;
-            const a = (raw >> 24) & 0xFF;
-            px.* = (a << 24) | (r << 16) | (g << 8) | b;
         }
 
         return buf;
@@ -829,8 +833,22 @@ pub const ImageBuffer = struct {
         const svg_img = c.nsvgParseFromFile(c_path.ptr, "px", 96.0) orelse return null;
         defer c.nsvgDelete(svg_img);
 
-        const w: u32 = @intFromFloat(@max(1.0, svg_img.*.width));
-        const h: u32 = @intFromFloat(@max(1.0, svg_img.*.height));
+        const orig_w = svg_img.*.width;
+        const orig_h = svg_img.*.height;
+        if (orig_w <= 0.0 or orig_h <= 0.0) return null;
+
+        // Smart vector scale: small icons upscale to ~1200px so they are sharp;
+        // huge SVGs clamp to 2560px to keep RAM minimal (< 25MB)
+        const max_dim = @max(orig_w, orig_h);
+        var scale: f32 = 1.0;
+        if (max_dim < 1000.0 and max_dim > 0.0) {
+            scale = 1200.0 / max_dim;
+        } else if (max_dim > 2560.0) {
+            scale = 2560.0 / max_dim;
+        }
+
+        const w: u32 = @intFromFloat(@max(1.0, orig_w * scale));
+        const h: u32 = @intFromFloat(@max(1.0, orig_h * scale));
 
         const rast = c.nsvgCreateRasterizer() orelse return null;
         defer c.nsvgDeleteRasterizer(rast);
@@ -838,23 +856,10 @@ pub const ImageBuffer = struct {
         var buf = try ImageBuffer.init(allocator, w, h, Color.transparent);
         errdefer buf.deinit();
 
-        const stride: usize = @as(usize, w) * 4;
-        const raw_bytes: [*c]u8 = @ptrCast(buf.pixels.ptr);
-        if (c.nsvgRasterize(rast, raw_bytes, @intCast(w), @intCast(h), @intCast(stride), svg_img, 0, 0, 1.0) != 0) {
+        const stride: usize = @as(usize, w);
+        if (c.nsvgRasterizeArgb(rast, @ptrCast(buf.pixels.ptr), @intCast(w), @intCast(h), @intCast(stride), svg_img, 0, 0, scale) != 0) {
             buf.deinit();
             return null;
-        }
-
-        // NanoSVG outputs RGBA in byte order [R, G, B, A]
-        // Wayland ARGB little endian is [B, G, R, A]
-        // Swap R and B for proper display
-        for (buf.pixels) |*px| {
-            const raw = px.*;
-            const r = raw & 0xFF;
-            const g = (raw >> 8) & 0xFF;
-            const b = (raw >> 16) & 0xFF;
-            const a = (raw >> 24) & 0xFF;
-            px.* = (a << 24) | (r << 16) | (g << 8) | b;
         }
 
         return buf;
@@ -1309,4 +1314,35 @@ test "SVG and file loading, transforms and PNG saving verification" {
 
     try std.testing.expectEqual(rot.width, reloaded.width);
     try std.testing.expectEqual(rot.height, reloaded.height);
+}
+
+test "SVG vector rendering with colors and styles" {
+    const alloc = std.testing.allocator;
+    const svg_data =
+        \\<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100" viewBox="0 0 100 100">
+        \\  <rect x="0" y="0" width="100" height="100" fill="#ff0000"/>
+        \\  <circle cx="50" cy="50" r="30" style="fill:rgb(0,255,0);stroke:#0000ff;stroke-width:2"/>
+        \\</svg>
+    ;
+    var img = (try ImageBuffer.loadSvgFromMemory(alloc, svg_data)) orelse return error.SvgFailed;
+    defer img.deinit();
+
+    try std.testing.expect(img.width > 0);
+    try std.testing.expect(img.height > 0);
+
+    // Verify top-left corner has red fill (R=255, G=0, B=0, A=255)
+    const tl_pixel = img.getPixel(2, 2).?;
+    try std.testing.expectEqual(@as(u8, 255), tl_pixel.r);
+    try std.testing.expectEqual(@as(u8, 0), tl_pixel.g);
+    try std.testing.expectEqual(@as(u8, 0), tl_pixel.b);
+    try std.testing.expectEqual(@as(u8, 255), tl_pixel.a);
+
+    // Verify center has green circle fill (R=0, G=255, B=0, A=255)
+    const cx: i32 = @intCast(img.width / 2);
+    const cy: i32 = @intCast(img.height / 2);
+    const center_pixel = img.getPixel(cx, cy).?;
+    try std.testing.expectEqual(@as(u8, 0), center_pixel.r);
+    try std.testing.expectEqual(@as(u8, 255), center_pixel.g);
+    try std.testing.expectEqual(@as(u8, 0), center_pixel.b);
+    try std.testing.expectEqual(@as(u8, 255), center_pixel.a);
 }

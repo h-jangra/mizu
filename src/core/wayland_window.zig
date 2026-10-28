@@ -80,7 +80,10 @@ pub const WindowApp = struct {
     pointer_x: i32 = -1,
     pointer_y: i32 = -1,
     pointer_down: bool = false,
+    mouse_button: u32 = 0,
     pointer_serial: u32 = 0,
+    scroll_delta_y: f64 = 0.0,
+    scroll_delta_x: f64 = 0.0,
 
     // Keyboard state
     xkb_ctx: ?*c.struct_xkb_context = null,
@@ -616,12 +619,19 @@ pub const WindowApp = struct {
         _ = pointer; _ = time;
         const self: *WindowApp = @ptrCast(@alignCast(data.?));
         self.pointer_serial = serial;
+        self.mouse_button = button;
         self.pointer_down = (state == c.WL_POINTER_BUTTON_STATE_PRESSED);
-        _ = button;
     }
 
     fn pointer_axis(data: ?*anyopaque, pointer: ?*c.wl_pointer, time: u32, axis: u32, value: c.wl_fixed_t) callconv(.c) void {
-        _ = data; _ = pointer; _ = time; _ = axis; _ = value;
+        _ = pointer; _ = time;
+        const self: *WindowApp = @ptrCast(@alignCast(data.?));
+        const val_f = @as(f64, @floatFromInt(value)) / 256.0;
+        if (axis == c.WL_POINTER_AXIS_VERTICAL_SCROLL) {
+            self.scroll_delta_y += val_f;
+        } else if (axis == c.WL_POINTER_AXIS_HORIZONTAL_SCROLL) {
+            self.scroll_delta_x += val_f;
+        }
     }
 
     fn pointer_frame(data: ?*anyopaque, pointer: ?*c.wl_pointer) callconv(.c) void {

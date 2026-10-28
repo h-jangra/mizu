@@ -224,13 +224,112 @@ struct NSVGParser {
 	float viewMinx, viewMiny, viewW, viewH;
 	int hasViewBox;
 	int skip_depth;
+
+	float xforms[32][6];
+	int xform_depth;
 };
 typedef struct NSVGParser NSVGParser;
+
+static void nsvg__xformSetIdentity(float* t)
+{
+	t[0] = 1.0f; t[1] = 0.0f;
+	t[2] = 0.0f; t[3] = 1.0f;
+	t[4] = 0.0f; t[5] = 0.0f;
+}
+
+static void nsvg__xformMultiply(float* t, const float* s)
+{
+	float t0 = t[0]*s[0] + t[1]*s[2];
+	float t1 = t[0]*s[1] + t[1]*s[3];
+	float t2 = t[2]*s[0] + t[3]*s[2];
+	float t3 = t[2]*s[1] + t[3]*s[3];
+	float t4 = t[4]*s[0] + t[5]*s[2] + s[4];
+	float t5 = t[4]*s[1] + t[5]*s[3] + s[5];
+	t[0] = t0; t[1] = t1; t[2] = t2; t[3] = t3; t[4] = t4; t[5] = t5;
+}
+
+static void nsvg__parseTransform(float* t, const char* str)
+{
+	if (!str || !*str) return;
+	const char* s = str;
+	while (*s) {
+		while (*s && (*s == ' ' || *s == '\t' || *s == ',')) s++;
+		if (!*s) break;
+
+		if (strncmp(s, "matrix", 6) == 0) {
+			s += 6;
+			while (*s && *s != '(') s++;
+			if (*s == '(') s++;
+			float m[6] = {1,0,0,1,0,0};
+			char* end = NULL;
+			m[0] = (float)strtod(s, &end); s = end; while (*s == ',' || *s == ' ') s++;
+			m[1] = (float)strtod(s, &end); s = end; while (*s == ',' || *s == ' ') s++;
+			m[2] = (float)strtod(s, &end); s = end; while (*s == ',' || *s == ' ') s++;
+			m[3] = (float)strtod(s, &end); s = end; while (*s == ',' || *s == ' ') s++;
+			m[4] = (float)strtod(s, &end); s = end; while (*s == ',' || *s == ' ') s++;
+			m[5] = (float)strtod(s, &end); s = end;
+			nsvg__xformMultiply(t, m);
+			while (*s && *s != ')') s++;
+			if (*s == ')') s++;
+		} else if (strncmp(s, "translate", 9) == 0) {
+			s += 9;
+			while (*s && *s != '(') s++;
+			if (*s == '(') s++;
+			char* end = NULL;
+			float tx = (float)strtod(s, &end); s = end; while (*s == ',' || *s == ' ') s++;
+			float ty = 0.0f;
+			if (*s && *s != ')') ty = (float)strtod(s, &end);
+			float m[6] = { 1.0f, 0.0f, 0.0f, 1.0f, tx, ty };
+			nsvg__xformMultiply(t, m);
+			while (*s && *s != ')') s++;
+			if (*s == ')') s++;
+		} else if (strncmp(s, "scale", 5) == 0) {
+			s += 5;
+			while (*s && *s != '(') s++;
+			if (*s == '(') s++;
+			char* end = NULL;
+			float sx = (float)strtod(s, &end); s = end; while (*s == ',' || *s == ' ') s++;
+			float sy = (*s && *s != ')') ? (float)strtod(s, &end) : sx;
+			float m[6] = { sx, 0.0f, 0.0f, sy, 0.0f, 0.0f };
+			nsvg__xformMultiply(t, m);
+			while (*s && *s != ')') s++;
+			if (*s == ')') s++;
+		} else if (strncmp(s, "rotate", 6) == 0) {
+			s += 6;
+			while (*s && *s != '(') s++;
+			if (*s == '(') s++;
+			char* end = NULL;
+			float deg = (float)strtod(s, &end); s = end; while (*s == ',' || *s == ' ') s++;
+			float rad = deg * 3.14159265358979323846f / 180.0f;
+			float cos_a = cosf(rad);
+			float sin_a = sinf(rad);
+			if (*s && *s != ')') {
+				float cx = (float)strtod(s, &end); s = end; while (*s == ',' || *s == ' ') s++;
+				float cy = (float)strtod(s, &end);
+				float m1[6] = { 1.0f, 0.0f, 0.0f, 1.0f, cx, cy };
+				float m2[6] = { cos_a, sin_a, -sin_a, cos_a, 0.0f, 0.0f };
+				float m3[6] = { 1.0f, 0.0f, 0.0f, 1.0f, -cx, -cy };
+				nsvg__xformMultiply(t, m1);
+				nsvg__xformMultiply(t, m2);
+				nsvg__xformMultiply(t, m3);
+			} else {
+				float m[6] = { cos_a, sin_a, -sin_a, cos_a, 0.0f, 0.0f };
+				nsvg__xformMultiply(t, m);
+			}
+			while (*s && *s != ')') s++;
+			if (*s == ')') s++;
+		} else {
+			s++;
+		}
+	}
+}
 
 static NSVGParser* nsvg__createParser(void)
 {
 	NSVGParser* p = (NSVGParser*)calloc(1, sizeof(NSVGParser));
 	if (!p) return NULL;
+	p->xform_depth = 0;
+	nsvg__xformSetIdentity(p->xforms[0]);
 	/* SVG default paint is an opaque black fill and no stroke. */
 	p->fillPaint.type = NSVG_PAINT_COLOR;
 	p->fillPaint.color = 0xFF000000;
@@ -619,11 +718,52 @@ static void nsvg__parsePathData(NSVGParser* p, const char* d)
 
 /* Color parsing ----------------------------------------------------------- */
 
+typedef struct {
+	const char* name;
+	unsigned int color;
+} NSVGnamedColor;
+
+static const NSVGnamedColor nsvg__namedColors[] = {
+	{ "black", 0xFF000000 },
+	{ "white", 0xFFFFFFFF },
+	{ "red", 0xFFFF0000 },
+	{ "green", 0xFF008000 },
+	{ "blue", 0xFF0000FF },
+	{ "yellow", 0xFFFFFF00 },
+	{ "cyan", 0xFF00FFFF },
+	{ "aqua", 0xFF00FFFF },
+	{ "magenta", 0xFFFF00FF },
+	{ "fuchsia", 0xFFFF00FF },
+	{ "gray", 0xFF808080 },
+	{ "grey", 0xFF808080 },
+	{ "darkgray", 0xFFA9A9A9 },
+	{ "darkgrey", 0xFFA9A9A9 },
+	{ "lightgray", 0xFFD3D3D3 },
+	{ "lightgrey", 0xFFD3D3D3 },
+	{ "silver", 0xFFC0C0C0 },
+	{ "maroon", 0xFF800000 },
+	{ "olive", 0xFF808000 },
+	{ "lime", 0xFF00FF00 },
+	{ "navy", 0xFF000080 },
+	{ "teal", 0xFF008080 },
+	{ "orange", 0xFFFFA500 },
+	{ "purple", 0xFF800080 },
+	{ "violet", 0xFFEE82EE },
+	{ "pink", 0xFFFFC0CB },
+	{ "brown", 0xFFA52A2A },
+	{ "gold", 0xFFFFD700 },
+	{ "none", 0x00000000 },
+	{ "transparent", 0x00000000 },
+	{ NULL, 0 }
+};
+
 static unsigned int nsvg__parseHex(const char* str, int len)
 {
-	unsigned int r = 0, g = 0, b = 0;
+	unsigned int r = 0, g = 0, b = 0, a = 255;
 	if (len == 6) {
 		sscanf(str, "%2x%2x%2x", &r, &g, &b);
+	} else if (len == 8) {
+		sscanf(str, "%2x%2x%2x%2x", &r, &g, &b, &a);
 	} else if (len == 3) {
 		char one[3] = { str[0], str[0], 0 };
 		char two[3] = { str[1], str[1], 0 };
@@ -631,25 +771,101 @@ static unsigned int nsvg__parseHex(const char* str, int len)
 		r = (unsigned int)strtoul(one, NULL, 16);
 		g = (unsigned int)strtoul(two, NULL, 16);
 		b = (unsigned int)strtoul(thr, NULL, 16);
+	} else if (len == 4) {
+		char one[3] = { str[0], str[0], 0 };
+		char two[3] = { str[1], str[1], 0 };
+		char thr[3] = { str[2], str[2], 0 };
+		char fou[3] = { str[3], str[3], 0 };
+		r = (unsigned int)strtoul(one, NULL, 16);
+		g = (unsigned int)strtoul(two, NULL, 16);
+		b = (unsigned int)strtoul(thr, NULL, 16);
+		a = (unsigned int)strtoul(fou, NULL, 16);
 	}
-	return (0xFFu << 24) | (r << 16) | (g << 8) | b;
+	return (a << 24) | (r << 16) | (g << 8) | b;
 }
 
 static unsigned int nsvg__parseColor(const char* str)
 {
 	if (!str) return 0xFF000000;
+	while (*str && (*str == ' ' || *str == '\t')) str++;
+	if (!*str) return 0xFF000000;
+
 	if (str[0] == '#') {
 		str++;
 		int len = (int)strlen(str);
-		if (len == 6 || len == 3) return nsvg__parseHex(str, len);
+		while (len > 0 && (str[len-1] == ' ' || str[len-1] == '\t')) len--;
+		if (len == 6 || len == 3 || len == 8 || len == 4) return nsvg__parseHex(str, len);
 		return 0xFF000000;
 	}
-	if (strncmp(str, "rgb(", 4) == 0) {
-		int r = 0, g = 0, b = 0;
-		sscanf(str + 4, "%d,%d,%d", &r, &g, &b);
-		return (0xFFu << 24) | ((unsigned int)r << 16) | ((unsigned int)g << 8) | (unsigned int)b;
+	if (strncmp(str, "rgb(", 4) == 0 || strncmp(str, "rgba(", 5) == 0) {
+		const char* p = strchr(str, '(');
+		if (p) p++;
+		else p = str;
+		float rf = 0.0f, gf = 0.0f, bf = 0.0f, af = 1.0f;
+		if (strchr(p, '%')) {
+			sscanf(p, "%f%% , %f%% , %f%%", &rf, &gf, &bf);
+			rf *= 2.55f;
+			gf *= 2.55f;
+			bf *= 2.55f;
+		} else {
+			sscanf(p, "%f , %f , %f", &rf, &gf, &bf);
+		}
+		const char* c1 = strchr(p, ',');
+		if (c1) {
+			const char* c2 = strchr(c1 + 1, ',');
+			if (c2) {
+				const char* c3 = strchr(c2 + 1, ',');
+				if (c3) {
+					sscanf(c3 + 1, "%f", &af);
+					if (strchr(c3 + 1, '%')) af /= 100.0f;
+				}
+			}
+		}
+		int r = (int)(rf + 0.5f); if (r < 0) r = 0; if (r > 255) r = 255;
+		int g = (int)(gf + 0.5f); if (g < 0) g = 0; if (g > 255) g = 255;
+		int b = (int)(bf + 0.5f); if (b < 0) b = 0; if (b > 255) b = 255;
+		int a = (int)(af * 255.0f + 0.5f); if (a < 0) a = 0; if (a > 255) a = 255;
+		return ((unsigned int)a << 24) | ((unsigned int)r << 16) | ((unsigned int)g << 8) | (unsigned int)b;
 	}
+
+	for (int i = 0; nsvg__namedColors[i].name != NULL; i++) {
+		if (strcmp(str, nsvg__namedColors[i].name) == 0) {
+			return nsvg__namedColors[i].color;
+		}
+	}
+
 	return 0xFF000000;
+}
+
+static void nsvg__parseAttribs(NSVGParser* p, const char** attr);
+
+static void nsvg__parseStyle(NSVGParser* p, const char* style)
+{
+	const char* s = style;
+	char name[64];
+	char val[256];
+	while (*s) {
+		while (*s && (*s == ' ' || *s == '\t' || *s == '\n' || *s == '\r' || *s == ';')) s++;
+		if (!*s) break;
+		int ni = 0;
+		while (*s && *s != ':' && *s != ';' && ni < 63) {
+			if (*s != ' ' && *s != '\t') name[ni++] = *s;
+			s++;
+		}
+		name[ni] = 0;
+		if (*s == ':') s++;
+		while (*s && (*s == ' ' || *s == '\t')) s++;
+		int vi = 0;
+		while (*s && *s != ';' && vi < 255) {
+			val[vi++] = *s++;
+		}
+		while (vi > 0 && (val[vi-1] == ' ' || val[vi-1] == '\t')) vi--;
+		val[vi] = 0;
+		if (*s == ';') s++;
+
+		const char* pair[3] = { name, val, NULL };
+		nsvg__parseAttribs(p, pair);
+	}
 }
 
 static void nsvg__parseAttribs(NSVGParser* p, const char** attr)
@@ -660,11 +876,13 @@ static void nsvg__parseAttribs(NSVGParser* p, const char** attr)
 		const char* value = attr[i+1];
 		i += 2;
 		if (!name || !value) continue;
-		if (strcmp(name, "fill") == 0) {
-			if (strcmp(value, "none") == 0) nsvg__setPaintColor(&p->fillPaint, 0x00000000);
+		if (strcmp(name, "style") == 0) {
+			nsvg__parseStyle(p, value);
+		} else if (strcmp(name, "fill") == 0) {
+			if (strcmp(value, "none") == 0 || strcmp(value, "transparent") == 0) nsvg__setPaintColor(&p->fillPaint, 0x00000000);
 			else nsvg__setPaintColor(&p->fillPaint, nsvg__parseColor(value));
 		} else if (strcmp(name, "stroke") == 0) {
-			if (strcmp(value, "none") == 0) nsvg__setPaintColor(&p->strokePaint, 0x00000000);
+			if (strcmp(value, "none") == 0 || strcmp(value, "transparent") == 0) nsvg__setPaintColor(&p->strokePaint, 0x00000000);
 			else nsvg__setPaintColor(&p->strokePaint, nsvg__parseColor(value));
 		} else if (strcmp(name, "fill-opacity") == 0) {
 			p->fillOpacity = nsvg__atof(value);
@@ -728,7 +946,30 @@ static void nsvg__emitPath(NSVGParser* p, const char** attr, const char* d)
 	shape->strokeLineJoin = p->strokeLineJoin;
 	shape->opacity = p->opacity * (p->fillPaint.type == NSVG_PAINT_COLOR ? p->fillOpacity : p->strokeOpacity);
 	shape->flags = p->flags;
+
+	float final_t[6];
+	memcpy(final_t, p->xforms[p->xform_depth], sizeof(float) * 6);
+	const char* tf = nsvg__attrValue(attr, "transform");
+	if (tf) {
+		nsvg__parseTransform(final_t, tf);
+	}
+	memcpy(shape->xform, final_t, sizeof(float) * 6);
+
 	nsvg__parsePathData(p, d);
+
+	int is_identity = (shape->xform[0] == 1.0f && shape->xform[1] == 0.0f &&
+	                   shape->xform[2] == 0.0f && shape->xform[3] == 1.0f &&
+	                   shape->xform[4] == 0.0f && shape->xform[5] == 0.0f);
+	if (!is_identity) {
+		for (NSVGpath* path = shape->paths; path; path = path->next) {
+			for (int j = 0; j + 1 < path->npts; j += 2) {
+				float px = path->pts[j + 0];
+				float py = path->pts[j + 1];
+				path->pts[j + 0] = px * shape->xform[0] + py * shape->xform[2] + shape->xform[4];
+				path->pts[j + 1] = px * shape->xform[1] + py * shape->xform[3] + shape->xform[5];
+			}
+		}
+	}
 
 	p->fillPaint = saved_fill;
 	p->strokePaint = saved_stroke;
@@ -892,6 +1133,14 @@ static void nsvg__startElement(void* ud, const char* el, const char** attr)
 		if (w) p->image->width = nsvg__atof(w);
 		if (h) p->image->height = nsvg__atof(h);
 	} else if (strcmp(el, "g") == 0) {
+		if (p->xform_depth < 31) {
+			p->xform_depth++;
+			memcpy(p->xforms[p->xform_depth], p->xforms[p->xform_depth - 1], sizeof(float) * 6);
+		}
+		const char* tf = nsvg__attrValue(attr, "transform");
+		if (tf) {
+			nsvg__parseTransform(p->xforms[p->xform_depth], tf);
+		}
 		nsvg__parseAttribs(p, attr);
 	} else if (strcmp(el, "path") == 0) {
 		nsvg__emitPath(p, attr, nsvg__attrValue(attr, "d"));
@@ -922,8 +1171,13 @@ static void nsvg__startElement(void* ud, const char* el, const char** attr)
 static void nsvg__endElement(void* ud, const char* el)
 {
 	NSVGParser* p = (NSVGParser*)ud;
-	(void)el;
-	if (p && p->skip_depth > 0) p->skip_depth--;
+	if (p && p->skip_depth > 0) {
+		p->skip_depth--;
+		return;
+	}
+	if (p && strcmp(el, "g") == 0) {
+		if (p->xform_depth > 0) p->xform_depth--;
+	}
 }
 
 NSVGimage* nsvgParse(char* input, const char* units, float dpi)

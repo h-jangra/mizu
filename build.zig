@@ -105,6 +105,19 @@ pub fn build(b: *std.Build) void {
     configureMizuModule(b, exe_image.root_module);
     b.installArtifact(exe_image);
 
+    // Standalone Mizu View executable
+    const exe_view = b.addExecutable(.{
+        .name = "mizu-view",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/view_main.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        }),
+    });
+    configureMizuModule(b, exe_view.root_module);
+    b.installArtifact(exe_view);
+
     const run_cmd = b.addRunArtifact(exe);
     run_cmd.step.dependOn(b.getInstallStep());
     if (b.args) |args| {

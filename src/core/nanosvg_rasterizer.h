@@ -58,6 +58,24 @@ int nsvgRasterize(NSVGrasterizer* rast,
                   unsigned char* dst, int width, int height, int stride,
                   NSVGimage* image, float dx, float dy, float scale);
 
+/*
+ * Rasterize an image into a pre-allocated 32-bit ARGB8888 buffer.
+ *
+ * dst           - pointer to 32-bit ARGB buffer (native Wayland ARGB8888)
+ * width         - buffer width in pixels
+ * height        - buffer height in pixels
+ * stride_pixels - pixels per row (>= width)
+ * image         - NSVGimage to render
+ * dx, dy        - offset in buffer pixels
+ * scale         - uniform scale factor applied to the SVG
+ *
+ * Renders full-color shapes with anti-aliased fills and strokes into dst.
+ * Returns 0 on success, non-zero on failure.
+ */
+int nsvgRasterizeArgb(NSVGrasterizer* rast,
+                      unsigned int* dst, int width, int height, int stride_pixels,
+                      NSVGimage* image, float dx, float dy, float scale);
+
 #ifndef NANOSVG_CPLUSPLUS
 #  ifdef __cplusplus
 }
