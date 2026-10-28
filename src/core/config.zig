@@ -75,10 +75,10 @@ pub fn saveKeymapPosition(pos: KeymapPosition) void {
     if (home_opt == null) return;
     const home = std.mem.span(home_opt.?);
 
-    const dir_path = std.fmt.bufPrintZ(&dir_buf, "{s}/.cache/mizu", .{home}) catch return;
+    const dir_path = std.fmt.bufPrintSentinel(&dir_buf, "{s}/.cache/mizu", .{home}, 0) catch return;
     _ = c.mkdir(dir_path.ptr, 0o755);
 
-    const file_path = std.fmt.bufPrintZ(&file_buf, "{s}/.cache/mizu/keymap_position", .{home}) catch return;
+    const file_path = std.fmt.bufPrintSentinel(&file_buf, "{s}/.cache/mizu/keymap_position", .{home}, 0) catch return;
     const f = c.fopen(file_path.ptr, "wb") orelse return;
     defer _ = c.fclose(f);
 
@@ -93,7 +93,7 @@ pub fn loadSavedKeymapPosition() ?KeymapPosition {
     if (home_opt == null) return null;
     const home = std.mem.span(home_opt.?);
 
-    const file_path = std.fmt.bufPrintZ(&file_buf, "{s}/.cache/mizu/keymap_position", .{home}) catch return null;
+    const file_path = std.fmt.bufPrintSentinel(&file_buf, "{s}/.cache/mizu/keymap_position", .{home}, 0) catch return null;
     const f = c.fopen(file_path.ptr, "rb") orelse return null;
     defer _ = c.fclose(f);
 
@@ -111,10 +111,10 @@ pub fn saveKeymapSize(size: u32) void {
     if (home_opt == null) return;
     const home = std.mem.span(home_opt.?);
 
-    const dir_path = std.fmt.bufPrintZ(&dir_buf, "{s}/.cache/mizu", .{home}) catch return;
+    const dir_path = std.fmt.bufPrintSentinel(&dir_buf, "{s}/.cache/mizu", .{home}, 0) catch return;
     _ = c.mkdir(dir_path.ptr, 0o755);
 
-    const file_path = std.fmt.bufPrintZ(&file_buf, "{s}/.cache/mizu/keymap_size", .{home}) catch return;
+    const file_path = std.fmt.bufPrintSentinel(&file_buf, "{s}/.cache/mizu/keymap_size", .{home}, 0) catch return;
     const f = c.fopen(file_path.ptr, "wb") orelse return;
     defer _ = c.fclose(f);
 
@@ -129,7 +129,7 @@ pub fn loadSavedKeymapSize() ?u32 {
     if (home_opt == null) return null;
     const home = std.mem.span(home_opt.?);
 
-    const file_path = std.fmt.bufPrintZ(&file_buf, "{s}/.cache/mizu/keymap_size", .{home}) catch return null;
+    const file_path = std.fmt.bufPrintSentinel(&file_buf, "{s}/.cache/mizu/keymap_size", .{home}, 0) catch return null;
     const f = c.fopen(file_path.ptr, "rb") orelse return null;
     defer _ = c.fclose(f);
 
@@ -319,7 +319,7 @@ pub const Config = struct {
     pub fn loadFromFile(allocator: std.mem.Allocator, path: []const u8) Config {
         var cfg = Config.init(allocator);
 
-        const c_path = allocator.dupeZ(u8, path) catch return cfg;
+        const c_path = allocator.dupeSentinel(u8, path, 0) catch return cfg;
         defer allocator.free(c_path);
 
         const f = @import("../c.zig").c.fopen(c_path.ptr, "rb") orelse return cfg;

@@ -94,7 +94,7 @@ pub const WindowApp = struct {
     is_alt: bool = false,
     repeat_timer_fd: c_int = -1,
     repeat_sym: u32 = 0,
-    repeat_utf8_buf: [32]u8 = [_]u8{0} ** 32,
+    repeat_utf8_buf: [32]u8 = @splat(0),
     repeat_utf8_len: usize = 0,
 
     // Cursor
@@ -294,11 +294,11 @@ pub const WindowApp = struct {
             self.xdg_toplevel = xdg_top;
             _ = c.xdg_toplevel_add_listener(xdg_top, &xdg_toplevel_listener, self);
 
-            const title_z = try self.allocator.dupeZ(u8, self.cfg.title);
+            const title_z = try self.allocator.dupeSentinel(u8, self.cfg.title, 0);
             defer self.allocator.free(title_z);
             c.xdg_toplevel_set_title(xdg_top, title_z.ptr);
 
-            const app_id_z = try self.allocator.dupeZ(u8, self.cfg.app_id);
+            const app_id_z = try self.allocator.dupeSentinel(u8, self.cfg.app_id, 0);
             defer self.allocator.free(app_id_z);
             c.xdg_toplevel_set_app_id(xdg_top, app_id_z.ptr);
 
@@ -311,7 +311,7 @@ pub const WindowApp = struct {
             else
                 @intCast(c.ZWLR_LAYER_SHELL_V1_LAYER_TOP);
 
-            const name_z = try self.allocator.dupeZ(u8, self.cfg.app_id);
+            const name_z = try self.allocator.dupeSentinel(u8, self.cfg.app_id, 0);
             defer self.allocator.free(name_z);
 
             const layer_surf = c.zwlr_layer_shell_v1_get_layer_surface(

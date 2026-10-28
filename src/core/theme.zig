@@ -582,10 +582,10 @@ pub fn generateMizuCss(th: Theme) void {
     if (home_opt == null) return;
     const home = std.mem.span(home_opt.?);
 
-    const dir_path = std.fmt.bufPrintZ(&dir_buf, "{s}/.config/mizu", .{home}) catch return;
+    const dir_path = std.fmt.bufPrintSentinel(&dir_buf, "{s}/.config/mizu", .{home}, 0) catch return;
     _ = c.mkdir(dir_path.ptr, 0o755);
 
-    const file_path = std.fmt.bufPrintZ(&file_buf, "{s}/.config/mizu/mizu.css", .{home}) catch return;
+    const file_path = std.fmt.bufPrintSentinel(&file_buf, "{s}/.config/mizu/mizu.css", .{home}, 0) catch return;
     const f = c.fopen(file_path.ptr, "wb") orelse return;
     defer _ = c.fclose(f);
 
@@ -877,10 +877,10 @@ pub fn saveCurrentTheme(kind: ThemeKind) void {
     if (home_opt == null) return;
     const home = std.mem.span(home_opt.?);
 
-    const dir_path = std.fmt.bufPrintZ(&dir_buf, "{s}/.cache/mizu", .{home}) catch return;
+    const dir_path = std.fmt.bufPrintSentinel(&dir_buf, "{s}/.cache/mizu", .{home}, 0) catch return;
     _ = c.mkdir(dir_path.ptr, 0o755);
 
-    const file_path = std.fmt.bufPrintZ(&file_buf, "{s}/.cache/mizu/current_theme", .{home}) catch return;
+    const file_path = std.fmt.bufPrintSentinel(&file_buf, "{s}/.cache/mizu/current_theme", .{home}, 0) catch return;
     const f = c.fopen(file_path.ptr, "wb") orelse return;
     defer _ = c.fclose(f);
 
@@ -902,12 +902,12 @@ pub fn loadSavedTheme() ?ThemeKind {
     if (home_opt == null) return null;
     const home = std.mem.span(home_opt.?);
 
-    const file_path = std.fmt.bufPrintZ(&file_buf, "{s}/.cache/mizu/current_theme", .{home}) catch return null;
+    const file_path = std.fmt.bufPrintSentinel(&file_buf, "{s}/.cache/mizu/current_theme", .{home}, 0) catch return null;
     const f = c.fopen(file_path.ptr, "rb") orelse {
         // If no saved theme, generate default theme CSS if missing
         const def_th = ThemeKind.default_theme.toTheme();
         var css_path_buf: [512]u8 = undefined;
-        if (std.fmt.bufPrintZ(&css_path_buf, "{s}/.config/mizu/mizu.css", .{home})) |css_path| {
+        if (std.fmt.bufPrintSentinel(&css_path_buf, "{s}/.config/mizu/mizu.css", .{home}, 0)) |css_path| {
             if (c.access(css_path.ptr, 0) != 0) {
                 generateMizuCss(def_th);
             }
@@ -925,7 +925,7 @@ pub fn loadSavedTheme() ?ThemeKind {
     if (found_kind) |k| {
         // Verify mizu.css exists, generate if missing
         var css_path_buf: [512]u8 = undefined;
-        if (std.fmt.bufPrintZ(&css_path_buf, "{s}/.config/mizu/mizu.css", .{home})) |css_path| {
+        if (std.fmt.bufPrintSentinel(&css_path_buf, "{s}/.config/mizu/mizu.css", .{home}, 0)) |css_path| {
             if (c.access(css_path.ptr, 0) != 0) {
                 generateMizuCss(k.toTheme());
             }
@@ -1000,7 +1000,7 @@ test "generateMizuCss produces valid stylesheet" {
     if (home_opt) |home_ptr| {
         const home = std.mem.span(home_ptr);
         var css_path_buf: [512]u8 = undefined;
-        if (std.fmt.bufPrintZ(&css_path_buf, "{s}/.config/mizu/mizu.css", .{home})) |css_path| {
+        if (std.fmt.bufPrintSentinel(&css_path_buf, "{s}/.config/mizu/mizu.css", .{home}, 0)) |css_path| {
             const f = c.fopen(css_path.ptr, "rb");
             try std.testing.expect(f != null);
             if (f) |handle| _ = c.fclose(handle);

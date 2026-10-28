@@ -822,7 +822,7 @@ pub const ImageBuffer = struct {
     }
 
     pub fn loadSvgFromMemory(allocator: std.mem.Allocator, data: []const u8) !?ImageBuffer {
-        const c_data = try allocator.dupeZ(u8, data);
+        const c_data = try allocator.dupeSentinel(u8, data, 0);
         defer allocator.free(c_data);
 
         const svg_img = c.nsvgParse(c_data.ptr, "px", 96.0) orelse return null;
@@ -861,7 +861,7 @@ pub const ImageBuffer = struct {
     }
 
     pub fn loadSvg(allocator: std.mem.Allocator, path: []const u8) !?ImageBuffer {
-        const c_path = try allocator.dupeZ(u8, path);
+        const c_path = try allocator.dupeSentinel(u8, path, 0);
         defer allocator.free(c_path);
 
         const svg_img = c.nsvgParseFromFile(c_path.ptr, "px", 96.0) orelse return null;
@@ -1073,7 +1073,7 @@ pub const ImageBuffer = struct {
 
             var env_path_buf: [512]u8 = undefined;
             const path_env = if (c.getenv("PATH")) |p| std.mem.span(p) else "/usr/bin";
-            const env_path = std.fmt.bufPrintZ(&env_path_buf, "{s}:/usr/bin:/usr/local/bin:/usr/sbin:/sbin", .{path_env}) catch "/usr/bin";
+            const env_path = std.fmt.bufPrintSentinel(&env_path_buf, "{s}:/usr/bin:/usr/local/bin:/usr/sbin:/sbin", .{path_env}, 0) catch "/usr/bin";
             _ = c.setenv("PATH", env_path.ptr, 1);
 
             const args = [_][*c]const u8{ "wl-copy", "--type", "image/png", null };
@@ -1170,10 +1170,10 @@ pub const ImageBuffer = struct {
 
         // Run: grim -g "$(slurp)" /tmp/mizu_screenshot_tmp.png
         var cmd_buf: [512]u8 = undefined;
-        const cmd = std.fmt.bufPrintZ(
+        const cmd = std.fmt.bufPrintSentinel(
             &cmd_buf,
             "export PATH=\"$PATH:/usr/sbin:/sbin:/usr/local/bin:/usr/bin:$HOME/.local/bin\"; REGION=$(slurp -d); if [ -n \"$REGION\" ]; then grim -g \"$REGION\" {s}; fi",
-            .{tmp_path},
+            .{tmp_path}, 0
         ) catch return null;
 
         const ret = c.system(cmd.ptr);

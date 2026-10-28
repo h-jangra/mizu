@@ -83,12 +83,12 @@ pub const KeyOverlay = struct {
                 if (!std.mem.startsWith(u8, name, "event")) continue;
 
                 var dev_path_buf: [64]u8 = undefined;
-                const dev_path = std.fmt.bufPrintZ(&dev_path_buf, "/dev/input/{s}", .{name}) catch continue;
+                const dev_path = std.fmt.bufPrintSentinel(&dev_path_buf, "/dev/input/{s}", .{name}, 0) catch continue;
 
                 const fd = c.open(dev_path.ptr, c.O_RDONLY | c.O_NONBLOCK);
                 if (fd >= 0) {
-                    var ev_bits: [16]u8 = [_]u8{0} ** 16;
-                    var key_bits: [96]u8 = [_]u8{0} ** 96;
+                    var ev_bits: [16]u8 = @splat(0);
+                    var key_bits: [96]u8 = @splat(0);
 
                     const EVIOCGBIT_EV: c_ulong = 0x80104520;
                     const EVIOCGBIT_KEY: c_ulong = 0x80604521;
@@ -289,9 +289,9 @@ pub const KeyOverlay = struct {
         const cap_h: i32 = @as(i32, @intCast(font_size)) + 24 * s;
 
         var segs: [4][max_segments]Segment = undefined;
-        var seg_counts: [4]usize = [_]usize{0} ** 4;
-        var width_sets: [4][max_segments]i32 = [_][max_segments]i32{[_]i32{0} ** max_segments} ** 4;
-        var item_widths: [4]i32 = [_]i32{0} ** 4;
+        var seg_counts: [4]usize = @splat(0);
+        var width_sets: [4][max_segments]i32 = @splat(@splat(0));
+        var item_widths: [4]i32 = @splat(0);
 
         const count = @min(self.history.items.len, 4);
         var total_content: i32 = 0;

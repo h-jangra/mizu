@@ -1,0 +1,48 @@
+#ifndef MIZU_C_H
+#define MIZU_C_H
+
+#define _GNU_SOURCE
+#define _FORTIFY_SOURCE 0
+
+#include "sys/mman.h"
+#include "wayland-client.h"
+#include "wayland-cursor.h"
+#include "xdg-shell-client-protocol.h"
+#include "wlr-layer-shell-unstable-v1-client-protocol.h"
+#include "ext-session-lock-v1-client-protocol.h"
+#include "viewporter-client-protocol.h"
+#include "idle-inhibit-unstable-v1-client-protocol.h"
+#include "security/pam_appl.h"
+#include "pwd.h"
+#include "unistd.h"
+#include "sys/stat.h"
+#include "fcntl.h"
+#include "poll.h"
+#include "sys/socket.h"
+#include "sys/un.h"
+#include "sys/timerfd.h"
+#include "sys/eventfd.h"
+#include "sys/signalfd.h"
+#include "sys/statvfs.h"
+#include "sys/wait.h"
+#include "pthread.h"
+#include "signal.h"
+#include "time.h"
+#include "stdio.h"
+#include "stdlib.h"
+#include "malloc.h"
+#include "ft2build.h"
+#include "freetype/freetype.h"
+#include "fontconfig/fontconfig.h"
+#include "xkbcommon/xkbcommon.h"
+#include "dirent.h"
+#include "png.h"
+#include "jpeglib.h"
+#include "linux/input.h"
+#include "notify_dbus.h"
+#include "nanosvg.h"
+#include "nanosvg_rasterizer.h"
+#include "clay.h"
+#include "math.h"
+
+#endif

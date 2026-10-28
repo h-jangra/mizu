@@ -7,11 +7,11 @@ const parseKbValue = proc_file.parseKbValue;
 pub const ProcessInfo = struct {
     pid: u32 = 0,
     ppid: u32 = 0,
-    name: [128]u8 = [_]u8{0} ** 128,
+    name: [128]u8 = @splat(0),
     name_len: usize = 0,
-    exe: [128]u8 = [_]u8{0} ** 128,
+    exe: [128]u8 = @splat(0),
     exe_len: usize = 0,
-    cmdline: [512]u8 = [_]u8{0} ** 512,
+    cmdline: [512]u8 = @splat(0),
     cmdline_len: usize = 0,
     rss_kb: u64 = 0,
 };
@@ -105,7 +105,7 @@ pub fn collectProcesses(allocator: std.mem.Allocator, out: *std.ArrayList(Proces
         const pid = std.fmt.parseInt(u32, name, 10) catch continue;
 
         var stat_path_buf: [128]u8 = undefined;
-        const stat_path = std.fmt.bufPrintZ(&stat_path_buf, "/proc/{d}/stat", .{pid}) catch continue;
+        const stat_path = std.fmt.bufPrintSentinel(&stat_path_buf, "/proc/{d}/stat", .{pid}, 0) catch continue;
 
         var stat_buf: [2048]u8 = undefined;
         const stat_len = readProcFile(stat_path.ptr, &stat_buf) orelse continue;
@@ -129,7 +129,7 @@ pub fn collectProcesses(allocator: std.mem.Allocator, out: *std.ArrayList(Proces
         }
 
         var statm_path_buf: [128]u8 = undefined;
-        const statm_path = std.fmt.bufPrintZ(&statm_path_buf, "/proc/{d}/statm", .{pid}) catch continue;
+        const statm_path = std.fmt.bufPrintSentinel(&statm_path_buf, "/proc/{d}/statm", .{pid}, 0) catch continue;
 
         var statm_buf: [128]u8 = undefined;
         const statm_len = readProcFile(statm_path.ptr, &statm_buf) orelse continue;
@@ -150,7 +150,7 @@ pub fn collectProcesses(allocator: std.mem.Allocator, out: *std.ArrayList(Proces
 
         // Read executable symlink /proc/{pid}/exe
         var exe_path_buf: [128]u8 = undefined;
-        const exe_path = std.fmt.bufPrintZ(&exe_path_buf, "/proc/{d}/exe", .{pid}) catch "";
+        const exe_path = std.fmt.bufPrintSentinel(&exe_path_buf, "/proc/{d}/exe", .{pid}, 0) catch "";
         if (exe_path.len > 0) {
             var raw_exe_buf: [256]u8 = undefined;
             const link_len = c.readlink(exe_path.ptr, &raw_exe_buf, raw_exe_buf.len - 1);
@@ -170,7 +170,7 @@ pub fn collectProcesses(allocator: std.mem.Allocator, out: *std.ArrayList(Proces
 
         // Read cmdline for full subprocess command
         var cmd_path_buf: [128]u8 = undefined;
-        const cmd_path = std.fmt.bufPrintZ(&cmd_path_buf, "/proc/{d}/cmdline", .{pid}) catch "";
+        const cmd_path = std.fmt.bufPrintSentinel(&cmd_path_buf, "/proc/{d}/cmdline", .{pid}, 0) catch "";
         if (cmd_path.len > 0) {
             var raw_cmd_buf: [512]u8 = undefined;
             const cmd_read = readProcFile(cmd_path.ptr, &raw_cmd_buf) orelse 0;

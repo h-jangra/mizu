@@ -17,9 +17,9 @@ pub const ClipType = enum {
 pub const ClipItem = struct {
     id: u64,
     clip_type: ClipType = .text,
-    preview: [160]u8 = [_]u8{0} ** 160,
+    preview: [160]u8 = @splat(0),
     preview_len: usize = 0,
-    first_line: [160]u8 = [_]u8{0} ** 160,
+    first_line: [160]u8 = @splat(0),
     first_line_len: usize = 0,
     first_line_loaded: bool = false,
 
@@ -67,11 +67,11 @@ pub const DecodedCache = struct {
     pub const Entry = struct {
         id: u64 = 0,
         len: usize = 0,
-        buf: [8192]u8 = [_]u8{0} ** 8192,
+        buf: [8192]u8 = @splat(0),
         access_seq: u64 = 0,
     };
 
-    entries: [64]Entry = [_]Entry{.{}} ** 64,
+    entries: [64]Entry = @splat(Entry{}),
     seq_counter: u64 = 1,
 
     pub fn get(self: *DecodedCache, id: u64) ?[]const u8 {
@@ -154,7 +154,7 @@ pub const ImageCache = struct {
         access_seq: u64 = 0,
     };
 
-    entries: [16]Entry = [_]Entry{.{}} ** 16,
+    entries: [16]Entry = @splat(Entry{}),
     seq_counter: u64 = 1,
     allocator: std.mem.Allocator = undefined,
     total_bytes: usize = 0,
@@ -163,7 +163,7 @@ pub const ImageCache = struct {
 
     pub fn init(allocator: std.mem.Allocator) ImageCache {
         return .{
-            .entries = [_]Entry{.{}} ** 16,
+            .entries = @splat(Entry{}),
             .seq_counter = 1,
             .allocator = allocator,
             .total_bytes = 0,
@@ -374,7 +374,7 @@ pub const SharedWorkerContext = struct {
 
     history_lock: Mutex,
     history_done: bool = false,
-    history_items: [500]ClipItem = [_]ClipItem{.{ .id = 0 }} ** 500,
+    history_items: [500]ClipItem = @splat(ClipItem{ .id = 0 }),
     history_count: usize = 0,
 
     decode_lock: Mutex,
@@ -398,7 +398,7 @@ pub const SharedWorkerContext = struct {
             .stop = std.atomic.Value(bool).init(false),
             .history_lock = Mutex.init(),
             .history_done = false,
-            .history_items = [_]ClipItem{.{ .id = 0 }} ** 500,
+            .history_items = @splat(ClipItem{ .id = 0 }),
             .history_count = 0,
             .decode_lock = Mutex.init(),
             .decode_cond = Condition.init(),
@@ -438,7 +438,7 @@ pub const SharedWorkerContext = struct {
 };
 
 // Process-level session cache for instant warm reopen
-var session_cached_items: [500]ClipItem = [_]ClipItem{.{ .id = 0 }} ** 500;
+var session_cached_items: [500]ClipItem = @splat(ClipItem{ .id = 0 });
 var session_cached_count: usize = 0;
 var session_has_cache: bool = false;
 
@@ -534,7 +534,7 @@ pub const ClipboardPanel = struct {
     worker_thread: ?std.Thread = null,
 
     // Incremental search optimization
-    prev_query_buf: [128]u8 = [_]u8{0} ** 128,
+    prev_query_buf: [128]u8 = @splat(0),
     prev_query_len: usize = 0,
 
     pub fn init(allocator: std.mem.Allocator, cfg: config.Config) !ClipboardPanel {
@@ -777,7 +777,7 @@ pub const ClipboardPanel = struct {
             defer ctx.allocator.free(result);
             var result_len: usize = 0;
             var cmd_buf: [256]u8 = undefined;
-            if (std.fmt.bufPrintZ(&cmd_buf, "export PATH=\"$PATH:/usr/sbin:/sbin:/usr/local/bin:/usr/bin:$HOME/.local/bin\"; cliphist decode {d} 2>/dev/null", .{id})) |cmd| {
+            if (std.fmt.bufPrintSentinel(&cmd_buf, "export PATH=\"$PATH:/usr/sbin:/sbin:/usr/local/bin:/usr/bin:$HOME/.local/bin\"; cliphist decode {d} 2>/dev/null", .{id}, 0)) |cmd| {
                 if (c.popen(cmd.ptr, "r")) |pipe| {
                     while (result_len < result.len) {
                         const n = c.fread(result[result_len..].ptr, 1, result.len - result_len, pipe);
@@ -905,7 +905,7 @@ pub const ClipboardPanel = struct {
             for (self.filtered_indices.items) |idx| {
                 const item = self.items.items[idx];
                 const prev = item.preview[0..item.preview_len];
-                if (std.ascii.indexOfIgnoreCase(prev, q) != null) {
+                if (std.ascii.findIgnoreCase(prev, q) != null) {
                     self.filtered_indices.items[write_idx] = idx;
                     write_idx += 1;
                 }
@@ -916,7 +916,7 @@ pub const ClipboardPanel = struct {
             self.filtered_indices.ensureTotalCapacity(self.allocator, self.items.items.len) catch {};
             for (self.items.items, 0..) |item, idx| {
                 const prev = item.preview[0..item.preview_len];
-                if (std.ascii.indexOfIgnoreCase(prev, q) != null) {
+                if (std.ascii.findIgnoreCase(prev, q) != null) {
                     self.filtered_indices.append(self.allocator, idx) catch continue;
                 }
             }
@@ -949,7 +949,7 @@ pub const ClipboardPanel = struct {
 
         // Decode from cliphist to preserve full multi-line content.
         var cmd_buf: [256]u8 = undefined;
-        const cmd = std.fmt.bufPrintZ(&cmd_buf, "export PATH=\"$PATH:/usr/sbin:/sbin:/usr/local/bin:/usr/bin:$HOME/.local/bin\"; cliphist decode {d} | wl-copy", .{item.id}) catch return;
+        const cmd = std.fmt.bufPrintSentinel(&cmd_buf, "export PATH=\"$PATH:/usr/sbin:/sbin:/usr/local/bin:/usr/bin:$HOME/.local/bin\"; cliphist decode {d} | wl-copy", .{item.id}, 0) catch return;
         sys_status.spawnCmd(cmd);
 
         self.running = false;
@@ -960,7 +960,7 @@ pub const ClipboardPanel = struct {
         const item = self.items.items[actual_idx];
 
         var cmd_buf: [256]u8 = undefined;
-        const cmd = std.fmt.bufPrintZ(&cmd_buf, "export PATH=\"$PATH:/usr/sbin:/sbin:/usr/local/bin:/usr/bin:$HOME/.local/bin\"; printf '{d}\\t' | cliphist delete", .{item.id}) catch return;
+        const cmd = std.fmt.bufPrintSentinel(&cmd_buf, "export PATH=\"$PATH:/usr/sbin:/sbin:/usr/local/bin:/usr/bin:$HOME/.local/bin\"; printf '{d}\\t' | cliphist delete", .{item.id}, 0) catch return;
         sys_status.spawnCmd(cmd);
 
         self.decode_cache.remove(item.id);

@@ -155,7 +155,7 @@ pub fn searchFiles(allocator: std.mem.Allocator, query: []const u8) !std.ArrayLi
 
             // Check if exists
             var st: c.struct_stat = undefined;
-            const path_z = try allocator.dupeZ(u8, path);
+            const path_z = try allocator.dupeSentinel(u8, path, 0);
             defer allocator.free(path_z);
             if (c.stat(path_z.ptr, &st) == 0) {
                 const is_dir = (st.st_mode & c.S_IFMT) == c.S_IFDIR;
@@ -188,7 +188,7 @@ pub fn searchFiles(allocator: std.mem.Allocator, query: []const u8) !std.ArrayLi
 
         // Check if resolved is a directory or path with trailing search
         var st: c.struct_stat = undefined;
-        const res_z = try allocator.dupeZ(u8, resolved);
+        const res_z = try allocator.dupeSentinel(u8, resolved, 0);
         defer allocator.free(res_z);
 
         if (c.stat(res_z.ptr, &st) == 0 and (st.st_mode & c.S_IFMT) == c.S_IFDIR) {
@@ -212,7 +212,7 @@ pub fn searchFiles(allocator: std.mem.Allocator, query: []const u8) !std.ArrayLi
 }
 
 fn browseDir(allocator: std.mem.Allocator, list: *std.ArrayList(FileEntry), dir_path: []const u8, filter: []const u8) void {
-    const dir_z = allocator.dupeZ(u8, dir_path) catch return;
+    const dir_z = allocator.dupeSentinel(u8, dir_path, 0) catch return;
     defer allocator.free(dir_z);
 
     const dir = c.opendir(dir_z.ptr);
@@ -257,7 +257,7 @@ fn searchRecursive(
 ) void {
     if (depth > max_depth or list.items.len >= 50) return;
 
-    const dir_z = allocator.dupeZ(u8, dir_path) catch return;
+    const dir_z = allocator.dupeSentinel(u8, dir_path, 0) catch return;
     defer allocator.free(dir_z);
 
     const dir = c.opendir(dir_z.ptr);

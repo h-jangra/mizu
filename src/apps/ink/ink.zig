@@ -210,7 +210,7 @@ pub const Annotation = struct {
     points: std.ArrayListUnmanaged(Point) = .empty,
 
     // For text
-    text_buf: [128]u8 = [_]u8{0} ** 128,
+    text_buf: [128]u8 = @splat(0),
     text_len: usize = 0,
     font_size: u32 = 18,
 
@@ -715,7 +715,7 @@ pub const AnnotateApp = struct {
     file_size_bytes: usize = 0,
 
     // Toast Status
-    status_msg: [128]u8 = [_]u8{0} ** 128,
+    status_msg: [128]u8 = @splat(0),
     status_len: usize = 0,
     status_ticks: u32 = 0,
 
@@ -754,7 +754,7 @@ pub const AnnotateApp = struct {
         var f_size: usize = 0;
         if (file_path) |p| {
             var st: c.struct_stat = undefined;
-            const p_z = allocator.dupeZ(u8, p) catch null;
+            const p_z = allocator.dupeSentinel(u8, p, 0) catch null;
             if (p_z) |pz| {
                 defer allocator.free(pz);
                 if (c.stat(pz.ptr, &st) == 0) {
@@ -1268,7 +1268,7 @@ pub const AnnotateApp = struct {
             if (home) |h| {
                 const home_str = std.mem.span(h);
                 var dir_buf: [384]u8 = undefined;
-                const dir = std.fmt.bufPrintZ(&dir_buf, "{s}/Pictures/Screenshots", .{home_str}) catch "/tmp";
+                const dir = std.fmt.bufPrintSentinel(&dir_buf, "{s}/Pictures/Screenshots", .{home_str}, 0) catch "/tmp";
                 _ = c.mkdir(dir.ptr, 0o755);
                 break :blk std.fmt.bufPrint(&path_buf, "{s}/Pictures/Screenshots/mizu_{d}.png", .{ home_str, ts }) catch "/tmp/mizu_annotated.png";
             }

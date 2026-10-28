@@ -114,14 +114,14 @@ pub const AsyncSysData = struct {
     volume_percent: u32 = 50,
     volume_muted: bool = false,
     mpris_state: MprisState = .stopped,
-    mpris_track: [128]u8 = [_]u8{0} ** 128,
+    mpris_track: [128]u8 = @splat(0),
     mpris_track_len: usize = 0,
-    mpris_art_url: [256]u8 = [_]u8{0} ** 256,
+    mpris_art_url: [256]u8 = @splat(0),
     mpris_art_url_len: usize = 0,
-    wifi_ssid: [64]u8 = [_]u8{0} ** 64,
+    wifi_ssid: [64]u8 = @splat(0),
     wifi_ssid_len: usize = 0,
     bluetooth_connected: bool = false,
-    bluetooth_device: [64]u8 = [_]u8{0} ** 64,
+    bluetooth_device: [64]u8 = @splat(0),
     bluetooth_device_len: usize = 0,
 };
 
@@ -164,13 +164,13 @@ pub const SysStatus = struct {
     energy_rate_watts: f64 = 0.0,
     power_profile: PowerProfile = .balanced,
     profile_manually_set: bool = false,
-    battery_device: [64]u8 = [_]u8{0} ** 64,
+    battery_device: [64]u8 = @splat(0),
     battery_device_len: usize = 0,
 
     // Backlight
     has_backlight: bool = false,
     backlight_percent: u32 = 0,
-    backlight_device: [64]u8 = [_]u8{0} ** 64,
+    backlight_device: [64]u8 = @splat(0),
     backlight_device_len: usize = 0,
 
     // Audio
@@ -179,24 +179,24 @@ pub const SysStatus = struct {
 
     // MPRIS
     mpris_state: MprisState = .stopped,
-    mpris_track: [128]u8 = [_]u8{0} ** 128,
+    mpris_track: [128]u8 = @splat(0),
     mpris_track_len: usize = 0,
-    mpris_art_url: [256]u8 = [_]u8{0} ** 256,
+    mpris_art_url: [256]u8 = @splat(0),
     mpris_art_url_len: usize = 0,
 
     // Network & Bluetooth
     wifi_enabled: bool = false,
-    wifi_ssid: [64]u8 = [_]u8{0} ** 64,
+    wifi_ssid: [64]u8 = @splat(0),
     wifi_ssid_len: usize = 0,
     bluetooth_enabled: bool = false,
     bluetooth_connected: bool = false,
-    bluetooth_device: [64]u8 = [_]u8{0} ** 64,
+    bluetooth_device: [64]u8 = @splat(0),
     bluetooth_device_len: usize = 0,
 
     // Host & Uptime
-    user_host: [64]u8 = [_]u8{0} ** 64,
+    user_host: [64]u8 = @splat(0),
     user_host_len: usize = 0,
-    uptime_str: [32]u8 = [_]u8{0} ** 32,
+    uptime_str: [32]u8 = @splat(0),
     uptime_len: usize = 0,
 
     // Audio & safety
@@ -340,13 +340,13 @@ pub const SysStatus = struct {
                 const name = std.mem.span(@as([*:0]const u8, @ptrCast(&entry.*.d_name)));
                 if (std.mem.startsWith(u8, name, "rfkill")) {
                     var type_path_buf: [128]u8 = undefined;
-                    const type_path = std.fmt.bufPrintZ(&type_path_buf, "/sys/class/rfkill/{s}/type", .{name}) catch continue;
+                    const type_path = std.fmt.bufPrintSentinel(&type_path_buf, "/sys/class/rfkill/{s}/type", .{name}, 0) catch continue;
                     var tbuf: [32]u8 = undefined;
                     if (readProcFile(type_path.ptr, &tbuf)) |tlen| {
                         const tstr = std.mem.trim(u8, tbuf[0..tlen], " \t\r\n");
                         if (std.mem.eql(u8, tstr, "wlan")) {
                             var soft_path_buf: [128]u8 = undefined;
-                            const soft_path = std.fmt.bufPrintZ(&soft_path_buf, "/sys/class/rfkill/{s}/soft", .{name}) catch continue;
+                            const soft_path = std.fmt.bufPrintSentinel(&soft_path_buf, "/sys/class/rfkill/{s}/soft", .{name}, 0) catch continue;
                             var sbuf: [16]u8 = undefined;
                             if (readProcFile(soft_path.ptr, &sbuf)) |slen| {
                                 const sstr = std.mem.trim(u8, sbuf[0..slen], " \t\r\n");
@@ -357,7 +357,7 @@ pub const SysStatus = struct {
                         } else if (std.mem.eql(u8, tstr, "bluetooth")) {
                             bt_found = true;
                             var soft_path_buf: [128]u8 = undefined;
-                            const soft_path = std.fmt.bufPrintZ(&soft_path_buf, "/sys/class/rfkill/{s}/soft", .{name}) catch continue;
+                            const soft_path = std.fmt.bufPrintSentinel(&soft_path_buf, "/sys/class/rfkill/{s}/soft", .{name}, 0) catch continue;
                             var sbuf: [16]u8 = undefined;
                             if (readProcFile(soft_path.ptr, &sbuf)) |slen| {
                                 const sstr = std.mem.trim(u8, sbuf[0..slen], " \t\r\n");
@@ -473,7 +473,7 @@ pub const SysStatus = struct {
     pub fn savePowerProfileCache(profile: PowerProfile) void {
         const home = c.getenv("HOME") orelse return;
         var path_buf: [256]u8 = undefined;
-        const path = std.fmt.bufPrintZ(&path_buf, "{s}/.cache/mizu/power_profile", .{std.mem.span(home)}) catch return;
+        const path = std.fmt.bufPrintSentinel(&path_buf, "{s}/.cache/mizu/power_profile", .{std.mem.span(home)}, 0) catch return;
         const f = c.fopen(path.ptr, "wb") orelse return;
         defer _ = c.fclose(f);
         const s = switch (profile) {
@@ -487,7 +487,7 @@ pub const SysStatus = struct {
     pub fn loadPowerProfileCache() ?PowerProfile {
         const home = c.getenv("HOME") orelse return null;
         var path_buf: [256]u8 = undefined;
-        const path = std.fmt.bufPrintZ(&path_buf, "{s}/.cache/mizu/power_profile", .{std.mem.span(home)}) catch return null;
+        const path = std.fmt.bufPrintSentinel(&path_buf, "{s}/.cache/mizu/power_profile", .{std.mem.span(home)}, 0) catch return null;
         const f = c.fopen(path.ptr, "rb") orelse return null;
         defer _ = c.fclose(f);
         var buf: [32]u8 = undefined;
@@ -516,7 +516,7 @@ pub const SysStatus = struct {
     pub fn saveEarbudSafetyCache(enabled: bool) void {
         const home = c.getenv("HOME") orelse return;
         var path_buf: [256]u8 = undefined;
-        const path = std.fmt.bufPrintZ(&path_buf, "{s}/.cache/mizu/earbud_safety", .{std.mem.span(home)}) catch return;
+        const path = std.fmt.bufPrintSentinel(&path_buf, "{s}/.cache/mizu/earbud_safety", .{std.mem.span(home)}, 0) catch return;
         const f = c.fopen(path.ptr, "wb") orelse return;
         defer _ = c.fclose(f);
         const s: []const u8 = if (enabled) "1\n" else "0\n";
@@ -526,7 +526,7 @@ pub const SysStatus = struct {
     pub fn loadEarbudSafetyCache() ?bool {
         const home = c.getenv("HOME") orelse return null;
         var path_buf: [256]u8 = undefined;
-        const path = std.fmt.bufPrintZ(&path_buf, "{s}/.cache/mizu/earbud_safety", .{std.mem.span(home)}) catch return null;
+        const path = std.fmt.bufPrintSentinel(&path_buf, "{s}/.cache/mizu/earbud_safety", .{std.mem.span(home)}, 0) catch return null;
         const f = c.fopen(path.ptr, "rb") orelse return null;
         defer _ = c.fclose(f);
         var buf: [16]u8 = undefined;
@@ -613,7 +613,7 @@ pub const SysStatus = struct {
         if (!std.mem.startsWith(u8, content, "cpu ")) return;
 
         var it = std.mem.tokenizeAny(u8, content[4..], " \t\r\n");
-        var fields: [10]u64 = [_]u64{0} ** 10;
+        var fields: [10]u64 = @splat(0);
         var count: usize = 0;
         while (it.next()) |token| {
             if (count >= 10) break;
@@ -676,7 +676,7 @@ pub const SysStatus = struct {
         var test_buf: [32]u8 = undefined;
         for (common_bats) |bat_name| {
             var path_buf: [128:0]u8 = undefined;
-            if (std.fmt.bufPrintZ(&path_buf, "/sys/class/power_supply/{s}/capacity", .{bat_name})) |p| {
+            if (std.fmt.bufPrintSentinel(&path_buf, "/sys/class/power_supply/{s}/capacity", .{bat_name}, 0)) |p| {
                 if (readProcFile(p.ptr, &test_buf) != null) {
                     const copy_len = @min(bat_name.len, self.battery_device.len);
                     @memcpy(self.battery_device[0..copy_len], bat_name[0..copy_len]);
@@ -695,7 +695,7 @@ pub const SysStatus = struct {
             if (std.mem.eql(u8, name, ".") or std.mem.eql(u8, name, "..")) continue;
 
             var path_buf: [128:0]u8 = undefined;
-            if (std.fmt.bufPrintZ(&path_buf, "/sys/class/power_supply/{s}/capacity", .{name})) |p| {
+            if (std.fmt.bufPrintSentinel(&path_buf, "/sys/class/power_supply/{s}/capacity", .{name}, 0)) |p| {
                 if (readProcFile(p.ptr, &test_buf) != null) {
                     const copy_len = @min(name.len, self.battery_device.len);
                     @memcpy(self.battery_device[0..copy_len], name[0..copy_len]);
@@ -735,7 +735,7 @@ pub const SysStatus = struct {
                     const name = std.mem.span(@as([*:0]const u8, @ptrCast(&entry.*.d_name)));
                     if (std.mem.eql(u8, name, ".") or std.mem.eql(u8, name, "..")) continue;
                     var path_buf: [128:0]u8 = undefined;
-                    if (std.fmt.bufPrintZ(&path_buf, "/sys/class/power_supply/{s}/online", .{name})) |p| {
+                    if (std.fmt.bufPrintSentinel(&path_buf, "/sys/class/power_supply/{s}/online", .{name}, 0)) |p| {
                         if (readProcFile(p.ptr, &buf)) |l| {
                             const s = std.mem.trim(u8, buf[0..l], " \t\r\n");
                             if (std.mem.eql(u8, s, "1")) {
@@ -784,7 +784,7 @@ pub const SysStatus = struct {
         };
 
         var cap_path_buf: [128:0]u8 = undefined;
-        const cap_path = std.fmt.bufPrintZ(&cap_path_buf, "/sys/class/power_supply/{s}/capacity", .{dev}) catch {
+        const cap_path = std.fmt.bufPrintSentinel(&cap_path_buf, "/sys/class/power_supply/{s}/capacity", .{dev}, 0) catch {
             self.has_battery = false;
             self.bat_seconds_remaining = null;
             return;
@@ -805,7 +805,7 @@ pub const SysStatus = struct {
         var stat_path_buf: [128:0]u8 = undefined;
         var stat_buf: [64]u8 = undefined;
         var stat_len: ?usize = null;
-        if (std.fmt.bufPrintZ(&stat_path_buf, "/sys/class/power_supply/{s}/status", .{dev})) |sp| {
+        if (std.fmt.bufPrintSentinel(&stat_path_buf, "/sys/class/power_supply/{s}/status", .{dev}, 0)) |sp| {
             stat_len = readProcFile(sp.ptr, &stat_buf);
         } else |_| {}
 
@@ -851,38 +851,38 @@ pub const SysStatus = struct {
         var energy_full: u64 = 0;
         var power_now: u64 = 0;
 
-        if (std.fmt.bufPrintZ(&e_path_buf, "/sys/class/power_supply/{s}/energy_now", .{dev})) |ep| {
+        if (std.fmt.bufPrintSentinel(&e_path_buf, "/sys/class/power_supply/{s}/energy_now", .{dev}, 0)) |ep| {
             if (readProcFile(ep.ptr, &e_now_buf)) |l| {
                 energy_now = std.fmt.parseInt(u64, std.mem.trim(u8, e_now_buf[0..l], " \t\r\n"), 10) catch 0;
             }
         } else |_| {}
-        if (std.fmt.bufPrintZ(&ef_path_buf, "/sys/class/power_supply/{s}/energy_full", .{dev})) |efp| {
+        if (std.fmt.bufPrintSentinel(&ef_path_buf, "/sys/class/power_supply/{s}/energy_full", .{dev}, 0)) |efp| {
             if (readProcFile(efp.ptr, &e_full_buf)) |l| {
                 energy_full = std.fmt.parseInt(u64, std.mem.trim(u8, e_full_buf[0..l], " \t\r\n"), 10) catch 0;
             }
         } else |_| {}
-        if (std.fmt.bufPrintZ(&p_path_buf, "/sys/class/power_supply/{s}/power_now", .{dev})) |pp| {
+        if (std.fmt.bufPrintSentinel(&p_path_buf, "/sys/class/power_supply/{s}/power_now", .{dev}, 0)) |pp| {
             if (readProcFile(pp.ptr, &p_now_buf)) |l| {
                 power_now = std.fmt.parseInt(u64, std.mem.trim(u8, p_now_buf[0..l], " \t\r\n"), 10) catch 0;
             }
         } else |_| {}
 
         if (energy_now == 0) {
-            if (std.fmt.bufPrintZ(&e_path_buf, "/sys/class/power_supply/{s}/charge_now", .{dev})) |cp| {
+            if (std.fmt.bufPrintSentinel(&e_path_buf, "/sys/class/power_supply/{s}/charge_now", .{dev}, 0)) |cp| {
                 if (readProcFile(cp.ptr, &e_now_buf)) |l| {
                     energy_now = std.fmt.parseInt(u64, std.mem.trim(u8, e_now_buf[0..l], " \t\r\n"), 10) catch 0;
                 }
             } else |_| {}
         }
         if (energy_full == 0) {
-            if (std.fmt.bufPrintZ(&ef_path_buf, "/sys/class/power_supply/{s}/charge_full", .{dev})) |cfp| {
+            if (std.fmt.bufPrintSentinel(&ef_path_buf, "/sys/class/power_supply/{s}/charge_full", .{dev}, 0)) |cfp| {
                 if (readProcFile(cfp.ptr, &e_full_buf)) |l| {
                     energy_full = std.fmt.parseInt(u64, std.mem.trim(u8, e_full_buf[0..l], " \t\r\n"), 10) catch 0;
                 }
             } else |_| {}
         }
         if (power_now == 0) {
-            if (std.fmt.bufPrintZ(&p_path_buf, "/sys/class/power_supply/{s}/current_now", .{dev})) |cp| {
+            if (std.fmt.bufPrintSentinel(&p_path_buf, "/sys/class/power_supply/{s}/current_now", .{dev}, 0)) |cp| {
                 if (readProcFile(cp.ptr, &p_now_buf)) |l| {
                     power_now = std.fmt.parseInt(u64, std.mem.trim(u8, p_now_buf[0..l], " \t\r\n"), 10) catch 0;
                 }
@@ -1016,7 +1016,7 @@ pub const SysStatus = struct {
         };
 
         var cur_path_buf: [128]u8 = undefined;
-        const cur_path = std.fmt.bufPrintZ(&cur_path_buf, "/sys/class/backlight/{s}/brightness", .{dev}) catch return;
+        const cur_path = std.fmt.bufPrintSentinel(&cur_path_buf, "/sys/class/backlight/{s}/brightness", .{dev}, 0) catch return;
         var buf: [64]u8 = undefined;
         const cur_len = readProcFile(cur_path.ptr, &buf) orelse {
             self.has_backlight = false;
@@ -1025,7 +1025,7 @@ pub const SysStatus = struct {
         const cur_val = std.fmt.parseInt(u32, std.mem.trim(u8, buf[0..cur_len], " \t\r\n"), 10) catch 0;
 
         var max_path_buf: [128]u8 = undefined;
-        const max_path = std.fmt.bufPrintZ(&max_path_buf, "/sys/class/backlight/{s}/max_brightness", .{dev}) catch return;
+        const max_path = std.fmt.bufPrintSentinel(&max_path_buf, "/sys/class/backlight/{s}/max_brightness", .{dev}, 0) catch return;
         const max_len = readProcFile(max_path.ptr, &buf) orelse {
             self.has_backlight = false;
             return;
@@ -1167,7 +1167,7 @@ fn commandAvailable(name: []const u8) bool {
     while (dirs.next()) |dir| {
         if (dir.len == 0) continue;
         var path_buf: [512]u8 = undefined;
-        const path = std.fmt.bufPrintZ(&path_buf, "{s}/{s}", .{ dir, name }) catch continue;
+        const path = std.fmt.bufPrintSentinel(&path_buf, "{s}/{s}", .{ dir, name }, 0) catch continue;
         if (c.access(path.ptr, c.X_OK) == 0) return true;
     }
     return false;
@@ -1366,7 +1366,7 @@ fn workerLoop(shared: *SharedWorkerState) void {
     var last_mpris: i64 = 0;
     var last_wifi: i64 = 0;
     var last_bluetooth: i64 = 0;
-    var last_sink: [128]u8 = [_]u8{0} ** 128;
+    var last_sink: [128]u8 = @splat(0);
     var last_sink_len: usize = 0;
     var last_audio_check: i64 = 0;
     var initialized_sink = false;

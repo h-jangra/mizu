@@ -34,7 +34,7 @@ pub const MangoIpc = struct {
         .{ .index = 4 }, .{ .index = 5 }, .{ .index = 6 },
         .{ .index = 7 }, .{ .index = 8 }, .{ .index = 9 },
     },
-    active_monitor: [64]u8 = [_]u8{0} ** 64,
+    active_monitor: [64]u8 = @splat(0),
     socket_path: ?[]const u8 = null,
 
     pub fn init() MangoIpc {

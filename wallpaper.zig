@@ -7,18 +7,8 @@
 
 const std = @import("std");
 
-const c = @cImport({
-    @cInclude("wayland-client.h");
-    @cInclude("sys/mman.h");
-    @cInclude("sys/stat.h");
-    @cInclude("stdlib.h");
-    @cInclude("unistd.h");
-    @cInclude("fcntl.h");
-    @cInclude("signal.h");
-    @cInclude("poll.h");
-    @cInclude("dirent.h");
-    @cInclude("linux/input-event-codes.h");
-});
+// Zig 0.17 removed @cImport; reuse the translate-c bindings from src/c.zig.
+const c = @import("src/c.zig").c;
 
 extern fn memfd_create(name: [*:0]const u8, flags: c_uint) c_int;
 const MFD_CLOEXEC: c_uint = 0x0001;
@@ -309,11 +299,11 @@ pub const Inflate = struct {
     }
 
     const Huffman = struct {
-        counts: [16]u16 = [_]u16{0} ** 16,
-        symbols: [320]u16 = [_]u16{0} ** 320,
-        min_code: [16]u32 = [_]u32{0} ** 16,
-        max_code: [16]i32 = [_]i32{-1} ** 16,
-        val_ptr: [16]i32 = [_]i32{0} ** 16,
+        counts: [16]u16 = @splat(0),
+        symbols: [320]u16 = @splat(0),
+        min_code: [16]u32 = @splat(0),
+        max_code: [16]i32 = @splat(-1),
+        val_ptr: [16]i32 = @splat(0),
 
         fn build(self: *Huffman, lengths: []const u8) !void {
             @memset(&self.counts, 0);
@@ -427,7 +417,7 @@ pub const Inflate = struct {
                     var lit_tree = Huffman{};
                     try lit_tree.build(&lit_lens);
 
-                    var dist_lens: [32]u8 = [_]u8{5} ** 32;
+                    var dist_lens: [32]u8 = @splat(5);
                     var dist_tree = Huffman{};
                     try dist_tree.build(&dist_lens);
 
@@ -438,14 +428,14 @@ pub const Inflate = struct {
                     const hdist = (try inf.readBits(5)) + 1;
                     const hclen = (try inf.readBits(4)) + 4;
 
-                    var clen_lens: [19]u8 = [_]u8{0} ** 19;
+                    var clen_lens: [19]u8 = @splat(0);
                     for (0..hclen) |i| {
                         clen_lens[CLEN_ORDER[i]] = @intCast(try inf.readBits(3));
                     }
                     var clen_tree = Huffman{};
                     try clen_tree.build(&clen_lens);
 
-                    var lit_dist_lens: [320]u8 = [_]u8{0} ** 320;
+                    var lit_dist_lens: [320]u8 = @splat(0);
                     var idx: usize = 0;
                     const total_codes = hlit + hdist;
                     while (idx < total_codes) {
@@ -686,12 +676,12 @@ const ZIGZAG: [64]u8 = .{
 };
 
 pub const JpegHuffman = struct {
-    counts: [16]u8 = [_]u8{0} ** 16,
-    symbols: [256]u8 = [_]u8{0} ** 256,
+    counts: [16]u8 = @splat(0),
+    symbols: [256]u8 = @splat(0),
     total_symbols: usize = 0,
-    min_code: [16]u32 = [_]u32{0} ** 16,
-    max_code: [16]i32 = [_]i32{-1} ** 16,
-    val_ptr: [16]i32 = [_]i32{0} ** 16,
+    min_code: [16]u32 = @splat(0),
+    max_code: [16]i32 = @splat(-1),
+    val_ptr: [16]i32 = @splat(0),
 
     pub fn build(self: *JpegHuffman, counts: []const u8, symbols: []const u8) void {
         @memcpy(self.counts[0..16], counts[0..16]);
@@ -842,7 +832,7 @@ pub fn decodeJpeg(allocator: std.mem.Allocator, data: []const u8) !Image {
     if (data.len < 4 or data[0] != 0xFF or data[1] != 0xD8) return error.NotAJpeg;
 
     var pos: usize = 2;
-    var q_tables: [4][64]u16 = [_][64]u16{[_]u16{0} ** 64} ** 4;
+    var q_tables: [4][64]u16 = @splat(@splat(0));
     var dc_tables: [4]JpegHuffman = undefined;
     var ac_tables: [4]JpegHuffman = undefined;
     var components: [4]Component = undefined;
@@ -1005,7 +995,7 @@ pub fn decodeJpeg(allocator: std.mem.Allocator, data: []const u8) !Image {
                 const comp = &components[ci];
                 const block_count = @as(usize, comp.h) * comp.v;
                 for (0..block_count) |bi| {
-                    var block_coeffs = [_]f32{0.0} ** 64;
+                    var block_coeffs: [64]f32 = @splat(0.0);
 
                     const dc_table = &dc_tables[comp.dc_table_id];
                     const dc_len = try reader.decodeSymbol(dc_table);
@@ -1174,7 +1164,7 @@ pub fn decodeQoi(allocator: std.mem.Allocator, data: []const u8) !Image {
     const pixels = try allocator.alloc(u32, width * height);
     errdefer allocator.free(pixels);
 
-    var index = [_]u32{0xFF000000} ** 64;
+    var index: [64]u32 = @splat(0xFF000000);
     var r: u8 = 0;
     var g: u8 = 0;
     var b: u8 = 0;

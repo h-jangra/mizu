@@ -233,7 +233,7 @@ fn scanDirectory(
     seen_ids: *std.StringHashMap(void),
     apps: *std.ArrayList(DesktopApp),
 ) !void {
-    const c_dir_path = try allocator.dupeZ(u8, dir_path);
+    const c_dir_path = try allocator.dupeSentinel(u8, dir_path, 0);
     defer allocator.free(c_dir_path);
 
     // Use libc opendir/readdir to stay robust across POSIX environments
@@ -265,7 +265,7 @@ fn scanDirectory(
 }
 
 fn readDesktopFile(allocator: std.mem.Allocator, path: []const u8) ?[]u8 {
-    const c_path = allocator.dupeZ(u8, path) catch return null;
+    const c_path = allocator.dupeSentinel(u8, path, 0) catch return null;
     defer allocator.free(c_path);
 
     const f = @import("../c.zig").c.fopen(c_path.ptr, "rb") orelse return null;
@@ -412,7 +412,7 @@ pub fn loadAppUsageInto(allocator: std.mem.Allocator, apps: []DesktopApp) void {
     const path = getAppUsageFilePath(&path_buf) orelse return;
 
     var path_z_buf: [512]u8 = undefined;
-    const path_z = std.fmt.bufPrintZ(&path_z_buf, "{s}", .{path}) catch return;
+    const path_z = std.fmt.bufPrintSentinel(&path_z_buf, "{s}", .{path}, 0) catch return;
 
     const file = c.fopen(path_z.ptr, "r") orelse return;
     defer _ = c.fclose(file);
@@ -456,11 +456,11 @@ pub fn loadAppUsageInto(allocator: std.mem.Allocator, apps: []DesktopApp) void {
 pub fn saveAppUsageToFile(apps: []const DesktopApp) void {
     const home = c.getenv("HOME") orelse return;
     var dir_buf: [256]u8 = undefined;
-    const dir_path = std.fmt.bufPrintZ(&dir_buf, "{s}/.cache/mizu", .{std.mem.span(home)}) catch return;
+    const dir_path = std.fmt.bufPrintSentinel(&dir_buf, "{s}/.cache/mizu", .{std.mem.span(home)}, 0) catch return;
     _ = c.mkdir(dir_path.ptr, 0o755);
 
     var path_buf: [512]u8 = undefined;
-    const path_z = std.fmt.bufPrintZ(&path_buf, "{s}/.cache/mizu/app_usage", .{std.mem.span(home)}) catch return;
+    const path_z = std.fmt.bufPrintSentinel(&path_buf, "{s}/.cache/mizu/app_usage", .{std.mem.span(home)}, 0) catch return;
 
     const file = c.fopen(path_z.ptr, "w") orelse return;
     defer _ = c.fclose(file);

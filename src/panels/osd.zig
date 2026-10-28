@@ -27,10 +27,10 @@ pub const Osd = struct {
     percent: u32 = 50,
     is_muted: bool = false,
 
-    title: [128]u8 = [_]u8{0} ** 128,
+    title: [128]u8 = @splat(0),
     title_len: usize = 0,
 
-    subtitle: [128]u8 = [_]u8{0} ** 128,
+    subtitle: [128]u8 = @splat(0),
     subtitle_len: usize = 0,
 
     pub fn init(allocator: std.mem.Allocator, cfg: config.Config, kind: OsdKind) !Osd {
@@ -131,7 +131,7 @@ pub const Osd = struct {
             if (std.mem.eql(u8, name, ".") or std.mem.eql(u8, name, "..")) continue;
 
             var cur_path_buf: [128]u8 = undefined;
-            const cur_path = std.fmt.bufPrintZ(&cur_path_buf, "/sys/class/backlight/{s}/brightness", .{name}) catch continue;
+            const cur_path = std.fmt.bufPrintSentinel(&cur_path_buf, "/sys/class/backlight/{s}/brightness", .{name}, 0) catch continue;
             const cur_f = c.fopen(cur_path.ptr, "rb") orelse continue;
             var cbuf: [64]u8 = undefined;
             const clen = c.fread(&cbuf, 1, cbuf.len - 1, cur_f);
@@ -141,7 +141,7 @@ pub const Osd = struct {
             const cur_val = std.fmt.parseInt(u32, std.mem.trim(u8, cbuf[0..clen], " \t\r\n"), 10) catch 0;
 
             var max_path_buf: [128]u8 = undefined;
-            const max_path = std.fmt.bufPrintZ(&max_path_buf, "/sys/class/backlight/{s}/max_brightness", .{name}) catch continue;
+            const max_path = std.fmt.bufPrintSentinel(&max_path_buf, "/sys/class/backlight/{s}/max_brightness", .{name}, 0) catch continue;
             const max_f = c.fopen(max_path.ptr, "rb") orelse continue;
             var mbuf: [64]u8 = undefined;
             const mlen = c.fread(&mbuf, 1, mbuf.len - 1, max_f);

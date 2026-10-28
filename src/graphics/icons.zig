@@ -492,7 +492,7 @@ const max_icon_name = 48;
 
 const CacheEntry = struct {
     used: bool = false,
-    name: [max_icon_name]u8 = [_]u8{0} ** max_icon_name,
+    name: [max_icon_name]u8 = @splat(0),
     name_len: u8 = 0,
     size_px: u32 = 0,
     scale: u32 = 0,
@@ -500,7 +500,7 @@ const CacheEntry = struct {
     icon: ?RasterIcon = null,
 };
 
-var g_cache: [max_cached_icons]CacheEntry = [_]CacheEntry{.{}} ** max_cached_icons;
+var g_cache: [max_cached_icons]CacheEntry = @splat(CacheEntry{});
 var g_cache_seq: u64 = 0;
 
 fn fileExists(path: []const u8) bool {

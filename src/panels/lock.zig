@@ -12,8 +12,8 @@ const buffer = @import("../core/buffer.zig");
 pub const AuthState = enum { idle, authenticating, failed, success };
 
 pub const AuthContext = struct {
-    username: [256]u8 = [_]u8{0} ** 256,
-    password: [128]u8 = [_]u8{0} ** 128,
+    username: [256]u8 = @splat(0),
+    password: [128]u8 = @splat(0),
 };
 
 pub const LockOutput = struct {
@@ -80,12 +80,12 @@ pub const LockApp = struct {
     auth_success: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     auth_thread: ?std.Thread = null,
     auth_fn: *const fn (username: [:0]const u8, password: [:0]const u8) bool = authenticatePAM,
-    password_buf: [128]u8 = [_]u8{0} ** 128,
+    password_buf: [128]u8 = @splat(0),
     password_len: usize = 0,
     show_input: bool = false,
     needs_redraw: bool = true,
     timer_fd: c_int = -1,
-    auth_username: [256]u8 = [_]u8{0} ** 256,
+    auth_username: [256]u8 = @splat(0),
     auth_username_len: usize = 0,
     caret_blink: bool = true,
     glyph_anim_offset: f32 = 0.0,
@@ -327,7 +327,7 @@ pub const LockApp = struct {
         if (is_ctrl) return;
 
         // Printable characters
-        var utf8_buf: [32]u8 = [_]u8{0} ** 32;
+        var utf8_buf: [32]u8 = @splat(0);
         const len = c.xkb_state_key_get_utf8(self.xkb_state.?, keycode, &utf8_buf, utf8_buf.len);
         if (len > 0) {
             const ulen: usize = @intCast(len);
@@ -856,7 +856,7 @@ fn loadActiveWallpaper(allocator: std.mem.Allocator, cfg: config.Config) ?*Image
     for (cache_paths) |cp| {
         const full_path_slice = std.fmt.allocPrint(allocator, "{s}{s}", .{ home_str, cp }) catch continue;
         defer allocator.free(full_path_slice);
-        const full_path_z = allocator.dupeZ(u8, full_path_slice) catch continue;
+        const full_path_z = allocator.dupeSentinel(u8, full_path_slice, 0) catch continue;
         defer allocator.free(full_path_z);
 
         const f = c.fopen(full_path_z.ptr, "r") orelse continue;

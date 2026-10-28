@@ -8,13 +8,13 @@ const ui_mod = @import("../core/ui.zig");
 
 pub const Notification = struct {
     id: u32 = 0,
-    app_name: [64]u8 = [_]u8{0} ** 64,
+    app_name: [64]u8 = @splat(0),
     app_name_len: usize = 0,
-    app_icon: [128]u8 = [_]u8{0} ** 128,
+    app_icon: [128]u8 = @splat(0),
     app_icon_len: usize = 0,
-    summary: [128]u8 = [_]u8{0} ** 128,
+    summary: [128]u8 = @splat(0),
     summary_len: usize = 0,
-    body: [512]u8 = [_]u8{0} ** 512,
+    body: [512]u8 = @splat(0),
     body_len: usize = 0,
     timestamp: u64 = 0,
     expire_timeout_ms: i32 = 4000,
@@ -50,7 +50,7 @@ pub const Notification = struct {
 pub const NotificationStore = struct {
     allocator: std.mem.Allocator,
     items: std.ArrayList(Notification),
-    history_file_buf: [512]u8 = [_]u8{0} ** 512,
+    history_file_buf: [512]u8 = @splat(0),
 
     pub fn getHistoryFilePath(self: *const NotificationStore) [:0]const u8 {
         return std.mem.span(@as([*:0]const u8, @ptrCast(&self.history_file_buf)));
@@ -74,16 +74,16 @@ pub const NotificationStore = struct {
         const home_opt = c.getenv("HOME");
         const home = if (home_opt != null) std.mem.span(home_opt.?) else "/tmp";
         var cache_buf: [512]u8 = undefined;
-        if (std.fmt.bufPrintZ(&cache_buf, "{s}/.cache", .{home})) |cache_path| {
+        if (std.fmt.bufPrintSentinel(&cache_buf, "{s}/.cache", .{home}, 0)) |cache_path| {
             _ = c.mkdir(cache_path.ptr, 0o755);
         } else |_| {}
 
         var dir_buf: [512]u8 = undefined;
-        if (std.fmt.bufPrintZ(&dir_buf, "{s}/.cache/mizu", .{home})) |dir_path| {
+        if (std.fmt.bufPrintSentinel(&dir_buf, "{s}/.cache/mizu", .{home}, 0)) |dir_path| {
             _ = c.mkdir(dir_path.ptr, 0o755);
         } else |_| {}
 
-        _ = std.fmt.bufPrintZ(&self.history_file_buf, "{s}/.cache/mizu/notifications_history.json", .{home}) catch {};
+        _ = std.fmt.bufPrintSentinel(&self.history_file_buf, "{s}/.cache/mizu/notifications_history.json", .{home}, 0) catch {};
     }
 
     pub fn add(self: *NotificationStore, notif: Notification) void {
@@ -117,8 +117,8 @@ pub const NotificationStore = struct {
         _ = c.fwrite("[\n", 1, 2, f);
         for (self.items.items, 0..) |item, i| {
             var line_buf: [1024]u8 = undefined;
-            var escaped_summary: [256]u8 = [_]u8{0} ** 256;
-            var escaped_body: [512]u8 = [_]u8{0} ** 512;
+            var escaped_summary: [256]u8 = @splat(0);
+            var escaped_body: [512]u8 = @splat(0);
             escapeJsonString(item.getSummary(), &escaped_summary);
             escapeJsonString(item.getBody(), &escaped_body);
 

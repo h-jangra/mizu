@@ -151,19 +151,19 @@ pub const ViewMode = enum {
 };
 
 pub const WifiItem = struct {
-    ssid: [64]u8 = [_]u8{0} ** 64,
+    ssid: [64]u8 = @splat(0),
     ssid_len: usize = 0,
     signal: u8 = 0,
-    security: [32]u8 = [_]u8{0} ** 32,
+    security: [32]u8 = @splat(0),
     security_len: usize = 0,
     is_active: bool = false,
     is_saved: bool = false,
 };
 
 pub const BluetoothItem = struct {
-    mac: [32]u8 = [_]u8{0} ** 32,
+    mac: [32]u8 = @splat(0),
     mac_len: usize = 0,
-    name: [64]u8 = [_]u8{0} ** 64,
+    name: [64]u8 = @splat(0),
     name_len: usize = 0,
     connected: bool = false,
     icon: []const u8 = "󰂯",
@@ -176,7 +176,7 @@ pub const AudioTab = enum {
 
 pub const AudioDeviceItem = struct {
     id: u32 = 0,
-    name: [96]u8 = [_]u8{0} ** 96,
+    name: [96]u8 = @splat(0),
     name_len: usize = 0,
     volume_pct: u32 = 100,
     is_default: bool = false,
@@ -321,32 +321,32 @@ pub const QuickSettings = struct {
     source_items: std.ArrayList(AudioDeviceItem) = std.ArrayList(AudioDeviceItem).empty,
     audio_tab: AudioTab = .output,
     record_audio_mode: recorder.RecordAudioMode = .system,
-    default_sink_name: [64]u8 = [_]u8{0} ** 64,
+    default_sink_name: [64]u8 = @splat(0),
     default_sink_name_len: usize = 0,
-    default_source_name: [64]u8 = [_]u8{0} ** 64,
+    default_source_name: [64]u8 = @splat(0),
     default_source_name_len: usize = 0,
 
     wifi_input_idx: ?usize = null,
-    wifi_input_ssid: [64]u8 = [_]u8{0} ** 64,
+    wifi_input_ssid: [64]u8 = @splat(0),
     wifi_input_ssid_len: usize = 0,
     wifi_input: ?text_input.TextInput = null,
-    wifi_password: [128]u8 = [_]u8{0} ** 128,
+    wifi_password: [128]u8 = @splat(0),
     wifi_password_len: usize = 0,
     wifi_connect_state: WifiConnectState = .idle,
-    connecting_ssid: [64]u8 = [_]u8{0} ** 64,
+    connecting_ssid: [64]u8 = @splat(0),
     connecting_ssid_len: usize = 0,
-    wifi_failed_ssid: [64]u8 = [_]u8{0} ** 64,
+    wifi_failed_ssid: [64]u8 = @splat(0),
     wifi_failed_ssid_len: usize = 0,
-    wifi_error_msg: [128]u8 = [_]u8{0} ** 128,
+    wifi_error_msg: [128]u8 = @splat(0),
     wifi_error_len: usize = 0,
     wifi_worker: WifiWorker = .{},
     wifi_worker_running: bool = false,
     wifi_scan_worker: WifiScanWorker = .{},
     bt_scan_worker: BtScanWorker = .{},
     bt_connect_worker: BtConnectWorker = .{},
-    bt_failed_mac: [32]u8 = [_]u8{0} ** 32,
+    bt_failed_mac: [32]u8 = @splat(0),
     bt_failed_mac_len: usize = 0,
-    bt_error_msg: [128]u8 = [_]u8{0} ** 128,
+    bt_error_msg: [128]u8 = @splat(0),
     bt_error_len: usize = 0,
     audio_scan_worker: AudioScanWorker = .{},
     pointer_x: i32 = -1,
@@ -362,11 +362,11 @@ pub const QuickSettings = struct {
     bt_scan_status: async.OpStatus = .idle,
     audio_scan_status: async.OpStatus = .idle,
     bt_connect_status: async.OpStatus = .idle,
-    bt_connect_mac: [32]u8 = [_]u8{0} ** 32,
+    bt_connect_mac: [32]u8 = @splat(0),
     bt_connect_mac_len: usize = 0,
     notif_store: ?notification_module.NotificationStore = null,
     mpris_cover_img: ?*renderer.Image = null,
-    mpris_cover_path: [256]u8 = [_]u8{0} ** 256,
+    mpris_cover_path: [256]u8 = @splat(0),
     mpris_cover_len: usize = 0,
     last_wifi_auto_scan: i64 = 0,
     last_bt_auto_scan: i64 = 0,
@@ -784,13 +784,13 @@ pub const QuickSettings = struct {
                         if (idx < self.bt_items.items.len) {
                             const item = self.bt_items.items[idx];
                             const mac = item.mac[0..item.mac_len];
-                            var mac_z: [33]u8 = [_]u8{0} ** 33;
+                            var mac_z: [33]u8 = @splat(0);
                             @memcpy(mac_z[0..mac.len], mac);
                             mac_z[mac.len] = 0;
                             _ = sys_status.dbus_monitor.mizu_dbus_monitor_bt_remove(&mac_z);
 
                             var cmd_buf: [128]u8 = undefined;
-                            if (std.fmt.bufPrintZ(&cmd_buf, "bluetoothctl remove {s} 2>/dev/null || true", .{mac})) |cmd| {
+                            if (std.fmt.bufPrintSentinel(&cmd_buf, "bluetoothctl remove {s} 2>/dev/null || true", .{mac}, 0)) |cmd| {
                                 sys_status.spawnCmd(cmd);
                             } else |_| {}
 
@@ -1215,11 +1215,11 @@ pub const QuickSettings = struct {
         success: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
         status: std.atomic.Value(async.OpStatus) = .init(.idle),
         wake_fd: c_int = -1,
-        error_msg: [128]u8 = [_]u8{0} ** 128,
+        error_msg: [128]u8 = @splat(0),
         error_len: usize = 0,
-        ssid: [64]u8 = [_]u8{0} ** 64,
+        ssid: [64]u8 = @splat(0),
         ssid_len: usize = 0,
-        pwd: [128]u8 = [_]u8{0} ** 128,
+        pwd: [128]u8 = @splat(0),
         pwd_len: usize = 0,
 
         pub fn run(self: *WifiWorker) void {
@@ -1244,7 +1244,7 @@ pub const QuickSettings = struct {
                 cmd_list.appendSlice(std.heap.c_allocator, " 2>&1") catch return;
             }
 
-            const c_cmd = std.heap.c_allocator.dupeZ(u8, cmd_list.items) catch return;
+            const c_cmd = std.heap.c_allocator.dupeSentinel(u8, cmd_list.items, 0) catch return;
             defer std.heap.c_allocator.free(c_cmd);
 
             const pipe = c.popen(c_cmd.ptr, "r");
@@ -1299,12 +1299,12 @@ pub const QuickSettings = struct {
         status: std.atomic.Value(async.OpStatus) = .init(.idle),
         lock: sys_status.SpinLock = .{},
         wake_fd: c_int = -1,
-        items: [64]WifiItem = [_]WifiItem{.{}} ** 64,
+        items: [64]WifiItem = @splat(WifiItem{}),
         count: usize = 0,
 
         pub fn run(worker: *WifiScanWorker) void {
             worker.status.store(.scanning, .release);
-            var local_items: [64]WifiItem = [_]WifiItem{.{}} ** 64;
+            var local_items: [64]WifiItem = @splat(WifiItem{});
             var local_count: usize = 0;
 
             // 0. Query saved wifi connections
@@ -1382,10 +1382,10 @@ pub const QuickSettings = struct {
 
                     if (!found and local_count < local_items.len) {
                         var item = WifiItem{
-                            .ssid = [_]u8{0} ** 64,
+                            .ssid = @splat(0),
                             .ssid_len = @min(ssid.len, 64),
                             .signal = signal,
-                            .security = [_]u8{0} ** 32,
+                            .security = @splat(0),
                             .security_len = @min(security_str.len, 32),
                             .is_active = is_active,
                             .is_saved = is_saved,
@@ -1430,12 +1430,12 @@ pub const QuickSettings = struct {
         status: std.atomic.Value(async.OpStatus) = .init(.idle),
         lock: sys_status.SpinLock = .{},
         wake_fd: c_int = -1,
-        items: [64]BluetoothItem = [_]BluetoothItem{.{}} ** 64,
+        items: [64]BluetoothItem = @splat(BluetoothItem{}),
         count: usize = 0,
 
         pub fn run(worker: *BtScanWorker) void {
             worker.status.store(.scanning, .release);
-            var local_items: [64]BluetoothItem = [_]BluetoothItem{.{}} ** 64;
+            var local_items: [64]BluetoothItem = @splat(BluetoothItem{});
             var local_count: usize = 0;
 
             var connected_macs: [16][18]u8 = undefined;
@@ -1531,9 +1531,9 @@ pub const QuickSettings = struct {
 
                             if (local_count < local_items.len) {
                                 var item = BluetoothItem{
-                                    .mac = [_]u8{0} ** 32,
+                                    .mac = @splat(0),
                                     .mac_len = @min(mac_str.len, 32),
-                                    .name = [_]u8{0} ** 64,
+                                    .name = @splat(0),
                                     .name_len = @min(name_str.len, 64),
                                     .connected = is_connected,
                                     .icon = dev_icon,
@@ -1578,10 +1578,10 @@ pub const QuickSettings = struct {
         done: std.atomic.Value(bool) = .init(false),
         status: std.atomic.Value(async.OpStatus) = .init(.idle),
         wake_fd: c_int = -1,
-        mac: [32]u8 = [_]u8{0} ** 32,
+        mac: [32]u8 = @splat(0),
         mac_len: usize = 0,
         connect: bool = true,
-        error_msg: [128]u8 = [_]u8{0} ** 128,
+        error_msg: [128]u8 = @splat(0),
         error_len: usize = 0,
 
         pub fn run(worker: *BtConnectWorker) void {
@@ -1589,20 +1589,20 @@ pub const QuickSettings = struct {
             worker.running.store(true, .release);
 
             const mac = worker.mac[0..worker.mac_len];
-            var mac_z: [33]u8 = [_]u8{0} ** 33;
+            var mac_z: [33]u8 = @splat(0);
             @memcpy(mac_z[0..mac.len], mac);
             mac_z[mac.len] = 0;
 
-            var err_buf: [128]u8 = [_]u8{0} ** 128;
+            var err_buf: [128]u8 = @splat(0);
             var success = sys_status.dbus_monitor.mizu_dbus_monitor_bt_connect(&mac_z, worker.connect, &err_buf, err_buf.len);
 
             if (!success) {
                 // If direct D-Bus returned an error, attempt clean bluetoothctl as fallback
                 var cmd_buf: [256]u8 = undefined;
                 const cmd_slice = if (worker.connect)
-                    std.fmt.bufPrintZ(&cmd_buf, "bluetoothctl --timeout 15 connect {s} 2>&1", .{mac}) catch null
+                    std.fmt.bufPrintSentinel(&cmd_buf, "bluetoothctl --timeout 15 connect {s} 2>&1", .{mac}, 0) catch null
                 else
-                    std.fmt.bufPrintZ(&cmd_buf, "bluetoothctl --timeout 8 disconnect {s} 2>&1", .{mac}) catch null;
+                    std.fmt.bufPrintSentinel(&cmd_buf, "bluetoothctl --timeout 8 disconnect {s} 2>&1", .{mac}, 0) catch null;
 
                 if (cmd_slice) |cmd_z| {
                     if (c.popen(cmd_z.ptr, "r")) |pipe| {
@@ -1670,28 +1670,28 @@ pub const QuickSettings = struct {
         status: std.atomic.Value(async.OpStatus) = .init(.idle),
         lock: sys_status.SpinLock = .{},
         wake_fd: c_int = -1,
-        sink_items: [64]AudioDeviceItem = [_]AudioDeviceItem{.{}} ** 64,
+        sink_items: [64]AudioDeviceItem = @splat(AudioDeviceItem{}),
         sink_count: usize = 0,
-        source_items: [64]AudioDeviceItem = [_]AudioDeviceItem{.{}} ** 64,
+        source_items: [64]AudioDeviceItem = @splat(AudioDeviceItem{}),
         source_count: usize = 0,
-        default_sink_name: [64]u8 = [_]u8{0} ** 64,
+        default_sink_name: [64]u8 = @splat(0),
         default_sink_name_len: usize = 0,
-        default_source_name: [64]u8 = [_]u8{0} ** 64,
+        default_source_name: [64]u8 = @splat(0),
         default_source_name_len: usize = 0,
-        error_msg: [128]u8 = [_]u8{0} ** 128,
+        error_msg: [128]u8 = @splat(0),
         error_len: usize = 0,
 
         pub fn run(worker: *AudioScanWorker) void {
             worker.status.store(.loading, .release);
             worker.running.store(true, .release);
 
-            var local_sinks: [64]AudioDeviceItem = [_]AudioDeviceItem{.{}} ** 64;
+            var local_sinks: [64]AudioDeviceItem = @splat(AudioDeviceItem{});
             var local_sink_count: usize = 0;
-            var local_sources: [64]AudioDeviceItem = [_]AudioDeviceItem{.{}} ** 64;
+            var local_sources: [64]AudioDeviceItem = @splat(AudioDeviceItem{});
             var local_source_count: usize = 0;
-            var local_default_sink: [64]u8 = [_]u8{0} ** 64;
+            var local_default_sink: [64]u8 = @splat(0);
             var local_default_sink_len: usize = 0;
-            var local_default_source: [64]u8 = [_]u8{0} ** 64;
+            var local_default_source: [64]u8 = @splat(0);
             var local_default_source_len: usize = 0;
 
             const pipe = c.popen("wpctl status 2>/dev/null", "r");
@@ -1767,7 +1767,7 @@ pub const QuickSettings = struct {
 
                             var item = AudioDeviceItem{
                                 .id = id,
-                                .name = [_]u8{0} ** 96,
+                                .name = @splat(0),
                                 .name_len = @min(name.len, 96),
                                 .volume_pct = vol_pct,
                                 .is_default = is_default,
@@ -2113,7 +2113,7 @@ pub const QuickSettings = struct {
         self.bt_connect_status = st;
         if (st == .success) {
             const mac = self.bt_connect_mac[0..self.bt_connect_mac_len];
-            var connected_name: [64]u8 = [_]u8{0} ** 64;
+            var connected_name: [64]u8 = @splat(0);
             var connected_name_len: usize = 0;
             for (self.bt_items.items) |*it| {
                 if (it.mac_len == mac.len and std.mem.eql(u8, it.mac[0..it.mac_len], mac)) {
@@ -2248,7 +2248,7 @@ pub const QuickSettings = struct {
                     if (std.mem.lastIndexOfScalar(u8, line, ':')) |col_idx| {
                         const name = line[0..col_idx];
                         if (name.len > 0 and name.len <= 64) {
-                            var entry: [64]u8 = [_]u8{0} ** 64;
+                            var entry: [64]u8 = @splat(0);
                             @memcpy(entry[0..name.len], name);
                             saved_connections.append(self.allocator, entry) catch {};
                             saved_lengths.append(self.allocator, name.len) catch {};
@@ -2313,10 +2313,10 @@ pub const QuickSettings = struct {
             }
             if (!found) {
                 var item = WifiItem{
-                    .ssid = [_]u8{0} ** 64,
+                    .ssid = @splat(0),
                     .ssid_len = @min(ssid.len, 64),
                     .signal = signal,
-                    .security = [_]u8{0} ** 32,
+                    .security = @splat(0),
                     .security_len = @min(security_str.len, 32),
                     .is_active = is_active,
                     .is_saved = is_saved,
@@ -2360,7 +2360,7 @@ pub const QuickSettings = struct {
                 if (std.mem.startsWith(u8, line, "Device ")) {
                     const after = line[7..];
                     if (after.len >= 17) {
-                        var mac: [18]u8 = [_]u8{0} ** 18;
+                        var mac: [18]u8 = @splat(0);
                         @memcpy(mac[0..17], after[0..17]);
                         connected_macs.append(self.allocator, mac) catch {};
                     }
@@ -2435,9 +2435,9 @@ pub const QuickSettings = struct {
                         }
 
                         var item = BluetoothItem{
-                            .mac = [_]u8{0} ** 32,
+                            .mac = @splat(0),
                             .mac_len = @min(mac_str.len, 32),
-                            .name = [_]u8{0} ** 64,
+                            .name = @splat(0),
                             .name_len = @min(name_str.len, 64),
                             .connected = is_connected,
                             .icon = dev_icon,
@@ -2543,7 +2543,7 @@ pub const QuickSettings = struct {
 
                     var item = AudioDeviceItem{
                         .id = id,
-                        .name = [_]u8{0} ** 96,
+                        .name = @splat(0),
                         .name_len = @min(name.len, 96),
                         .volume_pct = vol_pct,
                         .is_default = is_default,
@@ -4941,7 +4941,7 @@ fn isCaffeineActive() bool {
 
 fn writeCaffeinePid(pid: i32) void {
     var buf: [32]u8 = undefined;
-    const text = std.fmt.bufPrintZ(&buf, "{d}\n", .{pid}) catch return;
+    const text = std.fmt.bufPrintSentinel(&buf, "{d}\n", .{pid}, 0) catch return;
     const f = c.fopen(caffeine_pid_path, "wb") orelse return;
     defer _ = c.fclose(f);
     _ = c.fwrite(text.ptr, 1, text.len, f);
@@ -4992,7 +4992,7 @@ const eye_comfort_pid = "/tmp/mizu-eye-comfort.pid";
 fn ensureCacheDir() void {
     const home = c.getenv("HOME") orelse return;
     var dir_buf: [256]u8 = undefined;
-    const dir = std.fmt.bufPrintZ(&dir_buf, "{s}/.cache/mizu", .{std.mem.span(home)}) catch return;
+    const dir = std.fmt.bufPrintSentinel(&dir_buf, "{s}/.cache/mizu", .{std.mem.span(home)}, 0) catch return;
     _ = c.mkdir(dir.ptr, 0o755);
 }
 
@@ -5000,7 +5000,7 @@ pub fn saveDisplayScale(scale_pct: u32) void {
     ensureCacheDir();
     const home = c.getenv("HOME") orelse return;
     var path_buf: [256]u8 = undefined;
-    const path = std.fmt.bufPrintZ(&path_buf, "{s}/.cache/mizu/display_scale", .{std.mem.span(home)}) catch return;
+    const path = std.fmt.bufPrintSentinel(&path_buf, "{s}/.cache/mizu/display_scale", .{std.mem.span(home)}, 0) catch return;
     const f = c.fopen(path.ptr, "wb") orelse return;
     defer _ = c.fclose(f);
     var buf: [16]u8 = undefined;
@@ -5011,7 +5011,7 @@ pub fn saveDisplayScale(scale_pct: u32) void {
 pub fn loadDisplayScale() ?u32 {
     const home = c.getenv("HOME") orelse return null;
     var path_buf: [256]u8 = undefined;
-    const path = std.fmt.bufPrintZ(&path_buf, "{s}/.cache/mizu/display_scale", .{std.mem.span(home)}) catch return null;
+    const path = std.fmt.bufPrintSentinel(&path_buf, "{s}/.cache/mizu/display_scale", .{std.mem.span(home)}, 0) catch return null;
     const f = c.fopen(path.ptr, "rb") orelse return null;
     defer _ = c.fclose(f);
     var buf: [16]u8 = undefined;
@@ -5026,7 +5026,7 @@ pub fn saveDisplayRefresh(hz: u32) void {
     ensureCacheDir();
     const home = c.getenv("HOME") orelse return;
     var path_buf: [256]u8 = undefined;
-    const path = std.fmt.bufPrintZ(&path_buf, "{s}/.cache/mizu/display_refresh", .{std.mem.span(home)}) catch return;
+    const path = std.fmt.bufPrintSentinel(&path_buf, "{s}/.cache/mizu/display_refresh", .{std.mem.span(home)}, 0) catch return;
     const f = c.fopen(path.ptr, "wb") orelse return;
     defer _ = c.fclose(f);
     var buf: [16]u8 = undefined;
@@ -5037,7 +5037,7 @@ pub fn saveDisplayRefresh(hz: u32) void {
 pub fn loadDisplayRefresh() ?u32 {
     const home = c.getenv("HOME") orelse return null;
     var path_buf: [256]u8 = undefined;
-    const path = std.fmt.bufPrintZ(&path_buf, "{s}/.cache/mizu/display_refresh", .{std.mem.span(home)}) catch return null;
+    const path = std.fmt.bufPrintSentinel(&path_buf, "{s}/.cache/mizu/display_refresh", .{std.mem.span(home)}, 0) catch return null;
     const f = c.fopen(path.ptr, "rb") orelse return null;
     defer _ = c.fclose(f);
     var buf: [16]u8 = undefined;
@@ -5052,7 +5052,7 @@ pub fn saveDisplayResolution(res: []const u8) void {
     ensureCacheDir();
     const home = c.getenv("HOME") orelse return;
     var path_buf: [256]u8 = undefined;
-    const path = std.fmt.bufPrintZ(&path_buf, "{s}/.cache/mizu/display_resolution", .{std.mem.span(home)}) catch return;
+    const path = std.fmt.bufPrintSentinel(&path_buf, "{s}/.cache/mizu/display_resolution", .{std.mem.span(home)}, 0) catch return;
     const f = c.fopen(path.ptr, "wb") orelse return;
     defer _ = c.fclose(f);
     _ = c.fwrite(res.ptr, 1, res.len, f);
@@ -5062,7 +5062,7 @@ pub fn saveDisplayResolution(res: []const u8) void {
 pub fn loadDisplayResolution(buf: *[64]u8) ?[]const u8 {
     const home = c.getenv("HOME") orelse return null;
     var path_buf: [256]u8 = undefined;
-    const path = std.fmt.bufPrintZ(&path_buf, "{s}/.cache/mizu/display_resolution", .{std.mem.span(home)}) catch return null;
+    const path = std.fmt.bufPrintSentinel(&path_buf, "{s}/.cache/mizu/display_resolution", .{std.mem.span(home)}, 0) catch return null;
     const f = c.fopen(path.ptr, "rb") orelse return null;
     defer _ = c.fclose(f);
     const n = c.fread(buf, 1, buf.len - 1, f);
@@ -5086,7 +5086,7 @@ pub fn saveEyeComfort(enabled: bool) void {
     ensureCacheDir();
     const home = c.getenv("HOME") orelse return;
     var path_buf: [256]u8 = undefined;
-    const path = std.fmt.bufPrintZ(&path_buf, "{s}/.cache/mizu/eye_comfort", .{std.mem.span(home)}) catch return;
+    const path = std.fmt.bufPrintSentinel(&path_buf, "{s}/.cache/mizu/eye_comfort", .{std.mem.span(home)}, 0) catch return;
     if (enabled) {
         const f = c.fopen(path.ptr, "wb") orelse return;
         defer _ = c.fclose(f);
@@ -5099,7 +5099,7 @@ pub fn saveEyeComfort(enabled: bool) void {
 pub fn loadEyeComfort() bool {
     const home = c.getenv("HOME") orelse return false;
     var path_buf: [256]u8 = undefined;
-    const path = std.fmt.bufPrintZ(&path_buf, "{s}/.cache/mizu/eye_comfort", .{std.mem.span(home)}) catch return false;
+    const path = std.fmt.bufPrintSentinel(&path_buf, "{s}/.cache/mizu/eye_comfort", .{std.mem.span(home)}, 0) catch return false;
     return c.access(path.ptr, c.F_OK) == 0;
 }
 
@@ -5107,7 +5107,7 @@ pub fn saveDnd(enabled: bool) void {
     ensureCacheDir();
     const home = c.getenv("HOME") orelse return;
     var path_buf: [256]u8 = undefined;
-    const path = std.fmt.bufPrintZ(&path_buf, "{s}/.cache/mizu/dnd", .{std.mem.span(home)}) catch return;
+    const path = std.fmt.bufPrintSentinel(&path_buf, "{s}/.cache/mizu/dnd", .{std.mem.span(home)}, 0) catch return;
     if (enabled) {
         if (c.fopen(path.ptr, "wb")) |f| {
             _ = c.fwrite("1\n", 1, 2, f);
@@ -5126,7 +5126,7 @@ pub fn loadDnd() bool {
     const home = c.getenv("HOME");
     if (home) |h| {
         var path_buf: [256]u8 = undefined;
-        if (std.fmt.bufPrintZ(&path_buf, "{s}/.cache/mizu/dnd", .{std.mem.span(h)})) |path| {
+        if (std.fmt.bufPrintSentinel(&path_buf, "{s}/.cache/mizu/dnd", .{std.mem.span(h)}, 0)) |path| {
             if (c.access(path.ptr, c.F_OK) == 0) return true;
         } else |_| {}
     }
@@ -5173,19 +5173,19 @@ pub fn setEyeComfort(enabled: bool) void {
 pub fn applyDisplayScale(scale_pct: u32) void {
     var cmd_buf: [512]u8 = undefined;
     const scale_flt: f32 = @as(f32, @floatFromInt(scale_pct)) / 100.0;
-    const cmd = std.fmt.bufPrintZ(&cmd_buf, "export PATH=\"$PATH:/usr/sbin:/sbin:/usr/local/bin:/usr/bin:$HOME/.local/bin\"; for out in $(wlr-randr 2>/dev/null | awk '/^[a-zA-Z0-9-]+/ {{print $1}}'); do wlr-randr --output \"$out\" --scale {d:.2} 2>/dev/null || true; done", .{scale_flt}) catch return;
+    const cmd = std.fmt.bufPrintSentinel(&cmd_buf, "export PATH=\"$PATH:/usr/sbin:/sbin:/usr/local/bin:/usr/bin:$HOME/.local/bin\"; for out in $(wlr-randr 2>/dev/null | awk '/^[a-zA-Z0-9-]+/ {{print $1}}'); do wlr-randr --output \"$out\" --scale {d:.2} 2>/dev/null || true; done", .{scale_flt}, 0) catch return;
     sys_status.spawnCmd(cmd);
 }
 
 pub fn applyDisplayRefresh(hz: u32) void {
     var cmd_buf: [512]u8 = undefined;
-    const cmd = std.fmt.bufPrintZ(&cmd_buf, "export PATH=\"$PATH:/usr/sbin:/sbin:/usr/local/bin:/usr/bin:$HOME/.local/bin\"; for out in $(wlr-randr 2>/dev/null | awk '/^[a-zA-Z0-9-]+/ {{print $1}}'); do mode=$(wlr-randr 2>/dev/null | awk -v h=\"{d}\" '/px,/ && $3 ~ (\"^\" h) {{print $1 \"@\" $3 \"Hz\"; exit}}'); if [ -n \"$mode\" ]; then wlr-randr --output \"$out\" --mode \"$mode\" 2>/dev/null || true; fi; done", .{hz}) catch return;
+    const cmd = std.fmt.bufPrintSentinel(&cmd_buf, "export PATH=\"$PATH:/usr/sbin:/sbin:/usr/local/bin:/usr/bin:$HOME/.local/bin\"; for out in $(wlr-randr 2>/dev/null | awk '/^[a-zA-Z0-9-]+/ {{print $1}}'); do mode=$(wlr-randr 2>/dev/null | awk -v h=\"{d}\" '/px,/ && $3 ~ (\"^\" h) {{print $1 \"@\" $3 \"Hz\"; exit}}'); if [ -n \"$mode\" ]; then wlr-randr --output \"$out\" --mode \"$mode\" 2>/dev/null || true; fi; done", .{hz}, 0) catch return;
     sys_status.spawnCmd(cmd);
 }
 
 pub fn applyDisplayResolution(res: []const u8) void {
     var cmd_buf: [512]u8 = undefined;
-    const cmd = std.fmt.bufPrintZ(&cmd_buf, "export PATH=\"$PATH:/usr/sbin:/sbin:/usr/local/bin:/usr/bin:$HOME/.local/bin\"; for out in $(wlr-randr 2>/dev/null | awk '/^[a-zA-Z0-9-]+/ {{print $1}}'); do wlr-randr --output \"$out\" --mode {s} 2>/dev/null || true; done", .{res}) catch return;
+    const cmd = std.fmt.bufPrintSentinel(&cmd_buf, "export PATH=\"$PATH:/usr/sbin:/sbin:/usr/local/bin:/usr/bin:$HOME/.local/bin\"; for out in $(wlr-randr 2>/dev/null | awk '/^[a-zA-Z0-9-]+/ {{print $1}}'); do wlr-randr --output \"$out\" --mode {s} 2>/dev/null || true; done", .{res}, 0) catch return;
     sys_status.spawnCmd(cmd);
 }
 

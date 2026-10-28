@@ -62,7 +62,7 @@ fn scanRecordingActive() bool {
         if (pid.len == 0 or !std.ascii.isDigit(pid[0])) continue;
 
         var path: [64]u8 = undefined;
-        const file_path = std.fmt.bufPrintZ(&path, "/proc/{s}/comm", .{pid}) catch continue;
+        const file_path = std.fmt.bufPrintSentinel(&path, "/proc/{s}/comm", .{pid}, 0) catch continue;
         const file = c.fopen(file_path.ptr, "r") orelse continue;
         defer _ = c.fclose(file);
 
@@ -81,7 +81,7 @@ fn scanRecordingActive() bool {
 pub fn getRecordAudioMode() RecordAudioMode {
     var path_buf: [512]u8 = undefined;
     const home = c.getenv("HOME") orelse return .system;
-    const path = std.fmt.bufPrintZ(&path_buf, "{s}/.cache/mizu/record_audio_mode", .{std.mem.span(home)}) catch return .system;
+    const path = std.fmt.bufPrintSentinel(&path_buf, "{s}/.cache/mizu/record_audio_mode", .{std.mem.span(home)}, 0) catch return .system;
 
     const file = c.fopen(path.ptr, "r") orelse return .system;
     defer _ = c.fclose(file);
@@ -98,10 +98,10 @@ pub fn getRecordAudioMode() RecordAudioMode {
 pub fn setRecordAudioMode(mode: RecordAudioMode) void {
     var path_buf: [512]u8 = undefined;
     const home = c.getenv("HOME") orelse return;
-    const path = std.fmt.bufPrintZ(&path_buf, "{s}/.cache/mizu/record_audio_mode", .{std.mem.span(home)}) catch return;
+    const path = std.fmt.bufPrintSentinel(&path_buf, "{s}/.cache/mizu/record_audio_mode", .{std.mem.span(home)}, 0) catch return;
 
     var dir_buf: [512]u8 = undefined;
-    if (std.fmt.bufPrintZ(&dir_buf, "{s}/.cache/mizu", .{std.mem.span(home)})) |dir| {
+    if (std.fmt.bufPrintSentinel(&dir_buf, "{s}/.cache/mizu", .{std.mem.span(home)}, 0)) |dir| {
         _ = c.mkdir(dir.ptr, 0o755);
     } else |_| {}
 

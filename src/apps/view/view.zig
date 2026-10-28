@@ -64,7 +64,7 @@ pub const ImageViewerApp = struct {
 
     // HUD & Feedback
     hud_visible: bool = true,
-    status_msg: [128]u8 = [_]u8{0} ** 128,
+    status_msg: [128]u8 = @splat(0),
     status_len: usize = 0,
     status_ticks: u32 = 0,
 
@@ -137,7 +137,7 @@ pub const ImageViewerApp = struct {
         self.dir_files.clearRetainingCapacity();
 
         const dirname = std.fs.path.dirname(current_path) orelse ".";
-        const c_dir_path = self.allocator.dupeZ(u8, dirname) catch return;
+        const c_dir_path = self.allocator.dupeSentinel(u8, dirname, 0) catch return;
         defer self.allocator.free(c_dir_path);
 
         const dir = c.opendir(c_dir_path.ptr) orelse return;
@@ -301,7 +301,7 @@ pub const ImageViewerApp = struct {
 
         const pid = c.fork();
         if (pid == 0) {
-            const path_z = self.allocator.dupeZ(u8, path_to_open) catch return;
+            const path_z = self.allocator.dupeSentinel(u8, path_to_open, 0) catch return;
             const args = [_][*c]const u8{ "mizu", "annotate", path_z.ptr, null };
             _ = c.execvp("mizu", @ptrCast(&args));
             c.exit(1);
@@ -322,9 +322,9 @@ pub const ImageViewerApp = struct {
             var t_buf: [256]u8 = undefined;
             const name = if (self.file_path) |p| std.fs.path.basename(p) else "stdin";
             const title = if (self.dir_files.items.len > 1)
-                std.fmt.bufPrintZ(&t_buf, "{s} ({d}/{d}) - Mizu View", .{ name, self.current_file_idx + 1, self.dir_files.items.len }) catch return
+                std.fmt.bufPrintSentinel(&t_buf, "{s} ({d}/{d}) - Mizu View", .{ name, self.current_file_idx + 1, self.dir_files.items.len }, 0) catch return
             else
-                std.fmt.bufPrintZ(&t_buf, "{s} - Mizu View", .{name}) catch return;
+                std.fmt.bufPrintSentinel(&t_buf, "{s} - Mizu View", .{name}, 0) catch return;
             c.xdg_toplevel_set_title(t, title.ptr);
         }
     }

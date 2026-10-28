@@ -235,7 +235,7 @@ pub const Calendar = struct {
         var path_buf: [256]u8 = undefined;
         if (self.dnd_enabled) {
             if (home) |h| {
-                if (std.fmt.bufPrintZ(&path_buf, "{s}/.cache/mizu/dnd", .{std.mem.span(h)})) |p| {
+                if (std.fmt.bufPrintSentinel(&path_buf, "{s}/.cache/mizu/dnd", .{std.mem.span(h)}, 0)) |p| {
                     if (c.fopen(p.ptr, "wb")) |f| _ = c.fclose(f);
                 } else |_| {}
             }
@@ -244,7 +244,7 @@ pub const Calendar = struct {
             }
         } else {
             if (home) |h| {
-                if (std.fmt.bufPrintZ(&path_buf, "{s}/.cache/mizu/dnd", .{std.mem.span(h)})) |p| {
+                if (std.fmt.bufPrintSentinel(&path_buf, "{s}/.cache/mizu/dnd", .{std.mem.span(h)}, 0)) |p| {
                     _ = c.unlink(p.ptr);
                 } else |_| {}
             }
@@ -257,7 +257,7 @@ pub const Calendar = struct {
         const home = c.getenv("HOME");
         if (home) |h| {
             var path_buf: [256]u8 = undefined;
-            if (std.fmt.bufPrintZ(&path_buf, "{s}/.cache/mizu/dnd", .{std.mem.span(h)})) |p| {
+            if (std.fmt.bufPrintSentinel(&path_buf, "{s}/.cache/mizu/dnd", .{std.mem.span(h)}, 0)) |p| {
                 if (c.access(p.ptr, c.F_OK) == 0) return true;
             } else |_| {}
         }

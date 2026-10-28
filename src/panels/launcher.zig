@@ -312,7 +312,7 @@ pub fn isCommandAvailable(cmd: []const u8) bool {
     if (cmd.len == 0) return false;
     if (cmd[0] == '/') {
         var buf: [512]u8 = undefined;
-        const z = std.fmt.bufPrintZ(&buf, "{s}", .{cmd}) catch return false;
+        const z = std.fmt.bufPrintSentinel(&buf, "{s}", .{cmd}, 0) catch return false;
         return c.access(z.ptr, c.X_OK) == 0;
     }
     const path_env = c.getenv("PATH") orelse return false;
@@ -321,7 +321,7 @@ pub fn isCommandAvailable(cmd: []const u8) bool {
     var buf: [512]u8 = undefined;
     while (it.next()) |dir| {
         if (dir.len == 0) continue;
-        const full_path = std.fmt.bufPrintZ(&buf, "{s}/{s}", .{ dir, cmd }) catch continue;
+        const full_path = std.fmt.bufPrintSentinel(&buf, "{s}/{s}", .{ dir, cmd }, 0) catch continue;
         if (c.access(full_path.ptr, c.X_OK) == 0) return true;
     }
     return false;
@@ -365,9 +365,9 @@ fn parseAndSpawnApp(allocator: std.mem.Allocator, exec: []const u8, in_terminal:
     }
 
     if (in_terminal) {
-        const term_str = allocator.dupeZ(u8, term) catch return;
+        const term_str = allocator.dupeSentinel(u8, term, 0) catch return;
         tokens.append(allocator, term_str) catch return;
-        const e_flag = allocator.dupeZ(u8, "-e") catch return;
+        const e_flag = allocator.dupeSentinel(u8, "-e", 0) catch return;
         tokens.append(allocator, e_flag) catch return;
     }
 
@@ -401,7 +401,7 @@ fn parseAndSpawnApp(allocator: std.mem.Allocator, exec: []const u8, in_terminal:
         }
 
         if (token_buf.items.len > 0) {
-            const tok_z = allocator.dupeZ(u8, token_buf.items) catch break;
+            const tok_z = allocator.dupeSentinel(u8, token_buf.items, 0) catch break;
             tokens.append(allocator, tok_z) catch {
                 allocator.free(tok_z);
                 break;
@@ -421,7 +421,7 @@ fn parseAndSpawnApp(allocator: std.mem.Allocator, exec: []const u8, in_terminal:
 }
 
 fn openFileDirect(allocator: std.mem.Allocator, path: []const u8) void {
-    const path_z = allocator.dupeZ(u8, path) catch return;
+    const path_z = allocator.dupeSentinel(u8, path, 0) catch return;
     defer allocator.free(path_z);
 
     const xdg_open_z = "xdg-open";
@@ -439,9 +439,9 @@ fn spawnShellCommand(allocator: std.mem.Allocator, cmd: []const u8, in_terminal:
     if (in_terminal) {
         var term_buf: [1024]u8 = undefined;
         const full_cmd = std.fmt.bufPrint(&term_buf, "{s}; echo; printf 'Press Enter to exit... '; read _", .{trimmed}) catch return;
-        const full_cmd_z = allocator.dupeZ(u8, full_cmd) catch return;
+        const full_cmd_z = allocator.dupeSentinel(u8, full_cmd, 0) catch return;
         defer allocator.free(full_cmd_z);
-        const term_z = allocator.dupeZ(u8, term) catch return;
+        const term_z = allocator.dupeSentinel(u8, term, 0) catch return;
         defer allocator.free(term_z);
 
         const argv = [_][*:0]const u8{
@@ -527,7 +527,7 @@ fn loadCommandHistory(allocator: std.mem.Allocator) std.ArrayList([]const u8) {
     const path = getHistoryFilePath(&path_buf) orelse return history;
 
     var path_z_buf: [512]u8 = undefined;
-    const path_z = std.fmt.bufPrintZ(&path_z_buf, "{s}", .{path}) catch return history;
+    const path_z = std.fmt.bufPrintSentinel(&path_z_buf, "{s}", .{path}, 0) catch return history;
 
     const file = c.fopen(path_z.ptr, "r") orelse return history;
     defer _ = c.fclose(file);
@@ -561,11 +561,11 @@ fn loadCommandHistory(allocator: std.mem.Allocator) std.ArrayList([]const u8) {
 fn saveCommandHistoryToFile(history: []const []const u8) void {
     const home = c.getenv("HOME") orelse return;
     var dir_buf: [256]u8 = undefined;
-    const dir_path = std.fmt.bufPrintZ(&dir_buf, "{s}/.cache/mizu", .{std.mem.span(home)}) catch return;
+    const dir_path = std.fmt.bufPrintSentinel(&dir_buf, "{s}/.cache/mizu", .{std.mem.span(home)}, 0) catch return;
     _ = c.mkdir(dir_path.ptr, 0o755);
 
     var path_buf: [512]u8 = undefined;
-    const path_z = std.fmt.bufPrintZ(&path_buf, "{s}/.cache/mizu/command_history", .{std.mem.span(home)}) catch return;
+    const path_z = std.fmt.bufPrintSentinel(&path_buf, "{s}/.cache/mizu/command_history", .{std.mem.span(home)}, 0) catch return;
 
     const file = c.fopen(path_z.ptr, "w") orelse return;
     defer _ = c.fclose(file);
@@ -587,7 +587,7 @@ fn loadCalcHistory(allocator: std.mem.Allocator) std.ArrayList([]const u8) {
     const path = getCalcHistoryFilePath(&path_buf) orelse return history;
 
     var path_z_buf: [512]u8 = undefined;
-    const path_z = std.fmt.bufPrintZ(&path_z_buf, "{s}", .{path}) catch return history;
+    const path_z = std.fmt.bufPrintSentinel(&path_z_buf, "{s}", .{path}, 0) catch return history;
 
     const file = c.fopen(path_z.ptr, "r") orelse return history;
     defer _ = c.fclose(file);
@@ -621,11 +621,11 @@ fn loadCalcHistory(allocator: std.mem.Allocator) std.ArrayList([]const u8) {
 fn saveCalcHistoryToFile(history: []const []const u8) void {
     const home = c.getenv("HOME") orelse return;
     var dir_buf: [256]u8 = undefined;
-    const dir_path = std.fmt.bufPrintZ(&dir_buf, "{s}/.cache/mizu", .{std.mem.span(home)}) catch return;
+    const dir_path = std.fmt.bufPrintSentinel(&dir_buf, "{s}/.cache/mizu", .{std.mem.span(home)}, 0) catch return;
     _ = c.mkdir(dir_path.ptr, 0o755);
 
     var path_buf: [512]u8 = undefined;
-    const path_z = std.fmt.bufPrintZ(&path_buf, "{s}/.cache/mizu/calc_history", .{std.mem.span(home)}) catch return;
+    const path_z = std.fmt.bufPrintSentinel(&path_buf, "{s}/.cache/mizu/calc_history", .{std.mem.span(home)}, 0) catch return;
 
     const file = c.fopen(path_z.ptr, "w") orelse return;
     defer _ = c.fclose(file);

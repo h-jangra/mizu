@@ -79,7 +79,7 @@ fn loadConfig(allocator: std.mem.Allocator) config.Config {
 pub fn main(init: std.process.Init.Minimal) u8 {
     const allocator = std.heap.c_allocator;
 
-    var arg_it = init.args.iterate();
+    var arg_it = std.process.Args.Iterator.init(init.args);
     _ = arg_it.next(); // skip binary name
 
     var screenshot_mode = false;

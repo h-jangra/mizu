@@ -44,7 +44,7 @@ const MemFilterDraw = struct {
 };
 
 pub const ProcessGroup = struct {
-    name: [128]u8 = [_]u8{0} ** 128,
+    name: [128]u8 = @splat(0),
     name_len: usize = 0,
     main_pid: u32 = 0,
     total_rss_kb: u64 = 0,
@@ -175,7 +175,7 @@ pub const MemoryMonitor = struct {
         }
         if (expanded) {
             if (found_idx == null and name.len <= 128) {
-                var buf: [128]u8 = [_]u8{0} ** 128;
+                var buf: [128]u8 = @splat(0);
                 @memcpy(buf[0..name.len], name);
                 self.expanded_names.append(self.allocator, buf) catch {};
                 self.expanded_lens.append(self.allocator, name.len) catch {};
@@ -461,7 +461,7 @@ pub const MemoryMonitor = struct {
             const root_idx = pid_map.get(root_pid) orelse continue;
             const root_proc = &self.processes.items[root_idx];
 
-            var name_buf: [128]u8 = [_]u8{0} ** 128;
+            var name_buf: [128]u8 = @splat(0);
             const app_name = self.resolveAppDisplayName(root_proc, &name_buf);
 
             var found: ?*ProcessGroup = null;
@@ -533,7 +533,7 @@ pub const MemoryMonitor = struct {
         if (!std.mem.startsWith(u8, content, "cpu ")) return;
 
         var it = std.mem.tokenizeAny(u8, content[4..], " \t\r\n");
-        var fields: [10]u64 = [_]u64{0} ** 10;
+        var fields: [10]u64 = @splat(0);
         var count: usize = 0;
         while (it.next()) |token| {
             if (count >= 10) break;

@@ -270,7 +270,7 @@ fn printVersion() void {
 
 fn toggleOrLockInstance(name: []const u8) bool {
     var pid_path_buf: [64]u8 = undefined;
-    const pid_path = std.fmt.bufPrintZ(&pid_path_buf, "/tmp/mizu-{s}.pid", .{name}) catch return true;
+    const pid_path = std.fmt.bufPrintSentinel(&pid_path_buf, "/tmp/mizu-{s}.pid", .{name}, 0) catch return true;
 
     // Check if pid file exists
     if (c.fopen(pid_path.ptr, "r")) |f| {
@@ -302,7 +302,7 @@ fn toggleOrLockInstance(name: []const u8) bool {
 
 fn cleanupPidFile(name: []const u8) void {
     var pid_path_buf: [64]u8 = undefined;
-    if (std.fmt.bufPrintZ(&pid_path_buf, "/tmp/mizu-{s}.pid", .{name})) |pid_path| {
+    if (std.fmt.bufPrintSentinel(&pid_path_buf, "/tmp/mizu-{s}.pid", .{name}, 0)) |pid_path| {
         _ = c.unlink(pid_path.ptr);
     } else |_| {}
 }
@@ -329,7 +329,7 @@ fn getBarPid() ?c_int {
 
 fn isAlreadyLocked() bool {
     var pid_path_buf: [64]u8 = undefined;
-    const pid_path = std.fmt.bufPrintZ(&pid_path_buf, "/tmp/mizu-lock.pid", .{}) catch return false;
+    const pid_path = std.fmt.bufPrintSentinel(&pid_path_buf, "/tmp/mizu-lock.pid", .{}, 0) catch return false;
 
     if (c.fopen(pid_path.ptr, "r")) |f| {
         var buf: [32]u8 = undefined;
@@ -362,12 +362,12 @@ fn runCustomPanel(allocator: std.mem.Allocator, name: []const u8, cmd: []const u
     const pid = c.fork();
     if (pid == 0) {
         _ = c.setsid();
-        const c_cmd = allocator.dupeZ(u8, cmd) catch c.exit(1);
+        const c_cmd = allocator.dupeSentinel(u8, cmd, 0) catch c.exit(1);
         _ = c.execl("/bin/sh", "sh", "-c", c_cmd.ptr, @as(?*anyopaque, null));
         c.exit(1);
     } else if (pid > 0) {
         var pid_path_buf: [64]u8 = undefined;
-        if (std.fmt.bufPrintZ(&pid_path_buf, "/tmp/mizu-{s}.pid", .{name})) |pid_path| {
+        if (std.fmt.bufPrintSentinel(&pid_path_buf, "/tmp/mizu-{s}.pid", .{name}, 0)) |pid_path| {
             if (c.fopen(pid_path.ptr, "w")) |f| {
                 var buf: [32]u8 = undefined;
                 const pid_str = std.fmt.bufPrint(&buf, "{d}\n", .{pid}) catch "";
@@ -446,7 +446,7 @@ pub fn main(init: std.process.Init.Minimal) u8 {
     _ = c.sigaddset(&init_sig_mask, c.SIGUSR1);
     _ = c.sigprocmask(c.SIG_BLOCK, &init_sig_mask, null);
 
-    var arg_it = init.args.iterate();
+    var arg_it = std.process.Args.Iterator.init(init.args);
     _ = arg_it.next(); // skip binary name
 
     const maybe_cmd_str = arg_it.next();
@@ -1726,7 +1726,7 @@ fn runOsd(allocator: std.mem.Allocator, cfg: config.Config, kind: osd_module.Osd
     }
 
     // 2. No OSD running: become the server
-    const c_sock_path = try allocator.dupeZ(u8, sock_path);
+    const c_sock_path = try allocator.dupeSentinel(u8, sock_path, 0);
     defer allocator.free(c_sock_path);
     _ = c.unlink(c_sock_path.ptr);
 

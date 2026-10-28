@@ -60,7 +60,7 @@ pub const Font = struct {
         defer allocator.free(font_path);
 
         var face: c.FT_Face = null;
-        const c_path = try allocator.dupeZ(u8, font_path);
+        const c_path = try allocator.dupeSentinel(u8, font_path, 0);
         defer allocator.free(c_path);
 
         if (c.FT_New_Face(ft_lib, c_path.ptr, 0, &face) != 0) {
@@ -107,7 +107,7 @@ pub const Font = struct {
                         }
                     }
                     if (!already_loaded) {
-                        const fb_c_path = allocator.dupeZ(u8, fb_path) catch null;
+                        const fb_c_path = allocator.dupeSentinel(u8, fb_path, 0) catch null;
                         if (fb_c_path) |fcp| {
                             defer allocator.free(fcp);
                             var fb_f: c.FT_Face = null;
@@ -130,7 +130,7 @@ pub const Font = struct {
         }
 
         const fallback_face = if (fallback_faces.items.len > 0) fallback_faces.items[0].face else null;
-        const family_c_str = try allocator.dupeZ(u8, theme.firstFamily(font_family));
+        const family_c_str = try allocator.dupeSentinel(u8, theme.firstFamily(font_family), 0);
 
         return .{
             .ft_lib = ft_lib,
@@ -186,7 +186,7 @@ pub const Font = struct {
     fn findFontPath(allocator: std.mem.Allocator, family: []const u8) ![]u8 {
         if (c.FcInit() == 0) return error.FcInitFailed;
         const config = c.FcConfigGetCurrent() orelse c.FcInitLoadConfigAndFonts();
-        const c_family = try allocator.dupeZ(u8, family);
+        const c_family = try allocator.dupeSentinel(u8, family, 0);
         defer allocator.free(c_family);
 
         const pat = c.FcNameParse(c_family.ptr);
@@ -253,7 +253,7 @@ pub const Font = struct {
             }
         }
 
-        const c_path = self.allocator.dupeZ(u8, font_path) catch return null;
+        const c_path = self.allocator.dupeSentinel(u8, font_path, 0) catch return null;
         defer self.allocator.free(c_path);
 
         var new_face: c.FT_Face = null;
