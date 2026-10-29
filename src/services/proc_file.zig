@@ -1,5 +1,5 @@
 const std = @import("std");
-const c = @import("../c.zig").c;
+const c = @import("c");
 
 /// Read a small procfs/sysfs file into `buf`, returning the byte count and
 /// appending a NUL terminator. Returns null when the file cannot be read.

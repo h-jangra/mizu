@@ -1,5 +1,5 @@
 const std = @import("std");
-const c = @import("../c.zig").c;
+const c = @import("c");
 const renderer = @import("../core/renderer.zig");
 const theme = @import("../core/theme.zig");
 const Color = theme.Color;
@@ -8,6 +8,7 @@ const sys_status = @import("../services/system_status.zig");
 const text_input = @import("../core/text_input.zig");
 const icons = @import("../graphics/icons.zig");
 const ui_mod = @import("../core/ui.zig");
+const qrcode = @import("../graphics/qrcode.zig");
 
 pub const ClipType = enum {
     text,
@@ -458,6 +459,7 @@ pub const ClipAction = union(enum) {
     delete_item: usize,
     clear_all,
     close,
+    toggle_qr,
 };
 
 const ClipInputDraw = struct {
@@ -524,6 +526,7 @@ pub const ClipboardPanel = struct {
 
     hit_areas: std.ArrayList(ClipHitArea),
     search_rect: renderer.Rect = .{ .x = 24, .y = 56, .w = 480, .h = 48 },
+    show_qr: bool = false,
 
     history_loading: bool = true,
     decode_cache: DecodedCache = .{},
@@ -1044,6 +1047,9 @@ pub const ClipboardPanel = struct {
                         .delete_item => |actual_idx| self.deleteSelection(actual_idx),
                         .clear_all => self.clearAll(),
                         .close => self.running = false,
+                        .toggle_qr => {
+                            self.show_qr = !self.show_qr;
+                        },
                     }
                     return true;
                 }
@@ -1527,15 +1533,98 @@ pub const ClipboardPanel = struct {
 
         const actual_idx = selected_actual_idx.?;
         const item = self.items.items[actual_idx];
+        const preview_content = self.getDecodedContent(item);
+        const qr_available = preview_content.len > 0 and preview_content.len <= 300;
+
+        // QR icon button replacing "Preview" label
+        const qr_btn_x = x;
+        const qr_btn_y = y + 4 * iscale;
+        const qr_btn_w: u32 = 28 * scale;
+        const qr_btn_h: u32 = 28 * scale;
+        const qr_icon_sz = 18 * scale;
+        const qr_hov = self.isAreaHovered(@divTrunc(qr_btn_x, iscale), @divTrunc(qr_btn_y, iscale), 28, 28);
+
+        if (qr_available and (self.show_qr or qr_hov)) {
+            target.fillSquircle(qr_btn_x, qr_btn_y, qr_btn_w, qr_btn_h, 6 * scale, if (self.show_qr) self.cfg.theme.accent else self.cfg.theme.surface);
+            target.drawSquircleBorder(qr_btn_x, qr_btn_y, qr_btn_w, qr_btn_h, 6 * scale, 1, self.cfg.theme.border);
+        }
+
+        const qr_icon_col = if (self.show_qr and qr_available) self.cfg.theme.accent_fg else (if (qr_available and qr_hov) self.cfg.theme.accent else self.cfg.theme.text_muted);
+        icons.drawSvgIcon(
+            target,
+            self.allocator,
+            "qr",
+            qr_icon_sz,
+            scale,
+            qr_btn_x + @as(i32, @intCast(qr_btn_w / 2)),
+            qr_btn_y + @as(i32, @intCast(qr_btn_h / 2)),
+            qr_icon_col,
+        );
+
+        if (qr_available) {
+            try self.hit_areas.append(self.allocator, .{
+                .x = @divTrunc(qr_btn_x, iscale),
+                .y = @divTrunc(qr_btn_y, iscale),
+                .w = 28,
+                .h = 28,
+                .action = .toggle_qr,
+            });
+        }
+
+        if (self.show_qr) {
+            const content = self.getDecodedContent(item);
+            const can_qr = content.len > 0 and content.len <= 300;
+            var meta_buf: [64]u8 = undefined;
+            const meta_str = if (item.clip_type == .image)
+                "QR Code"
+            else
+                std.fmt.bufPrint(&meta_buf, "{d} chars · {d} lines", .{ content.len, std.mem.count(u8, content, "\n") + 1 }) catch "";
+            const mw = target.measureTextWithSize(&self.font, meta_str, sec_sz);
+            const meta_x = x + @as(i32, @intCast(w)) - @as(i32, @intCast(mw));
+            target.drawTextWithSize(&self.font, meta_str, meta_x, y + 20 * iscale, sec_sz, self.cfg.theme.text_muted);
+
+            target.fillSquircle(x, card_y, w, card_h, 10 * scale, self.cfg.theme.surface);
+            target.drawSquircleBorder(x, card_y, w, card_h, 10 * scale, 1, self.cfg.theme.border);
+
+            if (can_qr) {
+                const qr = qrcode.encodeText(content);
+                const quiet_zone: u32 = 2;
+                const total_modules = qr.size + quiet_zone * 2;
+                const max_box = @min(if (w > 48 * scale) w - 48 * scale else w, if (card_h > 48 * scale) card_h - 48 * scale else card_h);
+                const mod_size = @max(1, max_box / total_modules);
+                const qr_px = total_modules * mod_size;
+                const qr_box_x = x + @divTrunc(@as(i32, @intCast(w)) - @as(i32, @intCast(qr_px)), 2);
+                const qr_box_y = card_y + @divTrunc(@as(i32, @intCast(card_h)) - @as(i32, @intCast(qr_px)), 2);
+
+                target.fillSquircle(qr_box_x, qr_box_y, qr_px, qr_px, 8 * scale, theme.Color.rgb(255, 255, 255));
+                target.drawSquircleBorder(qr_box_x, qr_box_y, qr_px, qr_px, 8 * scale, 1, theme.Color.rgb(220, 220, 220));
+
+                var qy: u32 = 0;
+                while (qy < qr.size) : (qy += 1) {
+                    var qx: u32 = 0;
+                    while (qx < qr.size) : (qx += 1) {
+                        if (qr.isDark(qx, qy)) {
+                            const mx = qr_box_x + @as(i32, @intCast((quiet_zone + qx) * mod_size));
+                            const my = qr_box_y + @as(i32, @intCast((quiet_zone + qy) * mod_size));
+                            target.fillRect(mx, my, mod_size, mod_size, theme.Color.rgb(18, 18, 18));
+                        }
+                    }
+                }
+            } else {
+                const msg = if (content.len == 0) "No content to generate QR" else "Content too long for QR (max 300 bytes)";
+                const msg_w = target.measureTextWithSize(&self.font, msg, ui_sz);
+                const center_x = x + @divTrunc(@as(i32, @intCast(w)) - @as(i32, @intCast(msg_w)), 2);
+                const center_y = card_y + @divTrunc(@as(i32, @intCast(card_h)), 2);
+                target.drawTextWithSize(&self.font, msg, center_x, center_y, ui_sz, self.cfg.theme.text_muted);
+            }
+            return;
+        }
 
         // Handle image items
         if (item.clip_type == .image) {
             // Try to get cached image
             const cached_img = self.image_cache.get(item.id);
             if (cached_img) |img| {
-                // Preview Header
-                target.drawTextWithSize(&self.font, "Preview", x, y + 20 * iscale, title_sz, self.cfg.theme.text_bright);
-
                 var meta_buf: [64]u8 = undefined;
                 const shown_w = if (item.image_width > 0) item.image_width else img.width;
                 const shown_h = if (item.image_height > 0) item.image_height else img.height;
@@ -1605,9 +1694,6 @@ pub const ClipboardPanel = struct {
             if (b == '\n') line_count += 1;
         }
         const char_count = content.len;
-
-        // Preview Header: restrained title & metadata
-        target.drawTextWithSize(&self.font, "Preview", x, y + 20 * iscale, title_sz, self.cfg.theme.text_bright);
 
         var meta_buf: [64]u8 = undefined;
         const meta_str = std.fmt.bufPrint(&meta_buf, "{d} chars · {d} lines", .{ char_count, line_count }) catch "";
@@ -1876,6 +1962,20 @@ test "ClipboardPanel initialization, 2-column layout and filtering" {
     try std.testing.expectEqual(@as(usize, 1), panel.selected_index);
     _ = panel.handlePointerButton(100, 120, 272, true);
     try std.testing.expectEqual(@as(usize, 0), panel.selected_index);
+
+    // Test QR toggle button
+    try panel.hit_areas.append(allocator, .{
+        .x = 520,
+        .y = 20,
+        .w = 28,
+        .h = 28,
+        .action = .toggle_qr,
+    });
+    try std.testing.expectEqual(false, panel.show_qr);
+    _ = panel.handlePointerButton(530, 25, 272, true);
+    try std.testing.expectEqual(true, panel.show_qr);
+    _ = panel.handlePointerButton(530, 25, 272, true);
+    try std.testing.expectEqual(false, panel.show_qr);
 }
 
 test "Clipboard first line extraction without popen" {

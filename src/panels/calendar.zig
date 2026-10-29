@@ -1,5 +1,5 @@
 const std = @import("std");
-const c = @import("../c.zig").c;
+const c = @import("c");
 const renderer = @import("../core/renderer.zig");
 const theme = @import("../core/theme.zig");
 const config = @import("../core/config.zig");
@@ -663,9 +663,9 @@ pub const Calendar = struct {
         // 2. Current day card (no outline, larger day, month on right: "26 Oct")
         _ = ui.open(.{
             .width = .{ .grow = .{} },
-            .height = .{ .fixed = @floatFromInt(120 * scale) },
+            .height = .{ .fixed = @floatFromInt(152 * scale) },
             .direction = .column,
-            .align_x = .center,
+            .align_x = .left,
             .align_y = .center,
             .gap = ui.su(6),
             .bg = self.cfg.theme.card_bg,
@@ -674,7 +674,7 @@ pub const Calendar = struct {
         });
         _ = ui.open(.{
             .direction = .row,
-            .align_x = .center,
+            .align_x = .left,
             .align_y = .center,
             .gap = ui.su(10),
         });
@@ -682,7 +682,7 @@ pub const Calendar = struct {
         const today_day_str = std.fmt.bufPrint(&today_day_buf, "{d}", .{self.today_day}) catch "";
         ui.text(today_day_str, .{
             .size = sec_sz * 5,
-            .color = self.cfg.theme.text_bright,
+            .color = self.cfg.theme.text_main,
             .line_height = @intCast(sec_sz * 5 + 4),
         });
         const m_full = monthName(self.today_month);
@@ -694,19 +694,25 @@ pub const Calendar = struct {
         });
         ui.close(); // row of day + month
 
-        var today_full_date_buf: [64]u8 = undefined;
         const weekday_names = [_][]const u8{ "Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday" };
         const dow = weekdayOf(self.today_year, self.today_month, self.today_day);
         const dow_str = if (dow < 7) weekday_names[dow] else "";
-        const today_sub_str = std.fmt.bufPrint(&today_full_date_buf, "{s} {d:0>2}/{d:0>2}/{d}", .{
-            dow_str,
+        // Weekday on its own line...
+        ui.text(dow_str, .{
+            .size = sec_sz * 13 / 8,
+            .color = self.cfg.theme.text_main,
+            .line_height = @intCast(sec_sz * 13 / 8 + 2),
+        });
+        // ...and the date on the next line (separate text = new line)
+        var today_date_buf: [32]u8 = undefined;
+        const today_date_str = std.fmt.bufPrint(&today_date_buf, "{d:0>2}/{d:0>2}/{d}", .{
             @as(u32, self.today_day),
             @as(u32, self.today_month),
             self.today_year,
         }) catch "";
-        ui.text(today_sub_str, .{
+        ui.text(today_date_str, .{
             .size = sec_sz * 13 / 8,
-            .color = self.cfg.theme.text_bright,
+            .color = self.cfg.theme.text_main,
             .line_height = @intCast(sec_sz * 13 / 8 + 2),
         });
         ui.close(); // day card
@@ -724,7 +730,7 @@ pub const Calendar = struct {
                 .width = .{ .grow = .{} },
                 .height = .{ .grow = .{} },
                 .direction = .column,
-                .align_x = .center,
+                .align_x = .left,
                 .align_y = .center,
                 .bg = self.cfg.theme.card_bg,
                 .radius = ui.f(10),
@@ -732,15 +738,19 @@ pub const Calendar = struct {
             });
             var hbuf: [128]u8 = undefined;
             const hstr = std.fmt.bufPrint(&hbuf, "{s}", .{hld.summarySlice()}) catch "";
-            var trunc_buf: [128]u8 = undefined;
-            const disp_str = truncateText(target, &self.font, hstr, 210 * scale, &trunc_buf, head_sz);
-            ui.text(disp_str, .{ .size = head_sz, .color = self.cfg.theme.secondary });
+            ui.text(hstr, .{
+                .size = head_sz,
+                .color = self.cfg.theme.secondary,
+                .wrap = true,
+            });
             ui.close();
         } else {
             _ = ui.open(.{
                 .width = .{ .grow = .{} },
                 .height = .{ .grow = .{} },
                 .direction = .column,
+                .align_x = .left,
+                .align_y = .center,
                 .gap = ui.su(6),
                 .bg = self.cfg.theme.card_bg,
                 .radius = ui.f(10),
@@ -752,11 +762,10 @@ pub const Calendar = struct {
                     if (@as(u32, hol.year) == self.view_year and @as(u32, hol.month) == self.view_month) {
                         var hbuf: [160]u8 = undefined;
                         const hstr = std.fmt.bufPrint(&hbuf, "{d} - {s}", .{ hol.day, hol.summarySlice() }) catch "";
-                        var trunc_buf: [160]u8 = undefined;
-                        const disp_str = truncateText(target, &self.font, hstr, 210 * scale, &trunc_buf, sec_sz + 1);
-                        ui.text(disp_str, .{
-                            .size = sec_sz + 1,
-                            .color = self.cfg.theme.text_bright,
+                        ui.text(hstr, .{
+                            .size = head_sz,
+                            .color = self.cfg.theme.secondary,
+                            .wrap = true,
                         });
                         count += 1;
                     }
@@ -800,30 +809,6 @@ pub const Calendar = struct {
                 target.fillRoundedRect(0, 0, w, h, radius, theme.Color.init(fade_a, 0, 0, 0));
             }
         }
-    }
-
-    fn truncateText(target: renderer.Renderer, font: *renderer.Font, text: []const u8, max_w: u32, buf: []u8, size: u32) []const u8 {
-        const text_w = target.measureTextWithSize(font, text, size);
-        if (text_w <= max_w) return text;
-        const ellipsis = "...";
-        const ell_w = target.measureTextWithSize(font, ellipsis, size);
-        if (ell_w >= max_w) return "";
-        var best_len: usize = 0;
-        var utf8_view = std.unicode.Utf8View.init(text) catch return text;
-        var it = utf8_view.iterator();
-        while (it.nextCodepointSlice()) |slice| {
-            const candidate_len = best_len + slice.len;
-            if (candidate_len + ellipsis.len > buf.len) break;
-            @memcpy(buf[0..candidate_len], text[0..candidate_len]);
-            @memcpy(buf[candidate_len .. candidate_len + ellipsis.len], ellipsis);
-            const mw = target.measureTextWithSize(font, buf[0 .. candidate_len + ellipsis.len], size);
-            if (mw > max_w) break;
-            best_len = candidate_len;
-        }
-        if (best_len == 0) return "";
-        @memcpy(buf[0..best_len], text[0..best_len]);
-        @memcpy(buf[best_len .. best_len + ellipsis.len], ellipsis);
-        return buf[0 .. best_len + ellipsis.len];
     }
 };
 

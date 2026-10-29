@@ -1,5 +1,5 @@
 const std = @import("std");
-const c = @import("../c.zig").c;
+const c = @import("c");
 const buffer = @import("buffer.zig");
 const renderer = @import("renderer.zig");
 const config = @import("config.zig");
@@ -13,6 +13,8 @@ const clipboard_module = @import("../panels/clipboard.zig");
 const mango_ipc = @import("../services/mango_ipc.zig");
 pub const keymap_module = @import("../services/keymap.zig");
 pub const power_module = @import("../panels/powermenu.zig");
+pub const tray_menu_mod = @import("../panels/tray_menu.zig");
+pub const tray_mod = @import("../bar/tray.zig");
 
 pub const CursorShape = enum {
     default,
@@ -41,6 +43,10 @@ pub const WaylandApp = struct {
     backdrop_layer_surface: ?*c.zwlr_layer_surface_v1 = null,
     backdrop_buf: ?buffer.ShmBuffer = null,
     current_pointer_surface: ?*c.wl_surface = null,
+    menu_surface: ?*c.wl_surface = null,
+    menu_layer_surface: ?*c.zwlr_layer_surface_v1 = null,
+    menu_buf: ?buffer.ShmBuffer = null,
+    tray_menu: ?tray_menu_mod.TrayMenu = null,
 
     buffer_pool: ?buffer.BufferPool = null,
     cfg: config.Config,
@@ -200,6 +206,7 @@ pub const WaylandApp = struct {
             c.wl_cursor_theme_destroy(ct);
             self.cursor_theme = null;
         }
+        self.closeTrayMenu();
         if (self.buffer_pool) |*pool| {
             pool.deinit();
         }
@@ -339,11 +346,14 @@ pub const WaylandApp = struct {
     }
 
     pub fn createBackdrop(self: *WaylandApp) !void {
+        if (self.backdrop_surface != null) return;
         if (self.layer_shell == null or self.compositor == null) return;
         const b_surf = c.wl_compositor_create_surface(self.compositor.?);
         if (b_surf == null) return error.CreateSurfaceFailed;
         self.backdrop_surface = b_surf;
-        self.setupSurfaceScaling(b_surf.?);
+        if (self.output_scale_factor > 1) {
+            c.wl_surface_set_buffer_scale(b_surf, @intCast(self.output_scale_factor));
+        }
 
         const b_layer_surf = c.zwlr_layer_shell_v1_get_layer_surface(
             self.layer_shell.?,
@@ -371,6 +381,129 @@ pub const WaylandApp = struct {
 
         c.wl_surface_commit(b_surf);
         _ = c.wl_display_roundtrip(self.display.?);
+    }
+
+    pub fn destroyBackdrop(self: *WaylandApp) void {
+        if (self.backdrop_buf) |*bb| {
+            bb.deinit();
+            self.backdrop_buf = null;
+        }
+        if (self.backdrop_layer_surface) |bls| {
+            c.zwlr_layer_surface_v1_destroy(bls);
+            self.backdrop_layer_surface = null;
+        }
+        if (self.backdrop_surface) |bs| {
+            c.wl_surface_destroy(bs);
+            self.backdrop_surface = null;
+        }
+    }
+
+    pub fn closeTrayMenu(self: *WaylandApp) void {
+        if (self.current_pointer_surface != null and self.menu_surface != null and self.current_pointer_surface.? == self.menu_surface.?) {
+            self.current_pointer_surface = null;
+        }
+        if (self.current_pointer_surface != null and self.backdrop_surface != null and self.current_pointer_surface.? == self.backdrop_surface.?) {
+            self.current_pointer_surface = null;
+        }
+        if (self.menu_layer_surface) |mls| {
+            c.zwlr_layer_surface_v1_destroy(mls);
+            self.menu_layer_surface = null;
+        }
+        if (self.menu_surface) |ms| {
+            c.wl_surface_destroy(ms);
+            self.menu_surface = null;
+        }
+        if (self.menu_buf) |*mb| {
+            mb.deinit();
+            self.menu_buf = null;
+        }
+        if (self.tray_menu) |*tm| {
+            tm.deinit();
+            self.tray_menu = null;
+        }
+        self.destroyBackdrop();
+        if (self.display) |disp| {
+            _ = c.wl_display_flush(disp);
+        }
+    }
+
+    pub fn openTrayMenu(self: *WaylandApp, req: tray_menu_mod.TrayMenuRequest) !void {
+        if (self.tray_menu != null) {
+            self.closeTrayMenu();
+        }
+
+        try self.createBackdrop();
+
+        var menu = try tray_menu_mod.TrayMenu.init(std.heap.c_allocator, self.cfg, req);
+        errdefer menu.deinit();
+
+        const surf = c.wl_compositor_create_surface(self.compositor.?);
+        if (surf == null) return error.CreateSurfaceFailed;
+        self.menu_surface = surf;
+        if (self.output_scale_factor > 1) {
+            c.wl_surface_set_buffer_scale(surf, @intCast(self.output_scale_factor));
+        }
+
+        const layer_surf = c.zwlr_layer_shell_v1_get_layer_surface(
+            self.layer_shell.?,
+            surf,
+            self.output,
+            c.ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY,
+            "mizu-tray-menu",
+        );
+        if (layer_surf == null) return error.GetLayerSurfaceFailed;
+        self.menu_layer_surface = layer_surf;
+
+        _ = c.zwlr_layer_surface_v1_add_listener(layer_surf, &menu_layer_surface_listener, self);
+
+        const anchor = c.ZWLR_LAYER_SURFACE_V1_ANCHOR_TOP | c.ZWLR_LAYER_SURFACE_V1_ANCHOR_LEFT;
+        const margin_top = @as(i32, @intCast(self.cfg.height + self.cfg.margin_top + 4));
+
+        const bar_w: i32 = if (self.width > 0) @as(i32, @intCast(self.width)) else 1920;
+        const screen_x = @as(i32, @intCast(self.cfg.margin_left)) + req.item_x;
+        const center_x = screen_x + @divTrunc(@as(i32, @intCast(req.item_w)), 2);
+        const left_pos = center_x - @divTrunc(@as(i32, @intCast(menu.width)), 2);
+        const clamped_left = @max(8, @min(left_pos, bar_w - @as(i32, @intCast(menu.width)) - 8));
+
+        c.zwlr_layer_surface_v1_set_anchor(layer_surf, anchor);
+        c.zwlr_layer_surface_v1_set_size(layer_surf, menu.width, menu.height);
+        c.zwlr_layer_surface_v1_set_margin(layer_surf, margin_top, 0, 0, clamped_left);
+        c.zwlr_layer_surface_v1_set_exclusive_zone(layer_surf, -1);
+        c.zwlr_layer_surface_v1_set_keyboard_interactivity(layer_surf, c.ZWLR_LAYER_SURFACE_V1_KEYBOARD_INTERACTIVITY_NONE);
+
+        self.tray_menu = menu;
+        c.wl_surface_commit(surf);
+        _ = c.wl_display_roundtrip(self.display.?);
+        try self.redrawMenu();
+    }
+
+    pub fn redrawMenu(self: *WaylandApp) !void {
+        const menu = if (self.tray_menu) |*m| m else return;
+        const surf = self.menu_surface orelse return;
+        const shm_ptr = self.shm orelse return;
+
+        const phys_w = menu.width * self.output_scale_factor;
+        const phys_h = menu.height * self.output_scale_factor;
+        if (phys_w == 0 or phys_h == 0) return;
+
+        if (self.menu_buf == null or self.menu_buf.?.width != phys_w or self.menu_buf.?.height != phys_h) {
+            if (self.menu_buf) |*b| b.deinit();
+            self.menu_buf = try buffer.createSingleBuffer(shm_ptr, phys_w, phys_h);
+        }
+
+        const buf = &(self.menu_buf.?);
+        var target = try renderer.Renderer.init(buf.data.?, phys_w, phys_h, buf.stride);
+        defer target.deinit();
+
+        try menu.render(target, self.output_scale_factor);
+
+        c.wl_surface_set_buffer_scale(surf, @intCast(@max(1, self.output_scale_factor)));
+        c.wl_surface_attach(surf, buf.buffer.?, 0, 0);
+        c.wl_surface_damage_buffer(surf, 0, 0, @intCast(phys_w), @intCast(phys_h));
+        c.wl_surface_commit(surf);
+        if (self.display) |disp| {
+            _ = c.wl_display_flush(disp);
+        }
     }
 
     pub fn createLauncherSurface(self: *WaylandApp, w: u32, h: u32) !void {
@@ -1224,6 +1357,16 @@ pub const WaylandApp = struct {
         self.pointer_x = px;
         self.pointer_y = py;
 
+        if (self.current_pointer_surface != null and self.menu_surface != null and self.current_pointer_surface.? == self.menu_surface.?) {
+            if (self.tray_menu) |*menu| {
+                if (menu.handlePointerMotion(px, py)) {
+                    self.redrawMenu() catch {};
+                }
+            }
+            self.updateCursorShape(.pointer);
+            return;
+        }
+
         var shape: CursorShape = .default;
         if (self.calendar) |cal| {
             if (cal.handlePointerMotion(px, py)) self.needs_redraw = true;
@@ -1300,6 +1443,12 @@ pub const WaylandApp = struct {
         self.pointer_y = -1;
         self.current_pointer_surface = null;
         self.current_cursor_shape = null;
+        if (self.tray_menu) |*menu| {
+            if (menu.hover_index != null) {
+                menu.hover_index = null;
+                self.redrawMenu() catch {};
+            }
+        }
         if (self.calendar) |cal| {
             if (cal.handlePointerLeave()) self.needs_redraw = true;
         } else if (self.clipboard) |clip| {
@@ -1332,9 +1481,29 @@ pub const WaylandApp = struct {
         _ = serial;
         _ = time;
         const self: *WaylandApp = @ptrCast(@alignCast(data.?));
+
+        // Click on tray popup menu
+        if (self.current_pointer_surface != null and self.menu_surface != null and self.current_pointer_surface.? == self.menu_surface.?) {
+            if (state == c.WL_POINTER_BUTTON_STATE_PRESSED and (button == 272 or button == 273)) {
+                if (self.tray_menu) |*menu| {
+                    if (menu.handleClick(self.pointer_x, self.pointer_y)) |action_id| {
+                        const s_ptr = @as([*:0]const u8, @ptrCast(&menu.service));
+                        const m_ptr = @as([*:0]const u8, @ptrCast(&menu.menu_path));
+                        tray_mod.triggerAction(s_ptr, m_ptr, action_id);
+                    }
+                }
+                self.closeTrayMenu();
+            }
+            return;
+        }
+
         // Dismiss panels if click was outside (on backdrop)
         if (self.current_pointer_surface != null and self.backdrop_surface != null and self.current_pointer_surface.? == self.backdrop_surface.?) {
             if (state == c.WL_POINTER_BUTTON_STATE_PRESSED) {
+                if (self.tray_menu != null) {
+                    self.closeTrayMenu();
+                    return;
+                }
                 self.running = false;
                 if (self.calendar) |cal| cal.running = false;
                 if (self.clipboard) |clip| clip.running = false;
@@ -1402,9 +1571,16 @@ pub const WaylandApp = struct {
                 self.running = false;
             }
         } else if (state == c.WL_POINTER_BUTTON_STATE_PRESSED) {
+            if (self.tray_menu != null) {
+                self.closeTrayMenu();
+            }
             if (self.bar) |bar| {
                 if (self.ipc) |ipc| {
                     bar.handleClick(self.pointer_x, self.pointer_y, button, ipc);
+                    if (bar.open_menu_request) |req| {
+                        bar.open_menu_request = null;
+                        self.openTrayMenu(req) catch {};
+                    }
                     self.needs_redraw = true;
                 }
             }
@@ -1571,8 +1747,9 @@ pub const WaylandApp = struct {
             const phys_h = h * self.output_scale_factor;
             if (self.backdrop_buf == null or self.backdrop_buf.?.width != phys_w or self.backdrop_buf.?.height != phys_h) {
                 if (self.backdrop_buf) |*b| b.deinit();
-                self.backdrop_buf = buffer.BufferPool.createSingleBuffer(self.shm.?, phys_w, phys_h) catch null;
+                self.backdrop_buf = buffer.createSingleBuffer(self.shm.?, phys_w, phys_h) catch null;
                 if (self.backdrop_buf) |*b| {
+                    @memset(b.data.?[0..phys_w * phys_h], 0);
                     c.wl_surface_attach(self.backdrop_surface.?, b.buffer.?, 0, 0);
                     c.wl_surface_damage_buffer(self.backdrop_surface.?, 0, 0, @intCast(phys_w), @intCast(phys_h));
                     c.wl_surface_commit(self.backdrop_surface.?);
@@ -1584,11 +1761,40 @@ pub const WaylandApp = struct {
     fn backdrop_layer_surface_closed(data: ?*anyopaque, surface: ?*c.zwlr_layer_surface_v1) callconv(.c) void {
         _ = surface;
         const self: *WaylandApp = @ptrCast(@alignCast(data.?));
-        self.running = false;
+        if (self.bar != null) {
+            self.destroyBackdrop();
+        } else {
+            self.running = false;
+        }
     }
 
     const backdrop_layer_surface_listener = c.zwlr_layer_surface_v1_listener{
         .configure = backdrop_layer_surface_configure,
         .closed = backdrop_layer_surface_closed,
+    };
+
+    fn menu_layer_surface_configure(
+        data: ?*anyopaque,
+        surface: ?*c.zwlr_layer_surface_v1,
+        serial: u32,
+        w: u32,
+        h: u32,
+    ) callconv(.c) void {
+        _ = w;
+        _ = h;
+        const self: *WaylandApp = @ptrCast(@alignCast(data.?));
+        c.zwlr_layer_surface_v1_ack_configure(surface, serial);
+        self.redrawMenu() catch {};
+    }
+
+    fn menu_layer_surface_closed(data: ?*anyopaque, surface: ?*c.zwlr_layer_surface_v1) callconv(.c) void {
+        _ = surface;
+        const self: *WaylandApp = @ptrCast(@alignCast(data.?));
+        self.closeTrayMenu();
+    }
+
+    const menu_layer_surface_listener = c.zwlr_layer_surface_v1_listener{
+        .configure = menu_layer_surface_configure,
+        .closed = menu_layer_surface_closed,
     };
 };

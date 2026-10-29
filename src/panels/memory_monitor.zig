@@ -1,5 +1,5 @@
 const std = @import("std");
-const c = @import("../c.zig").c;
+const c = @import("c");
 const renderer = @import("../core/renderer.zig");
 const config = @import("../core/config.zig");
 const icons = @import("../graphics/icons.zig");
@@ -643,8 +643,7 @@ pub const MemoryMonitor = struct {
         }
     }
 
-    // ---- Input ----------------------------------------------------------
-
+    // Input
     pub fn handleKey(self: *MemoryMonitor, sym: u32, utf8_bytes: []const u8, ctrl: bool, shift: bool) bool {
         if (sym == c.XKB_KEY_Escape) {
             if (self.confirm_kill_pid != null) {
@@ -909,8 +908,7 @@ pub const MemoryMonitor = struct {
         return self.pointInFilter(x, y);
     }
 
-    // ---- Layout ---------------------------------------------------------
-
+    // Layout
     fn panelX() f64 {
         return INSET;
     }
@@ -969,8 +967,7 @@ pub const MemoryMonitor = struct {
         return @as(usize, @intFromFloat(std.math.floor(avail / ROW_H)));
     }
 
-    // ---- Filtering ------------------------------------------------------
-
+    // Filtering
     fn selectedPid(self: *MemoryMonitor) ?u32 {
         const sel = self.selected orelse return null;
         if (sel >= self.visible_rows.items.len) return null;
@@ -1105,8 +1102,7 @@ pub const MemoryMonitor = struct {
         self.filter_scroll = std.math.clamp(self.filter_scroll, 0.0, max_scroll);
     }
 
-    // ---- Hit testing ----------------------------------------------------
-
+    // Hit testing
     fn rowIndexAt(self: *MemoryMonitor, x: i32, y: i32) ?usize {
         const fx: f64 = @as(f64, @floatFromInt(x));
         const fy: f64 = @as(f64, @floatFromInt(y));
@@ -1142,8 +1138,7 @@ pub const MemoryMonitor = struct {
         return (fx - cx) * (fx - cx) + (fy - cy) * (fy - cy) <= 14.0 * 14.0;
     }
 
-    // ---- Rendering ------------------------------------------------------
-
+    // Rendering
     fn alphaCol(base: Color, a: f64) Color {
         const aa = @as(u8, @intFromFloat(@as(f64, @floatFromInt(base.a)) * std.math.clamp(a, 0.0, 1.0)));
         return Color.init(aa, base.r, base.g, base.b);

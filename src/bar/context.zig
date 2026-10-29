@@ -5,6 +5,7 @@ const config = @import("../core/config.zig");
 const sys_status = @import("../services/system_status.zig");
 const mango_ipc = @import("../services/mango_ipc.zig");
 const ui_mod = @import("../core/ui.zig");
+const c = @import("c");
 
 pub const ScrollAction = union(enum) {
     volume,
@@ -20,6 +21,21 @@ pub const TrayItemAction = struct {
     index: u32,
     service: [128]u8,
     path: [128]u8,
+    menu_path: [128]u8 = @splat(0),
+    id: [64]u8 = @splat(0),
+    title: [128]u8 = @splat(0),
+    icon_name: [128]u8 = @splat(0),
+};
+
+pub const ActiveTrayMenu = struct {
+    service: [128]u8,
+    path: [128]u8,
+    menu_path: [128]u8,
+    id: [64]u8,
+    title: [128]u8,
+    icon_name: [128]u8,
+    actions: [16]c.MizuTrayMenuAction,
+    action_count: usize,
 };
 
 pub const ClickAction = union(enum) {
@@ -31,6 +47,10 @@ pub const ClickAction = union(enum) {
     },
     cycle_theme: bool, // true for forward, false for backward
     tray_item: TrayItemAction,
+    tray_menu_action: struct {
+        action_id: i32,
+    },
+    tray_menu_close,
 };
 
 pub const ClickableArea = struct {
@@ -64,6 +84,7 @@ pub const BarContext = struct {
     baseline_y: i32,
     current_theme_kind: theme.ThemeKind,
     scale: u32 = 1,
+    active_tray_menu: ?*const ActiveTrayMenu = null,
 
     /// Register a click target for a widget after layout.
     pub fn linkClick(

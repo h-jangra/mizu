@@ -48,6 +48,9 @@ fn configureMizuModule(b: *std.Build, mod: *std.Build.Module, c_module: *std.Bui
         .file = b.path("src/protocols/wayland/generated/idle-inhibit-unstable-v1-protocol.c"),
     });
     mod.addCSourceFile(.{
+        .file = b.path("src/protocols/wayland/generated/wlr-screencopy-unstable-v1-protocol.c"),
+    });
+    mod.addCSourceFile(.{
         .file = b.path("src/c/notify_dbus.c"),
     });
     mod.addCSourceFile(.{
@@ -76,7 +79,7 @@ pub fn build(b: *std.Build) void {
 
     // Zig 0.17 removed @cImport; generate the C bindings with translate-c instead.
     const c_translate = b.addTranslateC(.{
-        .root_source_file = b.path("src/c.h"),
+        .root_source_file = b.path("src/c/c.h"),
         .target = target,
         .optimize = optimize,
         .link_libc = true,
@@ -101,7 +104,7 @@ pub fn build(b: *std.Build) void {
     const exe_ink = b.addExecutable(.{
         .name = "mizu-ink",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/ink_main.zig"),
+            .root_source_file = b.path("src/main.zig"),
             .target = target,
             .optimize = optimize,
             .link_libc = true,
@@ -114,7 +117,7 @@ pub fn build(b: *std.Build) void {
     const exe_annotate = b.addExecutable(.{
         .name = "mizu-annotate",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/annotate_main.zig"),
+            .root_source_file = b.path("src/main.zig"),
             .target = target,
             .optimize = optimize,
             .link_libc = true,
@@ -127,7 +130,7 @@ pub fn build(b: *std.Build) void {
     const exe_image = b.addExecutable(.{
         .name = "mizu-image",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/image_main.zig"),
+            .root_source_file = b.path("src/main.zig"),
             .target = target,
             .optimize = optimize,
             .link_libc = true,
@@ -140,7 +143,7 @@ pub fn build(b: *std.Build) void {
     const exe_view = b.addExecutable(.{
         .name = "mizu-view",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/view_main.zig"),
+            .root_source_file = b.path("src/main.zig"),
             .target = target,
             .optimize = optimize,
             .link_libc = true,
@@ -168,44 +171,4 @@ pub fn build(b: *std.Build) void {
     const run_unit_tests = b.addRunArtifact(unit_tests);
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_unit_tests.step);
-
-    // Standalone draw/layout tests with full C include paths
-    const draw_test_mod = b.createModule(.{
-        .root_source_file = b.path("src/draw_test.zig"),
-        .target = target,
-        .optimize = optimize,
-        .link_libc = true,
-    });
-    draw_test_mod.addImport("c", c_module);
-    draw_test_mod.addIncludePath(b.path("src"));
-    draw_test_mod.addIncludePath(b.path("src/c"));
-    draw_test_mod.addIncludePath(b.path("src/core"));
-    draw_test_mod.addIncludePath(b.path("src/bar"));
-    draw_test_mod.addIncludePath(b.path("src/panels"));
-    draw_test_mod.addIncludePath(b.path("src/graphics"));
-    draw_test_mod.addIncludePath(b.path("src/services"));
-    draw_test_mod.addIncludePath(b.path("src/protocols/wayland/generated"));
-    draw_test_mod.addIncludePath(.{ .cwd_relative = "/usr/include/freetype2" });
-    draw_test_mod.addIncludePath(.{ .cwd_relative = "/usr/include/dbus-1.0" });
-    draw_test_mod.addIncludePath(.{ .cwd_relative = "/usr/lib64/dbus-1.0/include" });
-    draw_test_mod.linkSystemLibrary("wayland-client", .{ .use_pkg_config = .no });
-    draw_test_mod.linkSystemLibrary("freetype", .{ .use_pkg_config = .no });
-    draw_test_mod.linkSystemLibrary("fontconfig", .{ .use_pkg_config = .no });
-    draw_test_mod.linkSystemLibrary("xkbcommon", .{ .use_pkg_config = .no });
-    draw_test_mod.linkSystemLibrary("png16", .{ .use_pkg_config = .no });
-    draw_test_mod.linkSystemLibrary("c", .{ .use_pkg_config = .no });
-    draw_test_mod.addCSourceFile(.{
-        .file = b.path("src/core/nanosvg.c"),
-        .flags = &.{"-O2"},
-    });
-    draw_test_mod.addCSourceFile(.{
-        .file = b.path("src/core/nanosvg_rasterizer.c"),
-        .flags = &.{"-O2"},
-    });
-
-    const draw_tests = b.addTest(.{
-        .root_module = draw_test_mod,
-    });
-    const run_draw_tests = b.addRunArtifact(draw_tests);
-    test_step.dependOn(&run_draw_tests.step);
 }

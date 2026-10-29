@@ -1,6 +1,6 @@
 const std = @import("std");
 const theme = @import("theme.zig");
-const c = @import("../c.zig").c;
+const c = @import("c");
 
 pub const CustomButton = struct {
     label: []const u8,
@@ -319,12 +319,12 @@ pub const Config = struct {
         const c_path = allocator.dupeSentinel(u8, path, 0) catch return cfg;
         defer allocator.free(c_path);
 
-        const f = @import("../c.zig").c.fopen(c_path.ptr, "rb") orelse return cfg;
-        defer _ = @import("../c.zig").c.fclose(f);
+        const f = @import("c").fopen(c_path.ptr, "rb") orelse return cfg;
+        defer _ = @import("c").fclose(f);
 
-        _ = @import("../c.zig").c.fseek(f, 0, @import("../c.zig").c.SEEK_END);
-        const fsize = @import("../c.zig").c.ftell(f);
-        _ = @import("../c.zig").c.fseek(f, 0, @import("../c.zig").c.SEEK_SET);
+        _ = @import("c").fseek(f, 0, @import("c").SEEK_END);
+        const fsize = @import("c").ftell(f);
+        _ = @import("c").fseek(f, 0, @import("c").SEEK_SET);
 
         if (fsize <= 0 or fsize > 1024 * 1024) return cfg;
         const usize_len: usize = @intCast(fsize);
@@ -332,7 +332,7 @@ pub const Config = struct {
         const content = allocator.alloc(u8, usize_len) catch return cfg;
         defer allocator.free(content);
 
-        const bytes_read = @import("../c.zig").c.fread(content.ptr, 1, usize_len, f);
+        const bytes_read = @import("c").fread(content.ptr, 1, usize_len, f);
         const slice = content[0..bytes_read];
 
         var lines = std.mem.splitScalar(u8, slice, '\n');

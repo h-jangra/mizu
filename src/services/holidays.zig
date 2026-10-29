@@ -1,6 +1,6 @@
 const std = @import("std");
 const builtin = @import("builtin");
-const c = @import("../c.zig").c;
+const c = @import("c");
 const exec = @import("../core/exec.zig");
 
 pub const SOURCE_URL = "https://the-calendar.net/downloads/countries/india-holidays.ics";

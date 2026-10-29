@@ -1,6 +1,6 @@
 const std = @import("std");
 const types = @import("context.zig");
-const c = @import("../c.zig").c;
+const c = @import("c");
 const ui_mod = @import("../core/ui.zig");
 
 var tz_initialized: bool = false;

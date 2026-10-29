@@ -1,6 +1,6 @@
 const std = @import("std");
 const builtin = @import("builtin");
-const c = @import("../c.zig").c;
+const c = @import("c");
 const theme = @import("../core/theme.zig");
 const config = @import("../core/config.zig");
 const renderer = @import("../core/renderer.zig");
@@ -13,6 +13,7 @@ const recorder = @import("../bar/recorder.zig");
 const icons = @import("../graphics/icons.zig");
 const ui_mod = @import("../core/ui.zig");
 const keymap_module = @import("../services/keymap.zig");
+const dropdown = @import("../core/dropdown.zig");
 
 /// Layout tokens for Quick Settings panels (logical pixels).
 pub const QsLayout = struct {
@@ -102,6 +103,10 @@ pub const Action = union(enum) {
     set_display_scale: u32,
     set_display_refresh: u32,
     set_display_resolution: usize,
+    toggle_audio_dropdown,
+    toggle_display_scale_dropdown,
+    toggle_display_refresh_dropdown,
+    toggle_display_resolution_dropdown,
     forget_wifi: usize,
     remove_bluetooth: usize,
     disconnect_wifi: usize,
@@ -312,6 +317,10 @@ pub const QuickSettings = struct {
     display_scale_pct: u32 = 100,
     display_refresh_rate: u32 = 144,
     display_resolution_idx: usize = 0,
+    audio_dropdown_open: bool = false,
+    disp_scale_open: bool = false,
+    disp_refresh_open: bool = false,
+    disp_res_open: bool = false,
     confirming_session: ?SessionConfirmAction = null,
 
     hit_areas: std.ArrayList(HitArea),
@@ -380,9 +389,19 @@ pub const QuickSettings = struct {
                 }
                 break :blk h;
             },
-            .display_menu => 550,
+            .display_menu => blk: {
+                var h: u32 = 370;
+                if (self.disp_scale_open) h += 4 * 38;
+                if (self.disp_refresh_open) h += 4 * 38;
+                if (self.disp_res_open) h += 4 * 38;
+                break :blk @min(580, h);
+            },
             .wifi_menu, .bluetooth_menu => 480,
-            .audio_menu => 510,
+            .audio_menu => blk: {
+                var h: u32 = 510;
+                if (self.audio_dropdown_open) h += 80;
+                break :blk @min(590, h);
+            },
             .notifications_menu => 460,
             .recording_menu => 420,
             .power_menu => 360,
@@ -393,7 +412,8 @@ pub const QuickSettings = struct {
     fn maxVisibleRows(self: *const QuickSettings) usize {
         return switch (self.view_mode) {
             .wifi_menu, .bluetooth_menu => 7,
-            .audio_menu, .notifications_menu, .display_menu => 6,
+            .audio_menu => if (self.audio_dropdown_open) 4 else 6,
+            .notifications_menu, .display_menu => 6,
             .recording_menu, .power_menu, .keymap_menu => 3,
             .main => 0,
         };
@@ -736,6 +756,7 @@ pub const QuickSettings = struct {
                     .open_audio_menu => {
                         self.view_mode = .audio_menu;
                         self.scroll_offset = 0;
+                        self.audio_dropdown_open = false;
                         if (self.sink_items.items.len == 0 and self.source_items.items.len == 0) {
                             self.scanAudioDevices();
                         }
@@ -762,6 +783,10 @@ pub const QuickSettings = struct {
                         }
                         self.view_mode = .main;
                         self.scroll_offset = 0;
+                        self.disp_scale_open = false;
+                        self.disp_refresh_open = false;
+                        self.disp_res_open = false;
+                        self.audio_dropdown_open = false;
                         return true;
                     },
                     .forget_wifi => |idx| {
@@ -979,11 +1004,13 @@ pub const QuickSettings = struct {
                     },
                     .set_audio_tab_output => {
                         self.audio_tab = .output;
+                        self.audio_dropdown_open = false;
                         self.scroll_offset = 0;
                         return true;
                     },
                     .set_audio_tab_input => {
                         self.audio_tab = .input;
+                        self.audio_dropdown_open = false;
                         self.scroll_offset = 0;
                         return true;
                     },
@@ -1127,6 +1154,9 @@ pub const QuickSettings = struct {
                         self.queryDisplaySettings();
                         self.view_mode = .display_menu;
                         self.scroll_offset = 0;
+                        self.disp_scale_open = false;
+                        self.disp_refresh_open = false;
+                        self.disp_res_open = false;
                         return true;
                     },
                     .open_power_menu => {
@@ -1170,14 +1200,44 @@ pub const QuickSettings = struct {
                         self.running = false;
                         return true;
                     },
+                    .toggle_audio_dropdown => {
+                        self.audio_dropdown_open = !self.audio_dropdown_open;
+                        return true;
+                    },
+                    .toggle_display_scale_dropdown => {
+                        self.disp_scale_open = !self.disp_scale_open;
+                        if (self.disp_scale_open) {
+                            self.disp_refresh_open = false;
+                            self.disp_res_open = false;
+                        }
+                        return true;
+                    },
+                    .toggle_display_refresh_dropdown => {
+                        self.disp_refresh_open = !self.disp_refresh_open;
+                        if (self.disp_refresh_open) {
+                            self.disp_scale_open = false;
+                            self.disp_res_open = false;
+                        }
+                        return true;
+                    },
+                    .toggle_display_resolution_dropdown => {
+                        self.disp_res_open = !self.disp_res_open;
+                        if (self.disp_res_open) {
+                            self.disp_scale_open = false;
+                            self.disp_refresh_open = false;
+                        }
+                        return true;
+                    },
                     .set_display_scale => |s_val| {
                         self.display_scale_pct = s_val;
+                        self.disp_scale_open = false;
                         applyDisplayScale(s_val);
                         saveDisplayScale(s_val);
                         return true;
                     },
                     .set_display_refresh => |r_val| {
                         self.display_refresh_rate = r_val;
+                        self.disp_refresh_open = false;
                         applyDisplayRefresh(r_val);
                         saveDisplayRefresh(r_val);
                         return true;
@@ -1185,6 +1245,7 @@ pub const QuickSettings = struct {
                     .set_display_resolution => |res_idx| {
                         if (res_idx < display_resolutions.len) {
                             self.display_resolution_idx = res_idx;
+                            self.disp_res_open = false;
                             applyDisplayResolution(display_resolutions[res_idx]);
                             saveDisplayResolution(display_resolutions[res_idx]);
                         }
@@ -3855,39 +3916,27 @@ pub const QuickSettings = struct {
                     ui.close(); // earbud safety card
                 }
 
-                _ = ui.open(.{
-                    .width = .{ .grow = .{} },
-                    .height = .{ .fixed = ui.s(36) },
-                    .direction = .row,
-                    .padding = .all(ui.su(3)),
-                    .gap = ui.su(4),
-                    .bg = self.cfg.theme.surface,
-                    .radius = ui.f(10),
-                    .border = ui.su(1),
-                    .border_color = self.cfg.theme.border,
+                const audio_mode_items = [_]dropdown.DropdownItem{
+                    .{ .label = "Output Devices", .icon = "speaker" },
+                    .{ .label = "Input Devices", .icon = "microphone" },
+                };
+                const cur_audio_lbl = if (self.audio_tab == .output) "Output Devices" else "Input Devices";
+                const cur_audio_ico = if (self.audio_tab == .output) "speaker" else "microphone";
+                const cur_audio_idx: usize = if (self.audio_tab == .output) 0 else 1;
+
+                try dropdown.render(ui, .{
+                    .id = "qs-audio-mode",
+                    .current_label = cur_audio_lbl,
+                    .leading_icon = cur_audio_ico,
+                    .is_open = self.audio_dropdown_open,
+                    .items = &audio_mode_items,
+                    .selected_index = cur_audio_idx,
+                    .height = 38,
+                    .item_height = 34,
+                    .font_size = sub_sz,
+                    .theme = self.cfg.theme,
+                    .scale = scale,
                 });
-                const tab_labels = [_][]const u8{ "Output Devices", "Input Devices" };
-                inline for (0..2) |tab_idx| {
-                    const selected = (@as(usize, tab_idx) == @intFromEnum(self.audio_tab));
-                    const tab_hov = ui.hovered(if (tab_idx == 0) "qs-audio-out" else "qs-audio-in", 0);
-                    _ = ui.open(.{
-                        .id = if (tab_idx == 0) "qs-audio-out" else "qs-audio-in",
-                        .width = .{ .percent = 0.5 },
-                        .height = .{ .grow = .{} },
-                        .bg = if (selected) self.cfg.theme.elevated else if (tab_hov) self.cfg.theme.card_hover_bg else null,
-                        .radius = ui.f(8),
-                        .border = if (selected) ui.su(1) else 0,
-                        .border_color = if (selected) self.cfg.theme.border_focused else null,
-                        .align_x = .center,
-                        .align_y = .center,
-                    });
-                    ui.text(tab_labels[tab_idx], .{
-                        .size = sub_sz,
-                        .color = if (selected) self.cfg.theme.text_bright else self.cfg.theme.text_muted,
-                    });
-                    ui.close();
-                }
-                ui.close();
 
                 const items = if (self.audio_tab == .output) self.sink_items.items else self.source_items.items;
                 const is_output = self.audio_tab == .output;
@@ -4142,138 +4191,84 @@ pub const QuickSettings = struct {
                 }
             },
             .display_menu => {
-                // Section 1: Display Scaling
-                _ = ui.open(.{
-                    .width = .{ .grow = .{} },
-                    .direction = .column,
-                    .gap = ui.su(8),
-                });
-                ui.text("Display Scaling", .{ .size = sub_sz, .color = self.cfg.theme.text_bright });
-                _ = ui.open(.{
-                    .width = .{ .grow = .{} },
-                    .height = .{ .fixed = ui.s(40) },
-                    .direction = .row,
-                    .gap = ui.su(8),
-                });
-                inline for (display_scales, 0..) |s_val, s_idx| {
-                    const sel = (self.display_scale_pct == s_val);
-                    const hov = ui.hovered("qs-disp-scale", s_idx);
-                    var s_buf: [16]u8 = undefined;
-                    const s_lbl = std.fmt.bufPrint(&s_buf, "{d}%", .{s_val}) catch "100%";
-                    _ = ui.open(.{
-                        .id = "qs-disp-scale",
-                        .index = s_idx,
-                        .width = .{ .grow = .{} },
-                        .height = .{ .grow = .{} },
-                        .bg = if (sel) self.cfg.theme.elevated else if (hov) self.cfg.theme.card_hover_bg else self.cfg.theme.card_bg,
-                        .radius = ui.f(10),
-                        .border = ui.su(1),
-                        .border_color = if (sel) self.cfg.theme.accent else if (hov) self.cfg.theme.border_focused else self.cfg.theme.border,
-                        .align_x = .center,
-                        .align_y = .center,
-                    });
-                    ui.text(s_lbl, .{
-                        .size = btn_sz,
-                        .color = if (sel) self.cfg.theme.accent else self.cfg.theme.text_bright,
-                    });
-                    ui.close();
-                }
-                ui.close(); // row
-                ui.close(); // section 1
-
-                // Section 2: Refresh Rate
-                _ = ui.open(.{
-                    .width = .{ .grow = .{} },
-                    .direction = .column,
-                    .gap = ui.su(8),
-                });
-                ui.text("Refresh Rate", .{ .size = sub_sz, .color = self.cfg.theme.text_bright });
-                _ = ui.open(.{
-                    .width = .{ .grow = .{} },
-                    .height = .{ .fixed = ui.s(40) },
-                    .direction = .row,
-                    .gap = ui.su(8),
-                });
-                inline for (display_refresh_rates, 0..) |r_val, r_idx| {
-                    const sel = (self.display_refresh_rate == r_val);
-                    const hov = ui.hovered("qs-disp-refresh", r_idx);
-                    var r_buf: [16]u8 = undefined;
-                    const r_lbl = std.fmt.bufPrint(&r_buf, "{d} Hz", .{r_val}) catch "60 Hz";
-                    _ = ui.open(.{
-                        .id = "qs-disp-refresh",
-                        .index = r_idx,
-                        .width = .{ .grow = .{} },
-                        .height = .{ .grow = .{} },
-                        .bg = if (sel) self.cfg.theme.elevated else if (hov) self.cfg.theme.card_hover_bg else self.cfg.theme.card_bg,
-                        .radius = ui.f(10),
-                        .border = ui.su(1),
-                        .border_color = if (sel) self.cfg.theme.accent else if (hov) self.cfg.theme.border_focused else self.cfg.theme.border,
-                        .align_x = .center,
-                        .align_y = .center,
-                    });
-                    ui.text(r_lbl, .{
-                        .size = btn_sz,
-                        .color = if (sel) self.cfg.theme.accent else self.cfg.theme.text_bright,
-                    });
-                    ui.close();
-                }
-                ui.close(); // row
-                ui.close(); // section 2
-
-                // Section 3: Resolution
-                _ = ui.open(.{
-                    .width = .{ .grow = .{} },
-                    .direction = .column,
-                    .gap = ui.su(8),
-                });
-                ui.text("Resolution", .{ .size = sub_sz, .color = self.cfg.theme.text_bright });
-                _ = ui.open(.{
-                    .width = .{ .grow = .{} },
-                    .direction = .column,
-                    .gap = ui.su(8),
-                });
-                const res_labels = [_][]const u8{
-                    "1920x1080 (16:9 Full HD)",
-                    "1680x1050 (16:10 WSXGA+)",
-                    "1440x900 (16:10 WXGA+)",
-                    "1280x720 (16:9 HD)",
+                // Section 1: Display Scaling Dropdown
+                const scale_items = [_]dropdown.DropdownItem{
+                    .{ .label = "100%", .icon = "monitor" },
+                    .{ .label = "125%", .icon = "monitor" },
+                    .{ .label = "150%", .icon = "monitor" },
+                    .{ .label = "200%", .icon = "monitor" },
                 };
-                for (res_labels, 0..) |res_lbl, res_idx| {
-                    const sel = (self.display_resolution_idx == res_idx);
-                    const hov = ui.hovered("qs-disp-res", @intCast(res_idx));
-                    _ = ui.open(.{
-                        .id = "qs-disp-res",
-                        .index = @intCast(res_idx),
-                        .width = .{ .grow = .{} },
-                        .height = .{ .fixed = ui.s(42) },
-                        .direction = .row,
-                        .padding = .{ .left = ui.su(12), .right = ui.su(12) },
-                        .gap = ui.su(10),
-                        .bg = if (sel) self.cfg.theme.elevated else if (hov) self.cfg.theme.card_hover_bg else self.cfg.theme.card_bg,
-                        .radius = ui.f(10),
-                        .border = ui.su(1),
-                        .border_color = if (sel) self.cfg.theme.accent else if (hov) self.cfg.theme.border_focused else self.cfg.theme.border,
-                        .align_y = .center,
-                    });
-                    ui.icon("monitor", 18 * scale, if (sel) self.cfg.theme.accent else self.cfg.theme.text_bright, 0);
-                    _ = ui.open(.{
-                        .width = .{ .grow = .{} },
-                        .height = .{ .grow = .{} },
-                        .padding = .{ .left = ui.su(6) },
-                        .align_y = .center,
-                    });
-                    ui.text(res_lbl, .{
-                        .size = sub_sz,
-                        .color = if (sel) self.cfg.theme.accent else self.cfg.theme.text_bright,
-                    });
-                    ui.close();
-                    if (sel) {
-                        ui.icon("check", 16 * scale, self.cfg.theme.accent, 0);
-                    }
-                    ui.close();
+                var scale_buf: [16]u8 = undefined;
+                const scale_lbl = std.fmt.bufPrint(&scale_buf, "{d}%", .{self.display_scale_pct}) catch "100%";
+                var cur_scale_idx: ?usize = null;
+                inline for (display_scales, 0..) |s_val, s_idx| {
+                    if (self.display_scale_pct == s_val) cur_scale_idx = s_idx;
                 }
-                ui.close();
-                ui.close(); // section 3
+                try dropdown.render(ui, .{
+                    .id = "qs-disp-scale",
+                    .title = "Display Scaling",
+                    .current_label = scale_lbl,
+                    .leading_icon = "monitor",
+                    .is_open = self.disp_scale_open,
+                    .items = &scale_items,
+                    .selected_index = cur_scale_idx,
+                    .font_size = sub_sz,
+                    .title_font_size = sub_sz,
+                    .theme = self.cfg.theme,
+                    .scale = scale,
+                });
+
+                // Section 2: Refresh Rate Dropdown
+                const refresh_items = [_]dropdown.DropdownItem{
+                    .{ .label = "60 Hz", .icon = "refresh" },
+                    .{ .label = "120 Hz", .icon = "refresh" },
+                    .{ .label = "144 Hz", .icon = "refresh" },
+                    .{ .label = "165 Hz", .icon = "refresh" },
+                };
+                var refresh_buf: [16]u8 = undefined;
+                const refresh_lbl = std.fmt.bufPrint(&refresh_buf, "{d} Hz", .{self.display_refresh_rate}) catch "60 Hz";
+                var cur_refresh_idx: ?usize = null;
+                inline for (display_refresh_rates, 0..) |r_val, r_idx| {
+                    if (self.display_refresh_rate == r_val) cur_refresh_idx = r_idx;
+                }
+                try dropdown.render(ui, .{
+                    .id = "qs-disp-refresh",
+                    .title = "Refresh Rate",
+                    .current_label = refresh_lbl,
+                    .leading_icon = "refresh",
+                    .is_open = self.disp_refresh_open,
+                    .items = &refresh_items,
+                    .selected_index = cur_refresh_idx,
+                    .font_size = sub_sz,
+                    .title_font_size = sub_sz,
+                    .theme = self.cfg.theme,
+                    .scale = scale,
+                });
+
+                // Section 3: Resolution Dropdown
+                const res_items = [_]dropdown.DropdownItem{
+                    .{ .label = "1920x1080 (16:9 Full HD)", .icon = "monitor" },
+                    .{ .label = "1680x1050 (16:10 WSXGA+)", .icon = "monitor" },
+                    .{ .label = "1440x900 (16:10 WXGA+)", .icon = "monitor" },
+                    .{ .label = "1280x720 (16:9 HD)", .icon = "monitor" },
+                };
+                const cur_res_lbl = if (self.display_resolution_idx < res_items.len)
+                    res_items[self.display_resolution_idx].label
+                else
+                    "1920x1080 (16:9 Full HD)";
+                try dropdown.render(ui, .{
+                    .id = "qs-disp-res",
+                    .title = "Resolution",
+                    .current_label = cur_res_lbl,
+                    .leading_icon = "monitor",
+                    .is_open = self.disp_res_open,
+                    .items = &res_items,
+                    .selected_index = self.display_resolution_idx,
+                    .font_size = sub_sz,
+                    .title_font_size = sub_sz,
+                    .theme = self.cfg.theme,
+                    .scale = scale,
+                });
 
                 // Section 4: Eye Comfort (Night Light)
                 {
@@ -4636,21 +4631,33 @@ pub const QuickSettings = struct {
         const max_visible = self.maxVisibleRows();
         switch (self.view_mode) {
             .display_menu => {
-                inline for (display_scales, 0..) |s_val, s_idx| {
-                    if (ui.rectOf("qs-disp-scale", s_idx)) |rect| {
-                        try self.appendRect(rect, scale, .{ .set_display_scale = s_val });
+                if (ui.rectOf("qs-disp-scale-hdr", 0)) |rect| try self.appendRect(rect, scale, .toggle_display_scale_dropdown);
+                if (self.disp_scale_open) {
+                    inline for (display_scales, 0..) |s_val, s_idx| {
+                        if (ui.rectOf("qs-disp-scale-item", s_idx)) |rect| {
+                            try self.appendRect(rect, scale, .{ .set_display_scale = s_val });
+                        }
                     }
                 }
-                inline for (display_refresh_rates, 0..) |r_val, r_idx| {
-                    if (ui.rectOf("qs-disp-refresh", r_idx)) |rect| {
-                        try self.appendRect(rect, scale, .{ .set_display_refresh = r_val });
+
+                if (ui.rectOf("qs-disp-refresh-hdr", 0)) |rect| try self.appendRect(rect, scale, .toggle_display_refresh_dropdown);
+                if (self.disp_refresh_open) {
+                    inline for (display_refresh_rates, 0..) |r_val, r_idx| {
+                        if (ui.rectOf("qs-disp-refresh-item", r_idx)) |rect| {
+                            try self.appendRect(rect, scale, .{ .set_display_refresh = r_val });
+                        }
                     }
                 }
-                for (display_resolutions, 0..) |_, res_idx| {
-                    if (ui.rectOf("qs-disp-res", @intCast(res_idx))) |rect| {
-                        try self.appendRect(rect, scale, .{ .set_display_resolution = res_idx });
+
+                if (ui.rectOf("qs-disp-res-hdr", 0)) |rect| try self.appendRect(rect, scale, .toggle_display_resolution_dropdown);
+                if (self.disp_res_open) {
+                    for (0..display_resolutions.len) |res_idx| {
+                        if (ui.rectOf("qs-disp-res-item", @intCast(res_idx))) |rect| {
+                            try self.appendRect(rect, scale, .{ .set_display_resolution = res_idx });
+                        }
                     }
                 }
+
                 if (ui.rectOf("qs-disp-eye-comfort", 0)) |rect| {
                     try self.appendRect(rect, scale, .toggle_eye_comfort);
                 }
@@ -4699,8 +4706,11 @@ pub const QuickSettings = struct {
             },
             .audio_menu => {
                 if (ui.rectOf("qs-earbud-safety", 0)) |rect| try self.appendRect(rect, scale, .toggle_earbud_safety);
-                if (ui.rectOf("qs-audio-out", 0)) |rect| try self.appendRect(rect, scale, .set_audio_tab_output);
-                if (ui.rectOf("qs-audio-in", 0)) |rect| try self.appendRect(rect, scale, .set_audio_tab_input);
+                if (ui.rectOf("qs-audio-mode-hdr", 0)) |rect| try self.appendRect(rect, scale, .toggle_audio_dropdown);
+                if (self.audio_dropdown_open) {
+                    if (ui.rectOf("qs-audio-mode-item", 0)) |rect| try self.appendRect(rect, scale, .set_audio_tab_output);
+                    if (ui.rectOf("qs-audio-mode-item", 1)) |rect| try self.appendRect(rect, scale, .set_audio_tab_input);
+                }
                 const items = if (self.audio_tab == .output) self.sink_items.items else self.source_items.items;
                 const is_output = self.audio_tab == .output;
                 const start_idx = self.scroll_offset;
@@ -5814,11 +5824,26 @@ test "QuickSettings audio options tabs and device selection" {
     try std.testing.expect(qs.handlePointerButton(10, 10, 272, true));
     try std.testing.expectEqual(AudioTab.output, qs.audio_tab);
 
+    // Audio dropdown toggle test
+    try std.testing.expect(!qs.audio_dropdown_open);
+    qs.hit_areas.clearRetainingCapacity();
+    try qs.hit_areas.append(allocator, .{ .x = 0, .y = 0, .w = 100, .h = 30, .action = .toggle_audio_dropdown });
+    try std.testing.expect(qs.handlePointerButton(10, 10, 272, true));
+    try std.testing.expect(qs.audio_dropdown_open);
+
+    // Selecting option closes dropdown
+    qs.hit_areas.clearRetainingCapacity();
+    try qs.hit_areas.append(allocator, .{ .x = 0, .y = 0, .w = 100, .h = 30, .action = .set_audio_tab_input });
+    try std.testing.expect(qs.handlePointerButton(10, 10, 272, true));
+    try std.testing.expectEqual(AudioTab.input, qs.audio_tab);
+    try std.testing.expect(!qs.audio_dropdown_open);
+
     // Audio menu open and back
     qs.hit_areas.clearRetainingCapacity();
     try qs.hit_areas.append(allocator, .{ .x = 0, .y = 0, .w = 100, .h = 30, .action = .open_audio_menu });
     try std.testing.expect(qs.handlePointerButton(10, 10, 272, true));
     try std.testing.expectEqual(ViewMode.audio_menu, qs.view_mode);
+    try std.testing.expect(!qs.audio_dropdown_open);
 
     // Toggle earbud safety
     const initial_safety = qs.sys.earbud_safety_enabled;
@@ -5833,6 +5858,60 @@ test "QuickSettings audio options tabs and device selection" {
     try qs.hit_areas.append(allocator, .{ .x = 0, .y = 0, .w = 100, .h = 30, .action = .back_to_main });
     try std.testing.expect(qs.handlePointerButton(10, 10, 272, true));
     try std.testing.expectEqual(ViewMode.main, qs.view_mode);
+}
+
+test "QuickSettings display dropdowns toggle and selection" {
+    const allocator = std.testing.allocator;
+    var cfg = config.Config.init(allocator);
+    defer cfg.deinit(allocator);
+
+    var qs = QuickSettings{
+        .allocator = allocator,
+        .cfg = cfg,
+        .font = undefined,
+        .sys = sys_status.SysStatus.init(allocator),
+        .hit_areas = std.ArrayList(HitArea).empty,
+        .wifi_items = std.ArrayList(WifiItem).empty,
+        .bt_items = std.ArrayList(BluetoothItem).empty,
+        .sink_items = std.ArrayList(AudioSinkItem).empty,
+        .source_items = std.ArrayList(AudioDeviceItem).empty,
+    };
+    defer {
+        qs.wifi_items.deinit(allocator);
+        qs.bt_items.deinit(allocator);
+        qs.sink_items.deinit(allocator);
+        qs.source_items.deinit(allocator);
+        qs.hit_areas.deinit(allocator);
+        qs.sys.deinit();
+    }
+
+    // Toggle scale dropdown open
+    try std.testing.expect(!qs.disp_scale_open);
+    qs.hit_areas.clearRetainingCapacity();
+    try qs.hit_areas.append(allocator, .{ .x = 0, .y = 0, .w = 100, .h = 30, .action = .toggle_display_scale_dropdown });
+    try std.testing.expect(qs.handlePointerButton(10, 10, 272, true));
+    try std.testing.expect(qs.disp_scale_open);
+
+    // Opening refresh rate dropdown closes scale dropdown
+    qs.hit_areas.clearRetainingCapacity();
+    try qs.hit_areas.append(allocator, .{ .x = 0, .y = 0, .w = 100, .h = 30, .action = .toggle_display_refresh_dropdown });
+    try std.testing.expect(qs.handlePointerButton(10, 10, 272, true));
+    try std.testing.expect(!qs.disp_scale_open);
+    try std.testing.expect(qs.disp_refresh_open);
+
+    // Opening resolution dropdown closes refresh rate dropdown
+    qs.hit_areas.clearRetainingCapacity();
+    try qs.hit_areas.append(allocator, .{ .x = 0, .y = 0, .w = 100, .h = 30, .action = .toggle_display_resolution_dropdown });
+    try std.testing.expect(qs.handlePointerButton(10, 10, 272, true));
+    try std.testing.expect(!qs.disp_refresh_open);
+    try std.testing.expect(qs.disp_res_open);
+
+    // Selecting resolution closes dropdown
+    qs.hit_areas.clearRetainingCapacity();
+    try qs.hit_areas.append(allocator, .{ .x = 0, .y = 0, .w = 100, .h = 30, .action = .{ .set_display_resolution = 1 } });
+    try std.testing.expect(qs.handlePointerButton(10, 10, 272, true));
+    try std.testing.expectEqual(@as(usize, 1), qs.display_resolution_idx);
+    try std.testing.expect(!qs.disp_res_open);
 }
 
 test "QuickSettings recording options configuration" {

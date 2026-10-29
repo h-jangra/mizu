@@ -1,5 +1,5 @@
 const std = @import("std");
-const c = @import("../c.zig").c;
+const c = @import("c");
 const theme = @import("theme.zig");
 const Color = theme.Color;
 const renderer = @import("renderer.zig");

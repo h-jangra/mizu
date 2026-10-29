@@ -1,5 +1,5 @@
 const std = @import("std");
-const c = @import("../c.zig").c;
+const c = @import("c");
 const renderer = @import("../core/renderer.zig");
 const theme = @import("../core/theme.zig");
 const Color = theme.Color;
@@ -137,10 +137,7 @@ pub const ImageBuffer = struct {
             @as(u32, @intCast(@min(255, out_b)));
     }
 
-    // ==========================================
     // Transforms: Crop, Resize, Rotate, Flip
-    // ==========================================
-
     pub fn crop(self: *const ImageBuffer, allocator: std.mem.Allocator, rect: Rect) !ImageBuffer {
         const src_w: i32 = @intCast(self.width);
         const src_h: i32 = @intCast(self.height);
@@ -333,10 +330,7 @@ pub const ImageBuffer = struct {
         return dst;
     }
 
-    // ==========================================
     // Color Adjustments & Filters
-    // ==========================================
-
     /// Brightness offset: -1.0 to 1.0 (0.0 = unchanged)
     pub fn applyBrightness(self: *ImageBuffer, amount: f32) void {
         const offset = amount * 255.0;
@@ -603,10 +597,7 @@ pub const ImageBuffer = struct {
         }
     }
 
-    // ==========================================
     // Drawing Primitives (Annotations)
-    // ==========================================
-
     /// Draw filled circle at center (x, y) with radius r
     pub fn fillCircle(self: *ImageBuffer, cx: i32, cy: i32, radius: i32, col: Color) void {
         if (radius <= 0) {
@@ -789,10 +780,7 @@ pub const ImageBuffer = struct {
         }
     }
 
-    // ==========================================
     // File I/O: Load, Save PNG, Save JPEG
-    // ==========================================
-
     pub fn loadFromFile(allocator: std.mem.Allocator, path: []const u8) !ImageBuffer {
         // Try SVG if file extension is .svg
         if (std.mem.endsWith(u8, path, ".svg")) {
@@ -1188,10 +1176,7 @@ pub const ImageBuffer = struct {
     }
 };
 
-// ==========================================
 // Undo / Redo History Stack
-// ==========================================
-
 pub const UndoStack = struct {
     allocator: std.mem.Allocator,
     undo_items: std.ArrayList(ImageBuffer),
@@ -1273,10 +1258,7 @@ pub const UndoStack = struct {
     }
 };
 
-// ==========================================
 // Unit Tests for Image Operations
-// ==========================================
-
 test "ImageBuffer creation and get/set pixels" {
     const alloc = std.testing.allocator;
     var img = try ImageBuffer.init(alloc, 10, 10, Color.rgb(255, 0, 0));

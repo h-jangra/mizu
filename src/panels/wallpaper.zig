@@ -1,206 +1,14 @@
-//! Mizu Standalone Wallpaper Module
+//! Mizu Native Wayland Wallpaper Setter and Switcher Module
 //!
-//! A native Wayland wallpaper setter and switcher overlay with zero external
-//! image or UI dependencies. Uses pure Zig decoders (JPEG, PNG, QOI, BMP),
-//! high-quality bilinear/box downsampling, persistent thumbnail caching,
-//! and zwlr_layer_shell_v1 for background and fullscreen overlay presentation.
+//! Provides `mizu wallpaper set <path>` and `mizu wallpaper switch` commands.
+//! Pure Zig image decoding (JPEG, PNG, QOI, BMP), area-averaging thumbnail
+//! generation, persistent thumbnail caching, and zwlr_layer_shell_v1 presentation.
 
 const std = @import("std");
+const c = @import("c");
+const renderer = @import("../core/renderer.zig");
 
-// Zig 0.17 removed @cImport; reuse the translate-c bindings from src/c.zig.
-const c = @import("src/c.zig").c;
-
-extern fn memfd_create(name: [*:0]const u8, flags: c_uint) c_int;
-const MFD_CLOEXEC: c_uint = 0x0001;
-
-fn getEnvHome() []const u8 {
-    const ptr = c.getenv("HOME");
-    if (ptr != null) {
-        return std.mem.span(ptr);
-    }
-    return "/tmp";
-}
-
-// ============================================================================
-// Wayland Layer Shell Protocol Definitions (ZWLR Layer Shell V1)
-// ============================================================================
-
-extern const wl_output_interface: c.struct_wl_interface;
-extern const wl_surface_interface: c.struct_wl_interface;
-
-const layer_shell_types = [_]?*const c.struct_wl_interface{
-    null,
-    null,
-    null,
-    null,
-    &zwlr_layer_surface_v1_interface,
-    &wl_surface_interface,
-    &wl_output_interface,
-    null,
-    null,
-    null,
-};
-
-const zwlr_layer_shell_v1_requests = [_]c.struct_wl_message{
-    .{ .name = "get_layer_surface", .signature = "no?ous", .types = @ptrCast(@constCast(&layer_shell_types[4])) },
-    .{ .name = "destroy", .signature = "3", .types = @ptrCast(@constCast(&layer_shell_types[0])) },
-};
-
-pub export const zwlr_layer_shell_v1_interface: c.struct_wl_interface = .{
-    .name = "zwlr_layer_shell_v1",
-    .version = 4,
-    .method_count = 2,
-    .methods = &zwlr_layer_shell_v1_requests,
-    .event_count = 0,
-    .events = null,
-};
-
-const zwlr_layer_surface_v1_requests = [_]c.struct_wl_message{
-    .{ .name = "set_size", .signature = "uu", .types = @ptrCast(@constCast(&layer_shell_types[0])) },
-    .{ .name = "set_anchor", .signature = "u", .types = @ptrCast(@constCast(&layer_shell_types[0])) },
-    .{ .name = "set_exclusive_zone", .signature = "i", .types = @ptrCast(@constCast(&layer_shell_types[0])) },
-    .{ .name = "set_margin", .signature = "iiii", .types = @ptrCast(@constCast(&layer_shell_types[0])) },
-    .{ .name = "set_keyboard_interactivity", .signature = "u", .types = @ptrCast(@constCast(&layer_shell_types[0])) },
-    .{ .name = "get_popup", .signature = "o", .types = @ptrCast(@constCast(&layer_shell_types[0])) },
-    .{ .name = "ack_configure", .signature = "u", .types = @ptrCast(@constCast(&layer_shell_types[0])) },
-    .{ .name = "destroy", .signature = "", .types = @ptrCast(@constCast(&layer_shell_types[0])) },
-    .{ .name = "set_layer", .signature = "2u", .types = @ptrCast(@constCast(&layer_shell_types[0])) },
-};
-
-const zwlr_layer_surface_v1_events = [_]c.struct_wl_message{
-    .{ .name = "configure", .signature = "uuu", .types = @ptrCast(@constCast(&layer_shell_types[0])) },
-    .{ .name = "closed", .signature = "", .types = @ptrCast(@constCast(&layer_shell_types[0])) },
-};
-
-pub export const zwlr_layer_surface_v1_interface: c.struct_wl_interface = .{
-    .name = "zwlr_layer_surface_v1",
-    .version = 4,
-    .method_count = 9,
-    .methods = &zwlr_layer_surface_v1_requests,
-    .event_count = 2,
-    .events = &zwlr_layer_surface_v1_events,
-};
-
-pub const ZwlrLayerSurfaceV1Listener = extern struct {
-    configure: *const fn (?*anyopaque, ?*c.struct_wl_proxy, u32, u32, u32) callconv(.c) void,
-    closed: *const fn (?*anyopaque, ?*c.struct_wl_proxy) callconv(.c) void,
-};
-
-pub const LAYER_BACKGROUND: u32 = 0;
-pub const LAYER_BOTTOM: u32 = 1;
-pub const LAYER_TOP: u32 = 2;
-pub const LAYER_OVERLAY: u32 = 3;
-
-pub const ANCHOR_TOP: u32 = 1;
-pub const ANCHOR_BOTTOM: u32 = 2;
-pub const ANCHOR_LEFT: u32 = 4;
-pub const ANCHOR_RIGHT: u32 = 8;
-pub const ANCHOR_FILL: u32 = ANCHOR_TOP | ANCHOR_BOTTOM | ANCHOR_LEFT | ANCHOR_RIGHT;
-
-pub const KEYBOARD_NONE: u32 = 0;
-pub const KEYBOARD_EXCLUSIVE: u32 = 1;
-pub const KEYBOARD_ON_DEMAND: u32 = 2;
-
-fn layerShellGetLayerSurface(
-    shell: *c.struct_wl_proxy,
-    surface: *c.struct_wl_surface,
-    output: ?*c.struct_wl_output,
-    layer: u32,
-    namespace: [*:0]const u8,
-) *c.struct_wl_proxy {
-    const id = c.wl_proxy_marshal_flags(
-        shell,
-        0,
-        &zwlr_layer_surface_v1_interface,
-        c.wl_proxy_get_version(shell),
-        0,
-        @as(?*anyopaque, null),
-        surface,
-        output,
-        layer,
-        namespace,
-    );
-    return id.?;
-}
-
-fn layerSurfaceSetSize(layer_surface: *c.struct_wl_proxy, width: u32, height: u32) void {
-    _ = c.wl_proxy_marshal_flags(
-        layer_surface,
-        0,
-        null,
-        c.wl_proxy_get_version(layer_surface),
-        0,
-        width,
-        height,
-    );
-}
-
-fn layerSurfaceSetAnchor(layer_surface: *c.struct_wl_proxy, anchor: u32) void {
-    _ = c.wl_proxy_marshal_flags(
-        layer_surface,
-        1,
-        null,
-        c.wl_proxy_get_version(layer_surface),
-        0,
-        anchor,
-    );
-}
-
-fn layerSurfaceSetExclusiveZone(layer_surface: *c.struct_wl_proxy, zone: i32) void {
-    _ = c.wl_proxy_marshal_flags(
-        layer_surface,
-        2,
-        null,
-        c.wl_proxy_get_version(layer_surface),
-        0,
-        zone,
-    );
-}
-
-fn layerSurfaceSetKeyboardInteractivity(layer_surface: *c.struct_wl_proxy, interactivity: u32) void {
-    _ = c.wl_proxy_marshal_flags(
-        layer_surface,
-        4,
-        null,
-        c.wl_proxy_get_version(layer_surface),
-        0,
-        interactivity,
-    );
-}
-
-fn layerSurfaceAckConfigure(layer_surface: *c.struct_wl_proxy, serial: u32) void {
-    _ = c.wl_proxy_marshal_flags(
-        layer_surface,
-        6,
-        null,
-        c.wl_proxy_get_version(layer_surface),
-        0,
-        serial,
-    );
-}
-
-fn layerSurfaceDestroy(layer_surface: *c.struct_wl_proxy) void {
-    _ = c.wl_proxy_marshal_flags(
-        layer_surface,
-        7,
-        null,
-        c.wl_proxy_get_version(layer_surface),
-        c.WL_MARSHAL_FLAG_DESTROY,
-    );
-}
-
-fn layerSurfaceAddListener(
-    layer_surface: *c.struct_wl_proxy,
-    listener: *const ZwlrLayerSurfaceV1Listener,
-    data: ?*anyopaque,
-) void {
-    _ = c.wl_proxy_add_listener(layer_surface, @ptrCast(@constCast(listener)), data);
-}
-
-// ============================================================================
-// Core Image Type and Dynamic Buffer
-// ============================================================================
-
+// Core Image Type & Custom Fast Dynamic Buffer
 pub const Image = struct {
     width: u32,
     height: u32,
@@ -257,10 +65,42 @@ pub const ByteBuffer = struct {
     }
 };
 
-// ============================================================================
-// Pure Zig PNG Decoder & Inflate Engine (RFC 1950 / RFC 1951)
-// ============================================================================
+pub fn SimpleList(comptime T: type) type {
+    return struct {
+        items: []T = &[_]T{},
+        capacity: usize = 0,
 
+        pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
+            if (self.capacity > 0) allocator.free(self.items.ptr[0..self.capacity]);
+            self.* = .{};
+        }
+
+        pub fn append(self: *@This(), allocator: std.mem.Allocator, item: T) !void {
+            if (self.items.len + 1 > self.capacity) {
+                const new_cap = if (self.capacity == 0) 16 else self.capacity * 2;
+                const new_mem = try allocator.alloc(T, new_cap);
+                if (self.items.len > 0) {
+                    @memcpy(new_mem[0..self.items.len], self.items);
+                }
+                if (self.capacity > 0) allocator.free(self.items.ptr[0..self.capacity]);
+                self.items = new_mem[0..self.items.len];
+                self.capacity = new_cap;
+            }
+            const ptr: [*]T = @ptrCast(self.items.ptr);
+            ptr[self.items.len] = item;
+            self.items = ptr[0 .. self.items.len + 1];
+        }
+
+        pub fn toOwnedSlice(self: *@This(), allocator: std.mem.Allocator) ![]T {
+            const res = try allocator.alloc(T, self.items.len);
+            @memcpy(res, self.items);
+            self.deinit(allocator);
+            return res;
+        }
+    };
+}
+
+// Pure Zig PNG Decoder & Inflate Engine (RFC 1950 / RFC 1951)
 pub const Inflate = struct {
     src: []const u8,
     pos: usize = 0,
@@ -660,10 +500,7 @@ pub fn decodePng(allocator: std.mem.Allocator, data: []const u8) !Image {
     return Image{ .width = width, .height = height, .pixels = pixels };
 }
 
-// ============================================================================
 // Pure Zig Baseline JPEG Decoder
-// ============================================================================
-
 const ZIGZAG: [64]u8 = .{
      0,  1,  8, 16,  9,  2,  3, 10,
     17, 24, 32, 25, 18, 11,  4,  5,
@@ -852,7 +689,7 @@ pub fn decodeJpeg(allocator: std.mem.Allocator, data: []const u8) !Image {
         const marker = data[pos];
         pos += 1;
 
-        if (marker == 0xD9) break; // EOI
+        if (marker == 0xD9) break;
 
         if (marker == 0xDB) { // DQT
             const len = std.mem.readInt(u16, data[pos..][0..2], .big);
@@ -881,7 +718,7 @@ pub fn decodeJpeg(allocator: std.mem.Allocator, data: []const u8) !Image {
             while (pos < end) {
                 const info = data[pos];
                 pos += 1;
-                const table_class = (info >> 4) & 1; // 0=DC, 1=AC
+                const table_class = (info >> 4) & 1;
                 const table_id = info & 0x0F;
                 if (table_id >= 4) return error.InvalidHuffmanTableId;
 
@@ -1115,10 +952,7 @@ pub fn decodeJpeg(allocator: std.mem.Allocator, data: []const u8) !Image {
     return Image{ .width = width, .height = height, .pixels = pixels };
 }
 
-// ============================================================================
 // Pure Zig QOI and BMP Fallback Decoders
-// ============================================================================
-
 pub fn decodeBmp(allocator: std.mem.Allocator, data: []const u8) !Image {
     if (data.len < 54 or data[0] != 'B' or data[1] != 'M') return error.NotABmp;
     const pixel_offset = std.mem.readInt(u32, data[10..14], .little);
@@ -1178,31 +1012,31 @@ pub fn decodeQoi(allocator: std.mem.Allocator, data: []const u8) !Image {
         const b1 = data[pos];
         pos += 1;
 
-        if (b1 == 0xFE) { // QOI_OP_RGB
+        if (b1 == 0xFE) {
             r = data[pos];
             g = data[pos + 1];
             b = data[pos + 2];
             pos += 3;
-        } else if (b1 == 0xFF) { // QOI_OP_RGBA
+        } else if (b1 == 0xFF) {
             r = data[pos];
             g = data[pos + 1];
             b = data[pos + 2];
             a = data[pos + 3];
             pos += 4;
         } else switch (@as(u2, @truncate(b1 >> 6))) {
-            0 => { // QOI_OP_INDEX
+            0 => {
                 const c_val = index[b1 & 0x3F];
                 a = @intCast((c_val >> 24) & 0xFF);
                 r = @intCast((c_val >> 16) & 0xFF);
                 g = @intCast((c_val >> 8) & 0xFF);
                 b = @intCast(c_val & 0xFF);
             },
-            1 => { // QOI_OP_DIFF
+            1 => {
                 r +%= (b1 >> 4) & 0x03 -% 2;
                 g +%= (b1 >> 2) & 0x03 -% 2;
                 b +%= b1 & 0x03 -% 2;
             },
-            2 => { // QOI_OP_LUMA
+            2 => {
                 const b2 = data[pos];
                 pos += 1;
                 const vg = (b1 & 0x3F) -% 32;
@@ -1210,7 +1044,7 @@ pub fn decodeQoi(allocator: std.mem.Allocator, data: []const u8) !Image {
                 g +%= vg;
                 b +%= vg +% (b2 & 0x0F) -% 8;
             },
-            3 => { // QOI_OP_RUN
+            3 => {
                 const run = (b1 & 0x3F) + 1;
                 const cur_val = (@as(u32, a) << 24) | (@as(u32, r) << 16) | (@as(u32, g) << 8) | @as(u32, b);
                 for (0..run) |_| {
@@ -1233,9 +1067,14 @@ pub fn decodeQoi(allocator: std.mem.Allocator, data: []const u8) !Image {
     return Image{ .width = width, .height = height, .pixels = pixels };
 }
 
-// ============================================================================
 // Universal Image Loader & Rescaling
-// ============================================================================
+fn getEnvHome() []const u8 {
+    const ptr = c.getenv("HOME");
+    if (ptr != null) {
+        return std.mem.span(ptr);
+    }
+    return "/tmp";
+}
 
 pub fn loadFile(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
     var path_buf: [1024]u8 = undefined;
@@ -1280,12 +1119,27 @@ pub fn decodeImage(allocator: std.mem.Allocator, data: []const u8) !Image {
 }
 
 pub fn decodeImageFile(allocator: std.mem.Allocator, path: []const u8) !Image {
+    // 1. Hardware accelerated / library decoding (supports progressive JPEGs, large PNGs)
+    if (renderer.Image.loadFile(allocator, path)) |maybe_rend_img| {
+        if (maybe_rend_img) |rend_img| {
+            const pixels = rend_img.pixels;
+            const w = rend_img.width;
+            const h = rend_img.height;
+            allocator.destroy(rend_img);
+            return Image{
+                .width = w,
+                .height = h,
+                .pixels = pixels,
+            };
+        }
+    } else |_| {}
+
+    // 2. Pure Zig fallback
     const data = try loadFile(allocator, path);
     defer allocator.free(data);
     return decodeImage(allocator, data);
 }
 
-/// Area-averaging / box downsampler for producing razor-sharp, anti-aliased thumbnails
 pub fn downsample(src: *const Image, dst_w: u32, dst_h: u32, dst_pixels: []u32) void {
     const src_w = src.width;
     const src_h = src.height;
@@ -1331,11 +1185,9 @@ pub fn downsample(src: *const Image, dst_w: u32, dst_h: u32, dst_pixels: []u32) 
     }
 }
 
-/// Aspect-fill scaling: scale image to completely cover dst_w x dst_h, centered crop
 pub fn scaleAspectFill(src: *const Image, dst_w: u32, dst_h: u32, dst_pixels: []u32) void {
     if (src.width == 0 or src.height == 0 or dst_w == 0 or dst_h == 0) return;
 
-    // Scale factor = max(dst_w / src_w, dst_h / src_h)
     const scale_x = @as(f64, @floatFromInt(dst_w)) / @as(f64, @floatFromInt(src.width));
     const scale_y = @as(f64, @floatFromInt(dst_h)) / @as(f64, @floatFromInt(src.height));
     const scale = @max(scale_x, scale_y);
@@ -1359,13 +1211,10 @@ pub fn scaleAspectFill(src: *const Image, dst_w: u32, dst_h: u32, dst_pixels: []
     }
 }
 
-// ============================================================================
 // Thumbnail Cache System
-// ============================================================================
-
 const THUMB_MAGIC: u32 = 0x4D5A5448; // "MZTH"
 pub const THUMB_WIDTH: u32 = 400;
-pub const THUMB_HEIGHT: u32 = 225; // ~16:9
+pub const THUMB_HEIGHT: u32 = 225; // 16:9
 
 pub const WallpaperEntry = struct {
     path: []const u8,
@@ -1391,7 +1240,6 @@ fn getCacheDir(buf: *[512]u8) []const u8 {
     var c_path: [512]u8 = undefined;
     @memcpy(c_path[0..str.len], str);
     c_path[str.len] = 0;
-    _ = c.mkdir("/home", 0o755);
     _ = c.mkdir(@ptrCast(&c_path), 0o755);
     return str;
 }
@@ -1455,45 +1303,7 @@ pub fn saveCachedThumbnail(filename: []const u8, mtime: i64, thumb: *const Image
     _ = c.write(fd, pixel_bytes, total_bytes);
 }
 
-// ============================================================================
 // Directory Scanner & Active State
-// ============================================================================
-
-pub fn SimpleList(comptime T: type) type {
-    return struct {
-        items: []T = &[_]T{},
-        capacity: usize = 0,
-
-        pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
-            if (self.capacity > 0) allocator.free(self.items.ptr[0..self.capacity]);
-            self.* = .{};
-        }
-
-        pub fn append(self: *@This(), allocator: std.mem.Allocator, item: T) !void {
-            if (self.items.len + 1 > self.capacity) {
-                const new_cap = if (self.capacity == 0) 16 else self.capacity * 2;
-                const new_mem = try allocator.alloc(T, new_cap);
-                if (self.items.len > 0) {
-                    @memcpy(new_mem[0..self.items.len], self.items);
-                }
-                if (self.capacity > 0) allocator.free(self.items.ptr[0..self.capacity]);
-                self.items = new_mem[0..self.items.len];
-                self.capacity = new_cap;
-            }
-            const ptr: [*]T = @ptrCast(self.items.ptr);
-            ptr[self.items.len] = item;
-            self.items = ptr[0 .. self.items.len + 1];
-        }
-
-        pub fn toOwnedSlice(self: *@This(), allocator: std.mem.Allocator) ![]T {
-            const res = try allocator.alloc(T, self.items.len);
-            @memcpy(res, self.items);
-            self.deinit(allocator);
-            return res;
-        }
-    };
-}
-
 pub fn scanWallpapers(allocator: std.mem.Allocator) ![]WallpaperEntry {
     const home = getEnvHome();
     var dir_path_buf: [512]u8 = undefined;
@@ -1505,7 +1315,6 @@ pub fn scanWallpapers(allocator: std.mem.Allocator) ![]WallpaperEntry {
 
     const dir = c.opendir(@ptrCast(&c_dir));
     if (dir == null) {
-        // If directory doesn't exist, try creating it and return empty list
         _ = c.mkdir(@ptrCast(&c_dir), 0o755);
         return &[_]WallpaperEntry{};
     }
@@ -1522,7 +1331,6 @@ pub fn scanWallpapers(allocator: std.mem.Allocator) ![]WallpaperEntry {
         const name = ent.*.d_name[0..name_len];
         if (std.mem.startsWith(u8, name, ".")) continue;
 
-        // Check image extension
         const is_img = std.mem.endsWith(u8, name, ".jpg") or
             std.mem.endsWith(u8, name, ".jpeg") or
             std.mem.endsWith(u8, name, ".png") or
@@ -1542,7 +1350,6 @@ pub fn scanWallpapers(allocator: std.mem.Allocator) ![]WallpaperEntry {
         });
     }
 
-    // Sort alphabetically by filename
     const items = list.items;
     for (0..items.len) |i| {
         for (i + 1..items.len) |j| {
@@ -1609,10 +1416,7 @@ fn writeFileAtomic(target_path: []const u8, content: []const u8) void {
     _ = c.write(fd, "\n", 1);
 }
 
-// ============================================================================
 // Wayland Client & Shared Memory Buffer Helpers
-// ============================================================================
-
 pub const ShmBuffer = struct {
     buffer: *c.struct_wl_buffer,
     data: []u32,
@@ -1624,7 +1428,7 @@ pub const ShmBuffer = struct {
         const stride = width * 4;
         const size = stride * height;
 
-        const fd = memfd_create("mizu-wallpaper-shm", MFD_CLOEXEC);
+        const fd = c.memfd_create("mizu-wallpaper-shm", c.MFD_CLOEXEC);
         if (fd < 0) return error.MemfdFailed;
         defer _ = c.close(fd);
 
@@ -1661,14 +1465,9 @@ pub const ShmBuffer = struct {
     }
 };
 
-// ============================================================================
 // Wallpaper Setter Mode (Background Layer Surface)
-// ============================================================================
-
-extern fn malloc_trim(pad: usize) c_int;
-
 fn trimMemory() void {
-    _ = malloc_trim(0);
+    _ = c.malloc_trim(0);
 }
 
 pub const WallpaperSetter = struct {
@@ -1676,10 +1475,10 @@ pub const WallpaperSetter = struct {
     display: *c.struct_wl_display,
     compositor: ?*c.struct_wl_compositor = null,
     shm: ?*c.struct_wl_shm = null,
-    layer_shell: ?*c.struct_wl_proxy = null,
+    layer_shell: ?*c.struct_zwlr_layer_shell_v1 = null,
 
     surface: ?*c.struct_wl_surface = null,
-    layer_surface: ?*c.struct_wl_proxy = null,
+    layer_surface: ?*c.struct_zwlr_layer_surface_v1 = null,
     shm_buffer: ?ShmBuffer = null,
 
     wallpaper_path: []const u8,
@@ -1707,8 +1506,8 @@ pub const WallpaperSetter = struct {
         defer c.wl_registry_destroy(registry);
 
         const registry_listener = c.struct_wl_registry_listener{
-            .global = registryHandleGlobal,
-            .global_remove = registryHandleGlobalRemove,
+            .global = setterHandleGlobal,
+            .global_remove = setterHandleGlobalRemove,
         };
         _ = c.wl_registry_add_listener(registry, &registry_listener, self);
 
@@ -1717,26 +1516,26 @@ pub const WallpaperSetter = struct {
             return error.MissingRequiredProtocols;
         }
 
-        // Create surface & layer surface
         self.surface = c.wl_compositor_create_surface(self.compositor.?) orelse return error.CreateSurfaceFailed;
-        self.layer_surface = layerShellGetLayerSurface(
+        self.layer_surface = c.zwlr_layer_shell_v1_get_layer_surface(
             self.layer_shell.?,
             self.surface.?,
             null,
-            LAYER_BACKGROUND,
+            c.ZWLR_LAYER_SHELL_V1_LAYER_BACKGROUND,
             "mizu-wallpaper-bg",
-        );
+        ) orelse return error.CreateLayerSurfaceFailed;
 
-        layerSurfaceSetSize(self.layer_surface.?, 0, 0);
-        layerSurfaceSetAnchor(self.layer_surface.?, ANCHOR_FILL);
-        layerSurfaceSetExclusiveZone(self.layer_surface.?, -1);
-        layerSurfaceSetKeyboardInteractivity(self.layer_surface.?, KEYBOARD_NONE);
+        const fill_anchor: u32 = 1 | 2 | 4 | 8; // TOP | BOTTOM | LEFT | RIGHT
+        c.zwlr_layer_surface_v1_set_size(self.layer_surface.?, 0, 0);
+        c.zwlr_layer_surface_v1_set_anchor(self.layer_surface.?, fill_anchor);
+        c.zwlr_layer_surface_v1_set_exclusive_zone(self.layer_surface.?, -1);
+        c.zwlr_layer_surface_v1_set_keyboard_interactivity(self.layer_surface.?, 0);
 
-        const listener = ZwlrLayerSurfaceV1Listener{
+        const listener = c.struct_zwlr_layer_surface_v1_listener{
             .configure = setterHandleConfigure,
             .closed = setterHandleClosed,
         };
-        layerSurfaceAddListener(self.layer_surface.?, &listener, self);
+        _ = c.zwlr_layer_surface_v1_add_listener(self.layer_surface.?, &listener, self);
 
         c.wl_surface_commit(self.surface.?);
         _ = c.wl_display_roundtrip(self.display);
@@ -1749,7 +1548,7 @@ pub const WallpaperSetter = struct {
         if (!self.configured or self.screen_width == 0 or self.screen_height == 0) return;
 
         var img = decodeImageFile(self.allocator, self.wallpaper_path) catch |err| {
-            std.debug.print("Error decoding wallpaper '{s}': {s}\n", .{ self.wallpaper_path, @errorName(err) });
+            std.debug.print("mizu: error decoding wallpaper '{s}': {s}\n", .{ self.wallpaper_path, @errorName(err) });
             return;
         };
         defer {
@@ -1791,14 +1590,14 @@ pub const WallpaperSetter = struct {
         if (self.shm_buffer) |*buf| buf.destroy();
         if (self.image) |*img| img.deinit(self.allocator);
         self.allocator.free(self.wallpaper_path);
-        if (self.layer_surface) |ls| layerSurfaceDestroy(ls);
+        if (self.layer_surface) |ls| c.zwlr_layer_surface_v1_destroy(ls);
         if (self.surface) |s| c.wl_surface_destroy(s);
         c.wl_display_disconnect(self.display);
         self.allocator.destroy(self);
         trimMemory();
     }
 
-    fn registryHandleGlobal(data: ?*anyopaque, registry: ?*c.struct_wl_registry, name: u32, interface: [*c]const u8, version: u32) callconv(.c) void {
+    fn setterHandleGlobal(data: ?*anyopaque, registry: ?*c.struct_wl_registry, name: u32, interface: [*c]const u8, version: u32) callconv(.c) void {
         const self: *WallpaperSetter = @ptrCast(@alignCast(data));
         const iface = std.mem.span(interface);
 
@@ -1807,36 +1606,33 @@ pub const WallpaperSetter = struct {
         } else if (std.mem.eql(u8, iface, "wl_shm")) {
             self.shm = @ptrCast(c.wl_registry_bind(registry, name, &c.wl_shm_interface, 1));
         } else if (std.mem.eql(u8, iface, "zwlr_layer_shell_v1")) {
-            self.layer_shell = @ptrCast(c.wl_registry_bind(registry, name, &zwlr_layer_shell_v1_interface, @min(version, 4)));
+            self.layer_shell = @ptrCast(c.wl_registry_bind(registry, name, &c.zwlr_layer_shell_v1_interface, @min(version, 4)));
         }
     }
 
-    fn registryHandleGlobalRemove(data: ?*anyopaque, registry: ?*c.struct_wl_registry, name: u32) callconv(.c) void {
+    fn setterHandleGlobalRemove(data: ?*anyopaque, registry: ?*c.struct_wl_registry, name: u32) callconv(.c) void {
         _ = data;
         _ = registry;
         _ = name;
     }
 
-    fn setterHandleConfigure(data: ?*anyopaque, layer_surface: ?*c.struct_wl_proxy, serial: u32, width: u32, height: u32) callconv(.c) void {
+    fn setterHandleConfigure(data: ?*anyopaque, layer_surface: ?*c.struct_zwlr_layer_surface_v1, serial: u32, width: u32, height: u32) callconv(.c) void {
         const self: *WallpaperSetter = @ptrCast(@alignCast(data));
-        layerSurfaceAckConfigure(layer_surface.?, serial);
+        c.zwlr_layer_surface_v1_ack_configure(layer_surface, serial);
         self.screen_width = width;
         self.screen_height = height;
         self.configured = true;
         self.render();
     }
 
-    fn setterHandleClosed(data: ?*anyopaque, layer_surface: ?*c.struct_wl_proxy) callconv(.c) void {
+    fn setterHandleClosed(data: ?*anyopaque, layer_surface: ?*c.struct_zwlr_layer_surface_v1) callconv(.c) void {
         _ = layer_surface;
         const self: *WallpaperSetter = @ptrCast(@alignCast(data));
         self.running = false;
     }
 };
 
-// ============================================================================
 // Wallpaper Switcher UI (Minimal, Modern Fullscreen Thumbnail Grid Overlay)
-// ============================================================================
-
 pub const WallpaperSwitcher = struct {
     allocator: std.mem.Allocator,
     display: *c.struct_wl_display,
@@ -1845,10 +1641,10 @@ pub const WallpaperSwitcher = struct {
     seat: ?*c.struct_wl_seat = null,
     keyboard: ?*c.struct_wl_keyboard = null,
     pointer: ?*c.struct_wl_pointer = null,
-    layer_shell: ?*c.struct_wl_proxy = null,
+    layer_shell: ?*c.struct_zwlr_layer_shell_v1 = null,
 
     surface: ?*c.struct_wl_surface = null,
-    layer_surface: ?*c.struct_wl_proxy = null,
+    layer_surface: ?*c.struct_zwlr_layer_surface_v1 = null,
     shm_buffer: ?ShmBuffer = null,
 
     wallpapers: []WallpaperEntry,
@@ -1862,7 +1658,6 @@ pub const WallpaperSwitcher = struct {
     running: bool = true,
     applied: bool = false,
 
-    // Layout metrics (3 rows and 4 columns)
     cols: usize = 4,
     rows: usize = 3,
     card_w: u32 = 380,
@@ -1881,7 +1676,6 @@ pub const WallpaperSwitcher = struct {
             .active_path = getActiveWallpaperPath(allocator),
         };
 
-        // Determine currently active wallpaper index
         if (self.active_path) |active| {
             for (self.wallpapers, 0..) |w, i| {
                 if (std.mem.eql(u8, w.path, active)) {
@@ -1906,29 +1700,28 @@ pub const WallpaperSwitcher = struct {
             return error.MissingRequiredProtocols;
         }
 
-        // Preload thumbnails
         self.loadThumbnails();
 
-        // Create overlay layer surface
-        self.surface = c.wl_compositor_create_surface(self.compositor.?);
-        self.layer_surface = layerShellGetLayerSurface(
+        self.surface = c.wl_compositor_create_surface(self.compositor.?) orelse return error.CreateSurfaceFailed;
+        self.layer_surface = c.zwlr_layer_shell_v1_get_layer_surface(
             self.layer_shell.?,
             self.surface.?,
             null,
-            LAYER_OVERLAY,
+            c.ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY,
             "mizu-wallpaper-switcher",
-        );
+        ) orelse return error.CreateLayerSurfaceFailed;
 
-        layerSurfaceSetSize(self.layer_surface.?, 0, 0);
-        layerSurfaceSetAnchor(self.layer_surface.?, ANCHOR_FILL);
-        layerSurfaceSetExclusiveZone(self.layer_surface.?, -1);
-        layerSurfaceSetKeyboardInteractivity(self.layer_surface.?, KEYBOARD_EXCLUSIVE);
+        const fill_anchor: u32 = 1 | 2 | 4 | 8;
+        c.zwlr_layer_surface_v1_set_size(self.layer_surface.?, 0, 0);
+        c.zwlr_layer_surface_v1_set_anchor(self.layer_surface.?, fill_anchor);
+        c.zwlr_layer_surface_v1_set_exclusive_zone(self.layer_surface.?, -1);
+        c.zwlr_layer_surface_v1_set_keyboard_interactivity(self.layer_surface.?, 1); // EXCLUSIVE
 
-        const listener = ZwlrLayerSurfaceV1Listener{
+        const listener = c.struct_zwlr_layer_surface_v1_listener{
             .configure = switcherHandleConfigure,
             .closed = switcherHandleClosed,
         };
-        layerSurfaceAddListener(self.layer_surface.?, &listener, self);
+        _ = c.zwlr_layer_surface_v1_add_listener(self.layer_surface.?, &listener, self);
 
         c.wl_surface_commit(self.surface.?);
         _ = c.wl_display_roundtrip(self.display);
@@ -1938,13 +1731,11 @@ pub const WallpaperSwitcher = struct {
 
     fn loadThumbnails(self: *WallpaperSwitcher) void {
         for (self.wallpapers) |*w| {
-            // Check cache
             if (loadCachedThumbnail(self.allocator, w.filename, w.mtime)) |thumb| {
                 w.thumbnail = thumb;
                 continue;
             }
 
-            // Decode and downsample
             if (decodeImageFile(self.allocator, w.path)) |full_img| {
                 var mut_img = full_img;
                 defer mut_img.deinit(self.allocator);
@@ -1989,7 +1780,6 @@ pub const WallpaperSwitcher = struct {
         self.grid_x = if (self.screen_width > total_grid_w) (self.screen_width - total_grid_w) / 2 else 0;
         self.grid_y = if (self.screen_height > total_grid_h) (self.screen_height - total_grid_h) / 2 else 0;
 
-        // Keep selected in scroll view
         const sel_row = self.selected_index / self.cols;
         if (sel_row < self.scroll_row) {
             self.scroll_row = sel_row;
@@ -2017,12 +1807,10 @@ pub const WallpaperSwitcher = struct {
         const buf = &self.shm_buffer.?;
         const pixels = buf.data;
 
-        // 1. Render dark frosted backdrop (92% opacity dark slate glass)
         const bg_color: u32 = 0xEB0D0F18;
         @memset(pixels, bg_color);
 
         if (self.wallpapers.len == 0) {
-            // Draw clean subtle empty state notice if no wallpapers exist
             drawEmptyState(pixels, self.screen_width, self.screen_height);
             c.wl_surface_attach(self.surface.?, buf.buffer, 0, 0);
             c.wl_surface_damage_buffer(self.surface.?, 0, 0, @intCast(self.screen_width), @intCast(self.screen_height));
@@ -2031,7 +1819,6 @@ pub const WallpaperSwitcher = struct {
             return;
         }
 
-        // 2. Render thumbnail cards
         const start_idx = self.scroll_row * self.cols;
         const visible_count = self.rows * self.cols;
         const radius: u32 = 14;
@@ -2049,12 +1836,10 @@ pub const WallpaperSwitcher = struct {
             const is_selected = (idx == self.selected_index);
             const is_active = (self.active_index != null and idx == self.active_index.?);
 
-            // Draw card shadow / glow if selected
             if (is_selected) {
                 drawRoundedCardGlow(pixels, self.screen_width, self.screen_height, cx, cy, self.card_w, self.card_h, radius, 0xFF38BDF8);
             }
 
-            // Draw thumbnail image with rounded corners
             const entry = &self.wallpapers[idx];
             if (entry.thumbnail) |*thumb| {
                 drawRoundedThumbnail(pixels, self.screen_width, self.screen_height, cx, cy, self.card_w, self.card_h, radius, thumb);
@@ -2062,16 +1847,12 @@ pub const WallpaperSwitcher = struct {
                 drawRoundedRect(pixels, self.screen_width, self.screen_height, cx, cy, self.card_w, self.card_h, radius, 0xFF1E202E);
             }
 
-            // Draw card border
             if (is_selected) {
-                // Accent border (3px thick)
                 drawRoundedBorder(pixels, self.screen_width, self.screen_height, cx, cy, self.card_w, self.card_h, radius, 3, 0xFF38BDF8);
             } else {
-                // Subtle clean frame border (1px)
                 drawRoundedBorder(pixels, self.screen_width, self.screen_height, cx, cy, self.card_w, self.card_h, radius, 1, 0x4DFFFFFF);
             }
 
-            // Draw active badge (checkmark indicator) in top-right
             if (is_active) {
                 drawActiveBadge(pixels, self.screen_width, self.screen_height, cx + self.card_w - 28, cy + 12);
             }
@@ -2187,7 +1968,7 @@ pub const WallpaperSwitcher = struct {
         if (self.pointer) |pt| c.wl_pointer_destroy(pt);
         if (self.seat) |st| c.wl_seat_destroy(st);
 
-        if (self.layer_surface) |ls| layerSurfaceDestroy(ls);
+        if (self.layer_surface) |ls| c.zwlr_layer_surface_v1_destroy(ls);
         if (self.surface) |s| c.wl_surface_destroy(s);
         c.wl_display_disconnect(self.display);
         self.allocator.destroy(self);
@@ -2202,7 +1983,7 @@ pub const WallpaperSwitcher = struct {
         } else if (std.mem.eql(u8, iface, "wl_shm")) {
             self.shm = @ptrCast(c.wl_registry_bind(registry, name, &c.wl_shm_interface, 1));
         } else if (std.mem.eql(u8, iface, "zwlr_layer_shell_v1")) {
-            self.layer_shell = @ptrCast(c.wl_registry_bind(registry, name, &zwlr_layer_shell_v1_interface, @min(version, 4)));
+            self.layer_shell = @ptrCast(c.wl_registry_bind(registry, name, &c.zwlr_layer_shell_v1_interface, @min(version, 4)));
         } else if (std.mem.eql(u8, iface, "wl_seat")) {
             self.seat = @ptrCast(c.wl_registry_bind(registry, name, &c.wl_seat_interface, @min(version, 7)));
             const seat_listener = c.struct_wl_seat_listener{
@@ -2219,16 +2000,16 @@ pub const WallpaperSwitcher = struct {
         _ = name;
     }
 
-    fn switcherHandleConfigure(data: ?*anyopaque, layer_surface: ?*c.struct_wl_proxy, serial: u32, width: u32, height: u32) callconv(.c) void {
+    fn switcherHandleConfigure(data: ?*anyopaque, layer_surface: ?*c.struct_zwlr_layer_surface_v1, serial: u32, width: u32, height: u32) callconv(.c) void {
         const self: *WallpaperSwitcher = @ptrCast(@alignCast(data));
-        layerSurfaceAckConfigure(layer_surface.?, serial);
+        c.zwlr_layer_surface_v1_ack_configure(layer_surface, serial);
         self.screen_width = width;
         self.screen_height = height;
         self.configured = true;
         self.render();
     }
 
-    fn switcherHandleClosed(data: ?*anyopaque, layer_surface: ?*c.struct_wl_proxy) callconv(.c) void {
+    fn switcherHandleClosed(data: ?*anyopaque, layer_surface: ?*c.struct_zwlr_layer_surface_v1) callconv(.c) void {
         _ = layer_surface;
         const self: *WallpaperSwitcher = @ptrCast(@alignCast(data));
         self.running = false;
@@ -2301,7 +2082,7 @@ pub const WallpaperSwitcher = struct {
         _ = serial;
         _ = time;
         const self: *WallpaperSwitcher = @ptrCast(@alignCast(data));
-        if (state != 1) return; // Only process key press
+        if (state != 1) return;
 
         switch (key) {
             c.KEY_ESC, c.KEY_Q => {
@@ -2419,10 +2200,7 @@ pub const WallpaperSwitcher = struct {
     }
 };
 
-// ============================================================================
 // Drawing Primitives & Visual Effects
-// ============================================================================
-
 fn blendPixel(dst: *u32, src_color: u32) void {
     const sa = (src_color >> 24) & 0xFF;
     if (sa == 0) return;
@@ -2454,7 +2232,6 @@ fn isInsideRoundedRect(x: u32, y: u32, rx: u32, ry: u32, rw: u32, rh: u32, r: u3
     const dx = x - rx;
     const dy = y - ry;
 
-    // Corner checks
     if (dx < r and dy < r) {
         const cx = r - dx;
         const cy = r - dy;
@@ -2545,7 +2322,6 @@ fn drawRoundedCardGlow(pixels: []u32, screen_w: u32, screen_h: u32, rx: u32, ry:
         for (start_x..end_x) |x| {
             if (isInsideRoundedRect(@intCast(x), @intCast(y), rx, ry, rw, rh, r)) continue;
 
-            // Distance from card edge
             var dist_x: u32 = 0;
             if (x < rx) dist_x = rx - @as(u32, @intCast(x)) else if (x >= rx + rw) dist_x = @as(u32, @intCast(x)) - (rx + rw - 1);
 
@@ -2579,7 +2355,6 @@ fn drawActiveBadge(pixels: []u32, screen_w: u32, screen_h: u32, bx: u32, by: u32
         }
     }
 
-    // White checkmark lines inside badge
     const check_pts = [_][2]i32{
         .{ -4, 0 }, .{ -3, 1 }, .{ -2, 2 }, .{ -1, 3 }, .{ 0, 2 }, .{ 1, 0 }, .{ 2, -2 }, .{ 3, -4 },
         .{ -4, 1 }, .{ -3, 2 }, .{ -2, 3 }, .{ -1, 4 }, .{ 0, 3 }, .{ 1, 1 }, .{ 2, -1 }, .{ 3, -3 },
@@ -2604,24 +2379,16 @@ fn drawEmptyState(pixels: []u32, screen_w: u32, screen_h: u32) void {
     drawRoundedBorder(pixels, screen_w, screen_h, bx, by, box_w, box_h, 16, 2, 0x4D38BDF8);
 }
 
-// ============================================================================
-// CLI Entry Point & Mode Dispatch
-// ============================================================================
-
-fn printUsage() void {
+// Public Entry Points for Mizu Integration
+pub fn printUsage() void {
     const usage =
-        \\Mizu Wallpaper Module - Native Wayland Wallpaper Setter & Switcher
+        \\Mizu Wallpaper - Native Wayland Wallpaper Setter & Switcher
         \\
         \\Usage:
-        \\  wallpaper                 Open interactive wallpaper switcher overlay
-        \\  wallpaper --switch        Open interactive wallpaper switcher overlay
-        \\  wallpaper --set <path>    Set wallpaper to specified image file
-        \\  wallpaper <image-file>    Set wallpaper to specified image file
-        \\  wallpaper --daemon        Run wallpaper background service for active wallpaper
-        \\  wallpaper --help          Show this help message
-        \\
-        \\Supported Image Formats:
-        \\  PNG, JPEG / JFIF, BMP, QOI (100% pure Zig, zero external dependencies)
+        \\  mizu wallpaper                 Open interactive wallpaper switcher overlay
+        \\  mizu wallpaper switch          Open interactive wallpaper switcher overlay
+        \\  mizu wallpaper set [image]     Set wallpaper to specified file (or active)
+        \\  mizu wallpaper daemon          Run wallpaper background daemon
         \\
         \\Wallpaper Directory:
         \\  ~/Pictures/Wallpapers/
@@ -2633,29 +2400,7 @@ fn printUsage() void {
         \\  Escape / Q                Close switcher
         \\
     ;
-    _ = c.write(c.STDOUT_FILENO, usage.ptr, usage.len);
-}
-
-fn getCommandLineArgs(allocator: std.mem.Allocator) ![][]const u8 {
-    const fd = c.open("/proc/self/cmdline", c.O_RDONLY);
-    if (fd < 0) return &[_][]const u8{};
-    defer _ = c.close(fd);
-
-    var buf: [4096]u8 = undefined;
-    const n = c.read(fd, &buf, buf.len);
-    if (n <= 0) return &[_][]const u8{};
-
-    var list = SimpleList([]const u8){};
-    var i: usize = 0;
-    while (i < @as(usize, @intCast(n))) {
-        const start = i;
-        while (i < @as(usize, @intCast(n)) and buf[i] != 0) : (i += 1) {}
-        if (i > start) {
-            try list.append(allocator, try allocator.dupe(u8, buf[start..i]));
-        }
-        i += 1;
-    }
-    return list.toOwnedSlice(allocator);
+    std.debug.print("{s}", .{usage});
 }
 
 const PID_FILE = "/tmp/mizu-wallpaper.pid";
@@ -2735,6 +2480,16 @@ fn killExistingWallpaperDaemon() void {
 
     // Kill any swaybg process
     killProcessesByName("swaybg");
+}
+
+pub fn runSwitcher(allocator: std.mem.Allocator) u8 {
+    var switcher = WallpaperSwitcher.init(allocator) catch |err| {
+        std.debug.print("mizu wallpaper switch error: {}\n", .{err});
+        return 1;
+    };
+    defer switcher.deinit();
+    switcher.run();
+    return 0;
 }
 
 pub fn isDaemonRunning() bool {
@@ -2883,13 +2638,14 @@ pub fn runDaemon(allocator: std.mem.Allocator, maybe_path: ?[]const u8) u8 {
             allocated = true;
         }
     }
-    const active = chosen_path.?;
+    const target = chosen_path.?;
 
+    saveActiveWallpaperPath(target);
     killExistingWallpaperDaemon();
     writePidFile(c.getpid());
     defer deletePidFile();
 
-    var setter = WallpaperSetter.init(allocator, active) catch |err| {
+    var setter = WallpaperSetter.init(allocator, target) catch |err| {
         std.debug.print("mizu wallpaper daemon error: {}\n", .{err});
         return 1;
     };
@@ -2898,46 +2654,7 @@ pub fn runDaemon(allocator: std.mem.Allocator, maybe_path: ?[]const u8) u8 {
     return 0;
 }
 
-pub fn main() !void {
-    const allocator = std.heap.page_allocator;
-    const args = try getCommandLineArgs(allocator);
-    defer {
-        for (args) |a| allocator.free(a);
-        allocator.free(args);
-    }
-
-    if (args.len > 1) {
-        const arg1 = args[1];
-        if (std.mem.eql(u8, arg1, "--help") or std.mem.eql(u8, arg1, "-h")) {
-            printUsage();
-            return;
-        }
-
-        if (std.mem.eql(u8, arg1, "--set") or std.mem.eql(u8, arg1, "set")) {
-            const maybe_path = if (args.len > 2) args[2] else null;
-            _ = runSetter(allocator, maybe_path);
-            return;
-        } else if (std.mem.eql(u8, arg1, "--daemon") or std.mem.eql(u8, arg1, "daemon")) {
-            const maybe_path = if (args.len > 2) args[2] else null;
-            _ = runDaemon(allocator, maybe_path);
-            return;
-        } else if (!std.mem.eql(u8, arg1, "--switch") and !std.mem.eql(u8, arg1, "switch")) {
-            // Path provided directly
-            _ = runSetter(allocator, arg1);
-            return;
-        }
-    }
-
-    // Default mode: Interactive Wallpaper Switcher Overlay
-    var switcher = try WallpaperSwitcher.init(allocator);
-    defer switcher.deinit();
-    switcher.run();
-}
-
-// ============================================================================
 // Unit Tests
-// ============================================================================
-
 test "pure zig png decoder decodes wallpaper" {
     const allocator = std.testing.allocator;
     var img = decodeImageFile(allocator, "/home/hj/Pictures/Wallpapers/wallhaven-7j15m3.png") catch |err| {
@@ -2962,6 +2679,18 @@ test "pure zig jpeg decoder decodes wallpaper" {
     try std.testing.expect(img.width == 1920);
     try std.testing.expect(img.height == 1080);
     try std.testing.expect(img.pixels.len == 1920 * 1080);
+}
+
+test "decode progressive jpeg wallpaper" {
+    const allocator = std.testing.allocator;
+    var img = decodeImageFile(allocator, "/home/hj/Pictures/Wallpapers/wallhaven-lydm82.jpg") catch |err| {
+        std.debug.print("Skipping test if file not found: {}\n", .{err});
+        return;
+    };
+    defer img.deinit(allocator);
+
+    try std.testing.expect(img.width > 0);
+    try std.testing.expect(img.height > 0);
 }
 
 test "downsampler creates valid thumbnail" {
@@ -2989,15 +2718,4 @@ test "scan wallpapers finds images" {
         allocator.free(list);
     }
     try std.testing.expect(list.len > 0);
-
-    for (list) |w| {
-        if (decodeImageFile(allocator, w.path)) |img| {
-            var mut = img;
-            defer mut.deinit(allocator);
-            std.debug.print("SUCCESS: {s} ({d}x{d})\n", .{ w.filename, img.width, img.height });
-        } else |err| {
-            std.debug.print("FAILURE: {s} -> {}\n", .{ w.filename, err });
-        }
-    }
 }
-

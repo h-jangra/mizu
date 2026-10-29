@@ -41,6 +41,20 @@ void mizu_tray_item_context_menu(const char *service, const char *path, int32_t 
 void mizu_tray_item_secondary_activate(const char *service, const char *path, int32_t x, int32_t y);
 void mizu_tray_item_scroll(const char *service, const char *path, int32_t delta, bool horizontal);
 
+typedef struct {
+    int32_t id;
+    char label[128];
+    bool enabled;
+    bool visible;
+    bool is_separator;
+} MizuTrayMenuAction;
+
+// Retrieves actions from com.canonical.dbusmenu or generates standard fallback actions
+int mizu_tray_get_menu_actions(const char *service, const char *menu_path, MizuTrayMenuAction *out_actions, int max_actions);
+
+// Triggers an action clicked by the user
+void mizu_tray_trigger_action(const char *service, const char *menu_path, int32_t action_id);
+
 // Closes connection and unregisters watcher
 void mizu_tray_dbus_deinit(void);
 

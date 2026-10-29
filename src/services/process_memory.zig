@@ -1,5 +1,5 @@
 const std = @import("std");
-const c = @import("../c.zig").c;
+const c = @import("c");
 const proc_file = @import("proc_file.zig");
 const readProcFile = proc_file.read;
 const parseKbValue = proc_file.parseKbValue;

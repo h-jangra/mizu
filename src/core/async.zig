@@ -1,5 +1,5 @@
 const std = @import("std");
-const c = @import("../c.zig").c;
+const c = @import("c");
 
 /// Lifecycle states of an asynchronous system operation.
 pub const OpStatus = enum(u8) {

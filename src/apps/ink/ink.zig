@@ -1,5 +1,5 @@
 const std = @import("std");
-const c = @import("../../c.zig").c;
+const c = @import("c");
 const buffer = @import("../../core/buffer.zig");
 const renderer = @import("../../core/renderer.zig");
 const theme = @import("../../core/theme.zig");
@@ -925,10 +925,7 @@ pub const AnnotateApp = struct {
         self.win.needs_redraw = true;
     }
 
-    // ==========================================
     // Selection & Manipulation
-    // ==========================================
-
     pub fn isSelected(self: *const AnnotateApp, id: u32) bool {
         for (self.selected_ids.items) |sid| {
             if (sid == id) return true;
@@ -1241,10 +1238,7 @@ pub const AnnotateApp = struct {
         }
     }
 
-    // ==========================================
     // Save, Copy, Export, Screenshot Actions
-    // ==========================================
-
     pub fn flattenImage(self: *AnnotateApp) !ImageBuffer {
         var out_img = try self.base_image.img.clone(self.allocator);
         errdefer out_img.deinit();
@@ -1400,10 +1394,7 @@ pub const AnnotateApp = struct {
         self.win.needs_redraw = true;
     }
 
-    // ==========================================
     // Crop & Base Transformations
-    // ==========================================
-
     pub fn startCrop(self: *AnnotateApp) void {
         self.is_crop_mode = true;
         self.is_cropping = false;
@@ -1498,10 +1489,7 @@ pub const AnnotateApp = struct {
         self.setStatus(if (clockwise) "Rotated 90° CW" else "Rotated 90° Left");
     }
 
-    // ==========================================
     // Event Handling
-    // ==========================================
-
     pub fn handlePointerMotion(self: *AnnotateApp, x: i32, y: i32) void {
         const c_rect = self.canvasRect();
         const inside_canvas = (x >= c_rect.x and y >= c_rect.y and x < c_rect.x + @as(i32, @intCast(c_rect.w)) and y < c_rect.y + @as(i32, @intCast(c_rect.h)));
@@ -2576,10 +2564,7 @@ pub const AnnotateApp = struct {
         }
     }
 
-    // ==========================================
     // Rendering
-    // ==========================================
-
     pub fn render(self: *AnnotateApp) !void {
         var r = try self.win.getRenderer();
         const th = self.cfg.theme;
@@ -3384,10 +3369,7 @@ pub const AnnotateApp = struct {
     }
 };
 
-// ==========================================
 // Main Application Event Loop & Stdin Pipe Support
-// ==========================================
-
 pub fn readAllFromStdin(allocator: std.mem.Allocator) ![]u8 {
     var list = std.ArrayListUnmanaged(u8).empty;
     errdefer list.deinit(allocator);

@@ -1,10 +1,21 @@
 const std = @import("std");
-const c = @import("../c.zig").c;
+const c = @import("c");
 
 pub const Color = @import("theme.zig").Color;
 
-const max_elements = 8192;
-const max_text_words = 16384;
+pub const final_max_elements: usize = 8192;
+pub var max_elements: usize = final_max_elements;
+/// Overridable before the first `begin()` of a process, so lightweight
+/// surfaces (e.g. the session lock) don't reserve a full-size layout arena.
+pub var max_text_words: usize = 16384;
+
+/// Set layout limits for this process. Only effective before the first
+/// `begin()` call; afterwards the arena is already allocated.
+pub fn setLimits(elements: usize, words: usize) void {
+    if (initialized) return;
+    max_elements = elements;
+    max_text_words = words;
+}
 
 var arena_memory: ?[]align(64) u8 = null;
 var initialized = false;
@@ -62,8 +73,8 @@ pub fn begin(
 ) !void {
     if (!initialized) {
         // Set limits before asking Clay how much memory it needs.
-        c.Clay_SetMaxElementCount(max_elements);
-        c.Clay_SetMaxMeasureTextCacheWordCount(max_text_words);
+        c.Clay_SetMaxElementCount(@intCast(max_elements));
+        c.Clay_SetMaxMeasureTextCacheWordCount(@intCast(max_text_words));
 
         const size = c.Clay_MinMemorySize();
         const mem = try std.heap.page_allocator.alignedAlloc(u8, std.mem.Alignment.@"64", @intCast(size));

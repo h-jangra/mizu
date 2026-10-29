@@ -1,5 +1,5 @@
 const std = @import("std");
-const c = @import("../c.zig").c;
+const c = @import("c");
 const theme = @import("../core/theme.zig");
 const config = @import("../core/config.zig");
 const renderer = @import("../core/renderer.zig");
@@ -2362,8 +2362,7 @@ pub const Launcher = struct {
 
 };
 
-// --- Unit Tests ---
-
+// Unit Tests
 test "Launcher hybrid routing and four providers" {
     const allocator = std.testing.allocator;
     var cfg = config.Config.init(allocator);

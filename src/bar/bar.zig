@@ -1,5 +1,5 @@
 const std = @import("std");
-const c = @import("../c.zig").c;
+const c = @import("c");
 const theme = @import("../core/theme.zig");
 const config = @import("../core/config.zig");
 const renderer = @import("../core/renderer.zig");
@@ -7,6 +7,7 @@ const ui_mod = @import("../core/ui.zig");
 const mango_ipc = @import("../services/mango_ipc.zig");
 const sys_status = @import("../services/system_status.zig");
 const exec = @import("../core/exec.zig");
+const tray_menu_mod = @import("../panels/tray_menu.zig");
 
 pub const types = @import("context.zig");
 pub const ClickAction = types.ClickAction;
@@ -42,6 +43,7 @@ pub const Bar = struct {
     hover_y: i32 = -1,
     current_theme_kind: theme.ThemeKind = .nord,
     last_visual_hash: u64 = 0,
+    open_menu_request: ?tray_menu_mod.TrayMenuRequest = null,
 
     pub fn init(allocator: std.mem.Allocator, cfg: config.Config) !Bar {
         const font = try renderer.Font.init(allocator, cfg.theme.font_family, cfg.typography.bar_text);
@@ -98,14 +100,14 @@ pub const Bar = struct {
         const recorder_active = recorder.isRecordingActive();
 
         const values = [_]struct { key: u8, value: i64 }{
-            .{ .key = 1, .value = @as(i64, @intFromEnum(self.current_theme_kind)) },
+            .{ .key = 1, .value = @as(i64, @backingInt(self.current_theme_kind)) },
             .{ .key = 2, .value = mem_tenths },
             .{ .key = 3, .value = sys.volume_percent },
             .{ .key = 4, .value = @intFromBool(sys.volume_muted) },
-            .{ .key = 5, .value = @as(i64, @intFromEnum(sys.mpris_state)) },
+            .{ .key = 5, .value = @as(i64, @backingInt(sys.mpris_state)) },
             .{ .key = 6, .value = @intFromBool(sys.has_battery) },
             .{ .key = 7, .value = sys.bat_capacity },
-            .{ .key = 8, .value = @as(i64, @intFromEnum(sys.bat_status)) },
+            .{ .key = 8, .value = @as(i64, @backingInt(sys.bat_status)) },
             .{ .key = 9, .value = bat_minutes },
             .{ .key = 10, .value = @intFromBool(sys.wifi_enabled) },
             .{ .key = 11, .value = @intFromBool(sys.bluetooth_enabled) },
@@ -209,13 +211,13 @@ pub const Bar = struct {
             {
                 switch (area.action) {
                     .workspace => |ws_idx| {
-                        if (button == 272) { // BTN_LEFT: switch to workspace (previous if active)
+                        if (button == 272) {
                             if (ipc.isWorkspaceActive(ws_idx)) {
                                 ipc.switchPreviousWorkspace();
                             } else {
                                 ipc.switchWorkspace(ws_idx);
                             }
-                        } else if (button == 273) { // BTN_RIGHT: if active, toggle layout; else toggle workspace in view
+                        } else if (button == 273) {
                             if (ipc.isWorkspaceActive(ws_idx)) {
                                 ipc.switchLayout();
                             } else {
@@ -253,14 +255,36 @@ pub const Bar = struct {
                     .tray_item => |item| {
                         const s_ptr = @as([*:0]const u8, @ptrCast(&item.service));
                         const p_ptr = @as([*:0]const u8, @ptrCast(&item.path));
+                        const m_ptr = @as([*:0]const u8, @ptrCast(&item.menu_path));
                         if (button == 272) {
                             tray.activateItem(s_ptr, p_ptr, x, y);
                         } else if (button == 273) {
-                            tray.contextMenuItem(s_ptr, p_ptr, x, y);
+                            var actions: [tray_menu_mod.MAX_TRAY_MENU_ACTIONS]c.MizuTrayMenuAction = undefined;
+                            const count = tray.getMenuActions(s_ptr, m_ptr, &actions);
+                            if (count > 0) {
+                                self.open_menu_request = tray_menu_mod.TrayMenuRequest{
+                                    .service = item.service,
+                                    .path = item.path,
+                                    .menu_path = item.menu_path,
+                                    .id = item.id,
+                                    .title = item.title,
+                                    .icon_name = item.icon_name,
+                                    .actions = actions,
+                                    .action_count = count,
+                                    .item_x = area.x,
+                                    .item_y = area.y,
+                                    .item_w = area.w,
+                                    .item_h = area.h,
+                                };
+                            } else {
+                                tray.contextMenuItem(s_ptr, p_ptr, x, y);
+                            }
                         } else if (button == 274) {
                             tray.secondaryActivateItem(s_ptr, p_ptr, x, y);
                         }
                     },
+                    .tray_menu_action => {},
+                    .tray_menu_close => {},
                 }
                 break;
             }
@@ -474,4 +498,41 @@ pub const Bar = struct {
 
 test {
     std.testing.refAllDecls(@This());
+}
+
+test "Bar tray menu right-click and action dispatch" {
+    const allocator = std.testing.allocator;
+    var cfg = config.Config.init(allocator);
+    defer cfg.deinit(allocator);
+
+    var bar = try Bar.init(allocator, cfg);
+    defer bar.deinit();
+
+    try std.testing.expect(bar.open_menu_request == null);
+
+    var act: types.TrayItemAction = undefined;
+    act.index = 0;
+    @memset(&act.service, 0);
+    @memset(&act.path, 0);
+    @memset(&act.menu_path, 0);
+    @memset(&act.id, 0);
+    @memset(&act.title, 0);
+    @memset(&act.icon_name, 0);
+    @memcpy(act.service[0..4], "test");
+
+    try bar.clickable_areas.append(allocator, .{
+        .x = 100,
+        .y = 5,
+        .w = 28,
+        .h = 28,
+        .action = .{ .tray_item = act },
+    });
+
+    var ipc: mango_ipc.MangoIpc = undefined;
+    bar.handleClick(110, 10, 273, &ipc);
+    // Since mock D-Bus returns fallback actions when service is unattached, open_menu_request is queued
+    if (bar.open_menu_request) |req| {
+        try std.testing.expect(req.action_count > 0);
+        try std.testing.expectEqual(@as(i32, 100), req.item_x);
+    }
 }

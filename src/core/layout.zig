@@ -145,3 +145,72 @@ pub const ColCursor = struct {
 pub fn hitTest(r: Rect, px: i32, py: i32) bool {
     return r.contains(px, py);
 }
+
+test "Hit test and overlap" {
+    const r1 = Rect.init(0, 0, 50, 50);
+    try std.testing.expect(!hitTest(r1, 75, 75));
+    try std.testing.expect(hitTest(r1, 25, 25));
+}
+
+test "Geometry centerIn" {
+    const parent = Rect.init(0, 0, 200, 100);
+    const child = Geometry.centerIn(parent, 50, 30);
+    try std.testing.expectEqual(@as(i32, 75), child.x);
+    try std.testing.expectEqual(@as(i32, 35), child.y);
+    try std.testing.expectEqual(@as(u32, 50), child.w);
+    try std.testing.expectEqual(@as(u32, 30), child.h);
+}
+
+test "Geometry alignX" {
+    const parent = Rect.init(0, 0, 200, 100);
+    try std.testing.expectEqual(@as(i32, 0), Geometry.alignX(parent, 50, Align.left));
+    try std.testing.expectEqual(@as(i32, 75), Geometry.alignX(parent, 50, Align.center));
+    try std.testing.expectEqual(@as(i32, 150), Geometry.alignX(parent, 50, Align.right));
+}
+
+test "Geometry alignY" {
+    const parent = Rect.init(0, 0, 200, 100);
+    try std.testing.expectEqual(@as(i32, 0), Geometry.alignY(parent, 50, Align.top));
+    try std.testing.expectEqual(@as(i32, 25), Geometry.alignY(parent, 50, Align.center));
+    try std.testing.expectEqual(@as(i32, 50), Geometry.alignY(parent, 50, Align.bottom));
+}
+
+test "Geometry inset" {
+    const r = Rect.init(10, 10, 100, 100);
+    const inner = Geometry.inset(r, 4);
+    try std.testing.expectEqual(@as(i32, 14), inner.x);
+    try std.testing.expectEqual(@as(i32, 14), inner.y);
+    try std.testing.expectEqual(@as(u32, 92), inner.w);
+    try std.testing.expectEqual(@as(u32, 92), inner.h);
+}
+
+test "RowCursor next and advance" {
+    var row = RowCursor.init(10, 20, 8);
+    const r1 = row.next(40, 30);
+    try std.testing.expectEqual(@as(i32, 10), r1.x);
+    try std.testing.expectEqual(@as(i32, 20), r1.y);
+    try std.testing.expectEqual(@as(u32, 40), r1.w);
+    try std.testing.expectEqual(@as(u32, 30), r1.h);
+
+    const r2 = row.next(30, 20);
+    try std.testing.expectEqual(@as(i32, 58), r2.x);
+
+    row.advance(10);
+    const r3 = row.next(20, 20);
+    try std.testing.expectEqual(@as(i32, 106), r3.x);
+}
+
+test "ColCursor next and advance" {
+    var col = ColCursor.init(10, 20, 8);
+    const r1 = col.next(40, 30);
+    try std.testing.expectEqual(@as(i32, 10), r1.x);
+    try std.testing.expectEqual(@as(i32, 20), r1.y);
+
+    const r2 = col.next(30, 20);
+    try std.testing.expectEqual(@as(i32, 58), r2.y);
+
+    col.advance(10);
+    const r3 = col.next(20, 20);
+    try std.testing.expectEqual(@as(i32, 96), r3.y);
+}
+

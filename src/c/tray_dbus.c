@@ -568,6 +568,189 @@ void mizu_tray_item_scroll(const char *service, const char *path, int32_t delta,
     dbus_message_unref(msg);
 }
 
+int mizu_tray_get_menu_actions(const char *service, const char *menu_path, MizuTrayMenuAction *out_actions, int max_actions) {
+    if (!s_tray_conn || !service || !out_actions || max_actions <= 0) return 0;
+    int count = 0;
+
+    const char *target_path = (menu_path && menu_path[0]) ? menu_path : "/MenuBar";
+
+    // DBusMenu AboutToShow: allow app (e.g. EasyEffects) to populate dynamic actions
+    DBusMessage *about_msg = dbus_message_new_method_call(service, target_path, "com.canonical.dbusmenu", "AboutToShow");
+    if (about_msg) {
+        int32_t root_id = 0;
+        dbus_message_append_args(about_msg, DBUS_TYPE_INT32, &root_id, DBUS_TYPE_INVALID);
+        DBusMessage *about_reply = dbus_connection_send_with_reply_and_block(s_tray_conn, about_msg, 100, NULL);
+        if (about_reply) dbus_message_unref(about_reply);
+        dbus_message_unref(about_msg);
+    }
+
+    DBusMessage *msg = dbus_message_new_method_call(service, target_path, "com.canonical.dbusmenu", "GetLayout");
+    if (msg) {
+        int32_t parent_id = 0;
+        int32_t recursion = 1;
+        DBusMessageIter iter;
+        dbus_message_iter_init_append(msg, &iter);
+        dbus_message_iter_append_basic(&iter, DBUS_TYPE_INT32, &parent_id);
+        dbus_message_iter_append_basic(&iter, DBUS_TYPE_INT32, &recursion);
+        DBusMessageIter arr_iter;
+        dbus_message_iter_open_container(&iter, DBUS_TYPE_ARRAY, "s", &arr_iter);
+        dbus_message_iter_close_container(&iter, &arr_iter);
+
+        DBusError err;
+        dbus_error_init(&err);
+        DBusMessage *reply = dbus_connection_send_with_reply_and_block(s_tray_conn, msg, 250, &err);
+        dbus_message_unref(msg);
+
+        if (reply && !dbus_error_is_set(&err)) {
+            DBusMessageIter reply_iter;
+            if (dbus_message_iter_init(reply, &reply_iter)) {
+                if (dbus_message_iter_get_arg_type(&reply_iter) == DBUS_TYPE_UINT32) {
+                    dbus_message_iter_next(&reply_iter);
+                }
+                if (dbus_message_iter_get_arg_type(&reply_iter) == DBUS_TYPE_STRUCT) {
+                    DBusMessageIter root_struct;
+                    dbus_message_iter_recurse(&reply_iter, &root_struct);
+                    // id
+                    dbus_message_iter_next(&root_struct);
+                    // properties
+                    dbus_message_iter_next(&root_struct);
+                    // children array
+                    if (dbus_message_iter_get_arg_type(&root_struct) == DBUS_TYPE_ARRAY) {
+                        DBusMessageIter children_arr;
+                        dbus_message_iter_recurse(&root_struct, &children_arr);
+                        while (dbus_message_iter_get_arg_type(&children_arr) == DBUS_TYPE_VARIANT && count < max_actions) {
+                            DBusMessageIter var_child;
+                            dbus_message_iter_recurse(&children_arr, &var_child);
+                            if (dbus_message_iter_get_arg_type(&var_child) == DBUS_TYPE_STRUCT) {
+                                DBusMessageIter item_struct;
+                                dbus_message_iter_recurse(&var_child, &item_struct);
+                                int32_t item_id = 0;
+                                if (dbus_message_iter_get_arg_type(&item_struct) == DBUS_TYPE_INT32) {
+                                    dbus_message_iter_get_basic(&item_struct, &item_id);
+                                }
+                                dbus_message_iter_next(&item_struct);
+
+                                char label[128] = {0};
+                                bool enabled = true;
+                                bool visible = true;
+                                bool is_sep = false;
+
+                                if (dbus_message_iter_get_arg_type(&item_struct) == DBUS_TYPE_ARRAY) {
+                                    DBusMessageIter props_iter;
+                                    dbus_message_iter_recurse(&item_struct, &props_iter);
+                                    while (dbus_message_iter_get_arg_type(&props_iter) == DBUS_TYPE_DICT_ENTRY) {
+                                        DBusMessageIter entry_iter;
+                                        dbus_message_iter_recurse(&props_iter, &entry_iter);
+                                        const char *key = NULL;
+                                        dbus_message_iter_get_basic(&entry_iter, &key);
+                                        dbus_message_iter_next(&entry_iter);
+                                        if (key && dbus_message_iter_get_arg_type(&entry_iter) == DBUS_TYPE_VARIANT) {
+                                            DBusMessageIter v;
+                                            dbus_message_iter_recurse(&entry_iter, &v);
+                                            int vt = dbus_message_iter_get_arg_type(&v);
+                                            if (strcmp(key, "label") == 0 && vt == DBUS_TYPE_STRING) {
+                                                const char *s = NULL;
+                                                dbus_message_iter_get_basic(&v, &s);
+                                                if (s) {
+                                                    int li = 0;
+                                                    for (int si = 0; s[si] && li < (int)sizeof(label) - 1; si++) {
+                                                        if (s[si] == '_' && s[si+1] != '_') continue;
+                                                        if (s[si] == '_' && s[si+1] == '_') si++;
+                                                        label[li++] = s[si];
+                                                    }
+                                                    label[li] = 0;
+                                                }
+                                            } else if (strcmp(key, "enabled") == 0 && vt == DBUS_TYPE_BOOLEAN) {
+                                                dbus_bool_t b = 1;
+                                                dbus_message_iter_get_basic(&v, &b);
+                                                enabled = b;
+                                            } else if (strcmp(key, "visible") == 0 && vt == DBUS_TYPE_BOOLEAN) {
+                                                dbus_bool_t b = 1;
+                                                dbus_message_iter_get_basic(&v, &b);
+                                                visible = b;
+                                            } else if (strcmp(key, "type") == 0 && vt == DBUS_TYPE_STRING) {
+                                                const char *t = NULL;
+                                                dbus_message_iter_get_basic(&v, &t);
+                                                if (t && strcmp(t, "separator") == 0) is_sep = true;
+                                            }
+                                        }
+                                        dbus_message_iter_next(&props_iter);
+                                    }
+                                }
+                                if (visible && label[0] && !is_sep) {
+                                    out_actions[count].id = item_id;
+                                    strncpy(out_actions[count].label, label, sizeof(out_actions[count].label) - 1);
+                                    out_actions[count].enabled = enabled;
+                                    out_actions[count].visible = visible;
+                                    out_actions[count].is_separator = false;
+                                    count++;
+                                }
+                            }
+                            dbus_message_iter_next(&children_arr);
+                        }
+                    }
+                }
+            }
+            dbus_message_unref(reply);
+        } else {
+            dbus_error_free(&err);
+        }
+    }
+
+    if (count == 0 && max_actions >= 2) {
+        out_actions[0].id = -1;
+        strncpy(out_actions[0].label, "Activate", sizeof(out_actions[0].label) - 1);
+        out_actions[0].enabled = true;
+        out_actions[0].visible = true;
+        out_actions[0].is_separator = false;
+
+        out_actions[1].id = -2;
+        strncpy(out_actions[1].label, "Context Menu", sizeof(out_actions[1].label) - 1);
+        out_actions[1].enabled = true;
+        out_actions[1].visible = true;
+        out_actions[1].is_separator = false;
+        count = 2;
+    }
+
+    return count;
+}
+
+void mizu_tray_trigger_action(const char *service, const char *menu_path, int32_t action_id) {
+    if (!s_tray_conn || !service) return;
+
+    if (action_id == -1) {
+        mizu_tray_item_activate(service, "/StatusNotifierItem", 0, 0);
+        return;
+    } else if (action_id == -2) {
+        mizu_tray_item_context_menu(service, "/StatusNotifierItem", 0, 0);
+        return;
+    }
+
+    const char *target_path = (menu_path && menu_path[0]) ? menu_path : "/MenuBar";
+    DBusMessage *msg = dbus_message_new_method_call(service, target_path, "com.canonical.dbusmenu", "Event");
+    if (!msg) return;
+
+    const char *event_id = "clicked";
+    uint32_t timestamp = 0;
+
+    DBusMessageIter iter;
+    dbus_message_iter_init_append(msg, &iter);
+    dbus_message_iter_append_basic(&iter, DBUS_TYPE_INT32, &action_id);
+    dbus_message_iter_append_basic(&iter, DBUS_TYPE_STRING, &event_id);
+
+    DBusMessageIter var_iter;
+    dbus_message_iter_open_container(&iter, DBUS_TYPE_VARIANT, "i", &var_iter);
+    int32_t zero = 0;
+    dbus_message_iter_append_basic(&var_iter, DBUS_TYPE_INT32, &zero);
+    dbus_message_iter_close_container(&iter, &var_iter);
+
+    dbus_message_iter_append_basic(&iter, DBUS_TYPE_UINT32, &timestamp);
+
+    dbus_connection_send(s_tray_conn, msg, NULL);
+    dbus_connection_flush(s_tray_conn);
+    dbus_message_unref(msg);
+}
+
 void mizu_tray_dbus_deinit(void) {
     if (!s_tray_conn) return;
     dbus_connection_unregister_object_path(s_tray_conn, "/StatusNotifierWatcher");

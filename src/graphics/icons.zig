@@ -1,7 +1,7 @@
 const std = @import("std");
 const renderer = @import("../core/renderer.zig");
 const theme = @import("../core/theme.zig");
-const c = @import("../c.zig").c;
+const c = @import("c");
 
 /// Nerd Font glyphs kept only as fallback symbols for assets that have no SVG
 /// equivalent. These are not used as primary icons anymore.
@@ -82,8 +82,7 @@ pub fn drawIcon(target: renderer.Renderer, kind: IconKind, x: i32, y: i32, size:
     }
 }
 
-// ---- Vector icon primitives (crisp native fallbacks) ----
-
+// Vector icon primitives (crisp native fallbacks)
 pub fn drawLine(
     target: renderer.Renderer,
     x0: f32,
@@ -461,8 +460,7 @@ pub fn drawTrash(target: renderer.Renderer, x: i32, y: i32, size: u32, color: th
     target.fillCircle(cx, cy, s * 0.35, color);
 }
 
-// --- NanoSVG icon rasterizer ---
-
+// NanoSVG icon rasterizer
 /// Rasterized alpha icon tinted with foreground color at draw time.
 pub const RasterIcon = struct {
     width: u32,
@@ -1148,8 +1146,7 @@ fn blendOver(dst_pixel: u32, src: theme.Color) u32 {
     return (a_val << 24) | (r_val << 16) | (g_val << 8) | b_val;
 }
 
-// --- Unit tests ---
-
+// Unit tests
 test "getIcon returns null for missing asset" {
     const allocator = std.testing.allocator;
     const icon = getIcon(allocator, "does-not-exist-icon", 24, 1);

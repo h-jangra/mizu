@@ -1,4 +1,4 @@
-const c = @import("../c.zig").c;
+const c = @import("c");
 
 /// Run a shell command in a detached child with stdio redirected to /dev/null.
 /// Used for fire-and-forget desktop actions and notifications.

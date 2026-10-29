@@ -3,6 +3,7 @@ const renderer = @import("../core/renderer.zig");
 const theme = @import("../core/theme.zig");
 const types = @import("context.zig");
 const ui_mod = @import("../core/ui.zig");
+const c = @import("c");
 
 pub const MIZU_MAX_TRAY_ITEMS: usize = 32;
 
@@ -25,6 +26,17 @@ pub extern "c" fn mizu_tray_item_activate(service: [*c]const u8, path: [*c]const
 pub extern "c" fn mizu_tray_item_context_menu(service: [*c]const u8, path: [*c]const u8, x: i32, y: i32) void;
 pub extern "c" fn mizu_tray_item_secondary_activate(service: [*c]const u8, path: [*c]const u8, x: i32, y: i32) void;
 pub extern "c" fn mizu_tray_item_scroll(service: [*c]const u8, path: [*c]const u8, delta: i32, horizontal: bool) void;
+pub extern "c" fn mizu_tray_get_menu_actions(service: [*c]const u8, menu_path: [*c]const u8, out_actions: [*c]c.MizuTrayMenuAction, max_actions: c_int) c_int;
+pub extern "c" fn mizu_tray_trigger_action(service: [*c]const u8, menu_path: [*c]const u8, action_id: i32) void;
+
+pub fn getMenuActions(service: [*c]const u8, menu_path: [*c]const u8, out_actions: []c.MizuTrayMenuAction) usize {
+    const res = mizu_tray_get_menu_actions(service, menu_path, out_actions.ptr, @intCast(out_actions.len));
+    return if (res > 0) @intCast(res) else 0;
+}
+
+pub fn triggerAction(service: [*c]const u8, menu_path: [*c]const u8, action_id: i32) void {
+    mizu_tray_trigger_action(service, menu_path, action_id);
+}
 
 pub fn getIconForApp(id: []const u8, icon_name: []const u8, title: []const u8) []const u8 {
     var lower_buf: [128]u8 = undefined;
@@ -180,6 +192,10 @@ pub fn render(ctx: *types.BarContext, ui: *ui_mod.Ui) !void {
         act_item.index = @intCast(i);
         @memcpy(act_item.service[0..item.service.len], item.service[0..item.service.len]);
         @memcpy(act_item.path[0..item.path.len], item.path[0..item.path.len]);
+        @memcpy(act_item.menu_path[0..item.menu_path.len], item.menu_path[0..item.menu_path.len]);
+        @memcpy(act_item.id[0..item.id.len], item.id[0..item.id.len]);
+        @memcpy(act_item.title[0..item.title.len], item.title[0..item.title.len]);
+        @memcpy(act_item.icon_name[0..item.icon_name.len], item.icon_name[0..item.icon_name.len]);
         try ctx.linkClick(ui, item_id, @intCast(i), .{ .tray_item = act_item }, null);
     }
 

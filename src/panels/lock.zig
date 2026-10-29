@@ -1,12 +1,11 @@
 const std = @import("std");
-const c = @import("../c.zig").c;
+const c = @import("c");
 const config = @import("../core/config.zig");
 const theme = @import("../core/theme.zig");
 const Color = theme.Color;
 const renderer = @import("../core/renderer.zig");
 const Font = renderer.Font;
 const Image = renderer.Image;
-const ui_mod = @import("../core/ui.zig");
 const buffer = @import("../core/buffer.zig");
 
 pub const AuthState = enum { idle, authenticating, failed, success };
@@ -22,7 +21,7 @@ pub const LockOutput = struct {
     global_name: u32,
     surface: ?*c.wl_surface = null,
     lock_surface: ?*c.ext_session_lock_surface_v1 = null,
-    pool: ?buffer.BufferPool = null,
+    pool: ?buffer.DoubleBufferPool = null,
     width: u32 = 0,
     height: u32 = 0,
     scale: u32 = 1,
@@ -66,8 +65,6 @@ pub const LockApp = struct {
     session_lock: ?*c.ext_session_lock_v1 = null,
     outputs: std.ArrayListUnmanaged(*LockOutput) = .empty,
     font: ?Font = null,
-    clock_font: ?Font = null,
-    glyph_font: ?Font = null,
     wallpaper_img: ?*Image = null,
     running: bool = true,
     is_locked: bool = false,
@@ -88,7 +85,6 @@ pub const LockApp = struct {
     auth_username: [256]u8 = @splat(0),
     auth_username_len: usize = 0,
     caret_blink: bool = true,
-    glyph_anim_offset: f32 = 0.0,
     last_rendered_min: i32 = -1,
     rng_seed: u64 = 0x853c49e6748fea9b,
     xkb_ctx: ?*c.struct_xkb_context = null,
@@ -96,15 +92,10 @@ pub const LockApp = struct {
     xkb_state: ?*c.struct_xkb_state = null,
 
     pub fn init(allocator: std.mem.Allocator, cfg: config.Config) !LockApp {
-        var app = LockApp{
-            .allocator = allocator,
-            .cfg = cfg,
-        };
+        var app = LockApp{ .allocator = allocator, .cfg = cfg };
         app.rng_seed = @as(u64, @intCast(@max(1, c.time(null)))) *% 0x9E3779B97F4A7C15 +% 0x517cc1b727220a95;
         app.font = Font.init(allocator, cfg.theme.font_family, 16) catch
             (Font.init(allocator, "sans-serif, monospace", 16) catch null);
-        app.clock_font = Font.init(allocator, cfg.theme.font_family, 120) catch null;
-        app.glyph_font = Font.init(allocator, "Symbols Nerd Font, JetBrainsMono Nerd Font, monospace", 48) catch null;
         app.xkb_ctx = c.xkb_context_new(c.XKB_CONTEXT_NO_FLAGS);
         if (app.xkb_ctx) |ctx| {
             app.xkb_keymap = c.xkb_keymap_new_from_names(ctx, null, c.XKB_KEYMAP_COMPILE_NO_FLAGS);
@@ -112,16 +103,16 @@ pub const LockApp = struct {
                 app.xkb_state = c.xkb_state_new(km);
             }
         }
+        // Minimal glyph preload — only chars we actually draw (clock digits + mask + ghost).
         if (app.font) |*f| {
-            for (LOCK_GLYPH_POOL) |sym| {
-                if (std.unicode.Utf8View.init(sym)) |view| {
-                    var it = view.iterator();
-                    while (it.nextCodepoint()) |cp| {
-                        _ = f.getOrLoadGlyph(cp, 18);
-                        _ = f.getOrLoadGlyph(cp, 36);
-                    }
-                } else |_| {}
-            }
+            const preload = "0123456789:AMPHpm 󰊠󰮯";
+            if (std.unicode.Utf8View.init(preload)) |view| {
+                var it = view.iterator();
+                while (it.nextCodepoint()) |cp| {
+                    _ = f.getOrLoadGlyph(cp, 16);
+                    _ = f.getOrLoadGlyph(cp, 20);
+                }
+            } else |_| {}
         }
         return app;
     }
@@ -132,24 +123,14 @@ pub const LockApp = struct {
             self.auth_thread = null;
         }
         self.wipePassword();
-
         for (self.outputs.items) |out| {
             out.deinit();
             self.allocator.destroy(out);
         }
         self.outputs.deinit(self.allocator);
-
         if (self.font) |*f| {
             f.deinit();
             self.font = null;
-        }
-        if (self.clock_font) |*f| {
-            f.deinit();
-            self.clock_font = null;
-        }
-        if (self.glyph_font) |*f| {
-            f.deinit();
-            self.glyph_font = null;
         }
         if (self.wallpaper_img) |img| {
             img.deinit();
@@ -225,7 +206,6 @@ pub const LockApp = struct {
             t.join();
             self.auth_thread = null;
         }
-
         var ctx = AuthContext{};
         const user_slice = if (self.auth_username_len > 0)
             self.auth_username[0..self.auth_username_len]
@@ -234,20 +214,15 @@ pub const LockApp = struct {
         const ulen = @min(user_slice.len, ctx.username.len - 1);
         @memcpy(ctx.username[0..ulen], user_slice[0..ulen]);
         ctx.username[ulen] = 0;
-
         const plen = @min(self.password_len, ctx.password.len - 1);
         @memcpy(ctx.password[0..plen], self.password_buf[0..plen]);
         ctx.password[plen] = 0;
-
-        // Wipe local password buffer immediately
         self.wipePassword();
-
         self.auth_state = .authenticating;
         self.needs_redraw = true;
         self.auth_finished.store(false, .release);
         self.auth_success.store(false, .release);
         self.auth_in_flight.store(true, .release);
-
         self.auth_thread = std.Thread.spawn(.{}, authWorker, .{ self, ctx }) catch {
             self.auth_in_flight.store(false, .release);
             self.auth_state = .failed;
@@ -260,17 +235,11 @@ pub const LockApp = struct {
         if (!self.auth_finished.load(.acquire)) return;
         self.auth_finished.store(false, .release);
         self.auth_in_flight.store(false, .release);
-
         if (self.auth_thread) |t| {
             t.join();
             self.auth_thread = null;
         }
-
-        if (self.auth_success.load(.acquire)) {
-            self.auth_state = .success;
-        } else {
-            self.auth_state = .failed;
-        }
+        self.auth_state = if (self.auth_success.load(.acquire)) .success else .failed;
         self.needs_redraw = true;
     }
 
@@ -278,33 +247,27 @@ pub const LockApp = struct {
         if (state == c.WL_KEYBOARD_KEY_STATE_RELEASED) return;
         if (self.xkb_state == null) return;
         if (self.auth_state == .authenticating) return;
-
         const keycode = key + 8;
         const sym = c.xkb_state_key_get_one_sym(self.xkb_state.?, keycode);
         const is_ctrl = c.xkb_state_mod_name_is_active(self.xkb_state.?, c.XKB_MOD_NAME_CTRL, c.XKB_STATE_MODS_EFFECTIVE) > 0;
         self.caps_lock_active = c.xkb_state_mod_name_is_active(self.xkb_state.?, c.XKB_MOD_NAME_CAPS, c.XKB_STATE_MODS_EFFECTIVE) > 0;
-
-        // Enter submits authentication
+        // Submit
         if (sym == c.XKB_KEY_Return or sym == c.XKB_KEY_KP_Enter) {
             if (self.password_len > 0) {
                 self.submitAuth();
             }
             return;
         }
-
-        // Escape or Ctrl+U / Ctrl+C clears entered password
+        // Clear
         if (sym == c.XKB_KEY_Escape or (is_ctrl and (sym == c.XKB_KEY_u or sym == c.XKB_KEY_c))) {
             self.wipePassword();
             self.auth_state = .idle;
             self.needs_redraw = true;
             return;
         }
-
-        // Backspace or Ctrl+Backspace / Ctrl+W deletes characters
+        // Backspace
         if (sym == c.XKB_KEY_BackSpace or (is_ctrl and (sym == c.XKB_KEY_w or sym == c.XKB_KEY_BackSpace))) {
-            if (self.auth_state == .failed) {
-                self.auth_state = .idle;
-            }
+            if (self.auth_state == .failed) self.auth_state = .idle;
             if (self.password_len > 0) {
                 if (is_ctrl) {
                     self.wipePassword();
@@ -312,9 +275,9 @@ pub const LockApp = struct {
                     var end = self.password_len;
                     while (end > 0) {
                         end -= 1;
-                        const byte = self.password_buf[end];
+                        const b = self.password_buf[end];
                         self.password_buf[end] = 0;
-                        if ((byte & 0xC0) != 0x80) break;
+                        if ((b & 0xC0) != 0x80) break;
                     }
                     self.password_len = end;
                     self.show_input = (self.password_len > 0);
@@ -323,17 +286,13 @@ pub const LockApp = struct {
             }
             return;
         }
-
         if (is_ctrl) return;
-
-        // Printable characters
         var utf8_buf: [32]u8 = @splat(0);
         const len = c.xkb_state_key_get_utf8(self.xkb_state.?, keycode, &utf8_buf, utf8_buf.len);
         if (len > 0) {
             const ulen: usize = @intCast(len);
             const slice = utf8_buf[0..ulen];
-            const first = slice[0];
-            if (first >= 32 and first != 127) {
+            if (slice[0] >= 32 and slice[0] != 127) {
                 if (self.auth_state == .failed) {
                     self.auth_state = .idle;
                     self.wipePassword();
@@ -367,55 +326,70 @@ pub const LockApp = struct {
         if (!out.configured or out.width == 0 or out.height == 0) return;
         const surf = out.surface orelse return;
         const scale = if (out.scale == 0) 1 else out.scale;
-
         const phys_w = out.width * scale;
         const phys_h = out.height * scale;
 
+        // 2-buffer pool for minimal memory footprint.
         if (out.pool == null) {
             const shm = self.shm orelse return;
-            out.pool = buffer.BufferPool.init(shm);
+            out.pool = buffer.DoubleBufferPool.init(shm);
         }
         const buf = out.pool.?.getNextBuffer(phys_w, phys_h) catch return;
         const pixels: [*]u32 = buf.data orelse return;
         const stride = phys_w * 4;
-
         const target = renderer.Renderer.init(pixels, phys_w, phys_h, stride) catch return;
 
-        // Pre-render wallpaper and dark overlay cache.
+        // Wallpaper cache: bake once, free decoded image, keep only the screen buffer.
         if (out.bg_cache == null or out.bg_cache_w != phys_w or out.bg_cache_h != phys_h) {
-            if (out.bg_cache) |old_bg| {
-                self.allocator.free(old_bg);
+            if (out.bg_cache) |bg| {
+                self.allocator.free(bg);
                 out.bg_cache = null;
             }
-            if (self.allocator.alloc(u32, phys_w * phys_h)) |new_bg| {
+            if (self.wallpaper_img) |img| {
+                const new_bg = self.allocator.alloc(u32, phys_w * phys_h) catch {
+                    img.deinit();
+                    self.wallpaper_img = null;
+                    return;
+                };
+                const bg_target = renderer.Renderer.init(new_bg.ptr, phys_w, phys_h, stride) catch {
+                    self.allocator.free(new_bg);
+                    img.deinit();
+                    self.wallpaper_img = null;
+                    return;
+                };
+                self.drawWallpaper(bg_target, img, phys_w, phys_h);
+                bg_target.fillRect(0, 0, phys_w, phys_h, Color.init(55, 0, 0, 0));
                 out.bg_cache = new_bg;
                 out.bg_cache_w = phys_w;
                 out.bg_cache_h = phys_h;
-
-                if (renderer.Renderer.init(new_bg.ptr, phys_w, phys_h, stride)) |bg_t| {
-                    if (self.wallpaper_img) |img| {
-                        self.drawWallpaper(bg_t, img, phys_w, phys_h);
-                    } else {
-                        self.drawFallbackBackground(bg_t, phys_w, phys_h);
-                    }
-                    bg_t.fillRect(0, 0, phys_w, phys_h, Color.init(55, 0, 0, 0));
-                } else |_| {}
-            } else |_| {}
+                // Free decoded image immediately after baking.
+                img.deinit();
+                self.wallpaper_img = null;
+            } else {
+                // No wallpaper: bake dark gradient directly.
+                const new_bg = self.allocator.alloc(u32, phys_w * phys_h) catch return;
+                const bg_target = renderer.Renderer.init(new_bg.ptr, phys_w, phys_h, stride) catch {
+                    self.allocator.free(new_bg);
+                    return;
+                };
+                self.drawFallbackBackground(bg_target, phys_w, phys_h);
+                bg_target.fillRect(0, 0, phys_w, phys_h, Color.init(55, 0, 0, 0));
+                out.bg_cache = new_bg;
+                out.bg_cache_w = phys_w;
+                out.bg_cache_h = phys_h;
+            }
         }
 
-        if (out.bg_cache) |cached_bg| {
-            @memcpy(target.pixels[0 .. phys_w * phys_h], cached_bg[0 .. phys_w * phys_h]);
+        if (out.bg_cache) |bg| {
+            @memcpy(target.pixels[0 .. phys_w * phys_h], bg[0 .. phys_w * phys_h]);
         } else {
-            if (self.wallpaper_img) |img| {
-                self.drawWallpaper(target, img, phys_w, phys_h);
-            } else {
-                self.drawFallbackBackground(target, phys_w, phys_h);
-            }
+            // Fallback direct render (should rarely hit after first bake).
+            self.drawFallbackBackground(target, phys_w, phys_h);
             target.fillRect(0, 0, phys_w, phys_h, Color.init(55, 0, 0, 0));
         }
 
-        // Lock HUD: clock, user, and password input.
-        self.drawClayHud(target, phys_w, phys_h, scale);
+        // Direct-render HUD: clock, user, password box, status.
+        self.renderHudDirect(target, phys_w, phys_h, scale);
 
         buf.busy = true;
         c.wl_surface_set_buffer_scale(surf, @intCast(scale));
@@ -437,18 +411,17 @@ pub const LockApp = struct {
         } else {
             const scale_x = @as(f32, @floatFromInt(width)) / @as(f32, @floatFromInt(img.width));
             const scale_y = @as(f32, @floatFromInt(height)) / @as(f32, @floatFromInt(img.height));
-            const scale = @max(scale_x, scale_y);
-            const src_w = @as(u32, @intFromFloat(@as(f32, @floatFromInt(width)) / scale));
-            const src_h = @as(u32, @intFromFloat(@as(f32, @floatFromInt(height)) / scale));
+            const scale_f = @max(scale_x, scale_y);
+            const src_w = @as(u32, @intFromFloat(@as(f32, @floatFromInt(width)) / scale_f));
+            const src_h = @as(u32, @intFromFloat(@as(f32, @floatFromInt(height)) / scale_f));
             const src_x = if (img.width > src_w) (img.width - src_w) / 2 else 0;
             const src_y = if (img.height > src_h) (img.height - src_h) / 2 else 0;
-
             var dy: u32 = 0;
             while (dy < height) : (dy += 1) {
-                const sy = @min(src_y + @as(u32, @intFromFloat(@as(f32, @floatFromInt(dy)) / scale)), img.height - 1);
+                const sy = @min(src_y + @as(u32, @intFromFloat(@as(f32, @floatFromInt(dy)) / scale_f)), img.height - 1);
                 var dx: u32 = 0;
                 while (dx < width) : (dx += 1) {
-                    const sx = @min(src_x + @as(u32, @intFromFloat(@as(f32, @floatFromInt(dx)) / scale)), img.width - 1);
+                    const sx = @min(src_x + @as(u32, @intFromFloat(@as(f32, @floatFromInt(dx)) / scale_f)), img.width - 1);
                     const idx = dy * width + dx;
                     const src_idx = sy * img.width + sx;
                     target.pixels[idx] = img.pixels[src_idx];
@@ -469,246 +442,79 @@ pub const LockApp = struct {
         }
     }
 
-    pub const LOCK_GLYPH_POOL = [_][]const u8{
-        "󰧱", // Sparkle 4-point
-        "", // Five point star
-        "󰝨", // Diamond sparkle
-        "", // Quatrefoil
-        "󰄛", // Diamond rhomb
-        "󰴈", // Eight-point star
-        "󰢘", // Geometric node
-        "", // Flower sparkle
-        "󱎂", // Star flower
-        "󰹑", // Starburst
-        "", // Clover star
-        "", // Diamond point
-    };
-
-    fn splitmix64(seed: u64) u64 {
-        var z = seed +% 0x9E3779B97F4A7C15;
-        z = (z ^ (z >> 30)) *% 0xBF58476D1CE4E5B9;
-        z = (z ^ (z >> 27)) *% 0x94D049BB133111EB;
-        return z ^ (z >> 31);
-    }
-
-    fn drawClayHud(self: *LockApp, target: renderer.Renderer, width: u32, height: u32, out_scale: u32) void {
+    // Minimal direct-render HUD: no Clay, no layout engine, just direct pixel drawing.
+    fn renderHudDirect(self: *LockApp, target: renderer.Renderer, w: u32, h: u32, scale: u32) void {
         const font = if (self.font) |*f| f else return;
-        const scale = if (out_scale == 0) 1 else out_scale;
+        const sc = if (scale == 0) 1 else scale;
 
+        // Clock string
         c.tzset();
         const now = c.time(null);
         var tm: c.struct_tm = undefined;
         _ = c.localtime_r(&now, &tm);
-
-        const is_12h = std.mem.indexOf(u8, self.cfg.clock_format, "%I") != null or
-            std.mem.indexOf(u8, self.cfg.clock_format, "%l") != null;
-        const has_ampm = std.mem.indexOf(u8, self.cfg.clock_format, "%p") != null or
-            std.mem.indexOf(u8, self.cfg.clock_format, "%P") != null;
-        const time_fmt: [*:0]const u8 = if (is_12h)
-            (if (has_ampm) "%I:%M %p" else "%I:%M")
-        else
-            "%H:%M";
-
+        const is_12h = std.mem.indexOf(u8, self.cfg.clock_format, "%I") != null or std.mem.indexOf(u8, self.cfg.clock_format, "%l") != null;
+        const has_ampm = std.mem.indexOf(u8, self.cfg.clock_format, "%p") != null or std.mem.indexOf(u8, self.cfg.clock_format, "%P") != null;
+        const fmt: [*:0]const u8 = if (is_12h) (if (has_ampm) "%I:%M %p" else "%I:%M") else "%H:%M";
         var time_buf: [64]u8 = undefined;
-        const t_len = c.strftime(&time_buf, time_buf.len, time_fmt, &tm);
+        const t_len = c.strftime(&time_buf, time_buf.len, fmt, &tm);
         const time_str = if (t_len > 0) time_buf[0..t_len] else "00:00";
 
-        const day_names = [_][]const u8{
-            "Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday",
-        };
-        const month_names = [_][]const u8{
-            "January", "February", "March",     "April",   "May",      "June",
-            "July",    "August",   "September", "October", "November", "December",
-        };
-        const wday_idx: usize = if (tm.tm_wday >= 0 and tm.tm_wday < 7) @intCast(tm.tm_wday) else 0;
-        const mon_idx: usize = if (tm.tm_mon >= 0 and tm.tm_mon < 12) @intCast(tm.tm_mon) else 0;
-        const wday = day_names[wday_idx];
-        const mon = month_names[mon_idx];
-        var date_buf: [64]u8 = undefined;
-        const date_full = std.fmt.bufPrint(&date_buf, "{s}, {s} {}, {}", .{ wday, mon, tm.tm_mday, tm.tm_year + 1900 }) catch "";
+        const clock_size = 72 * sc;
+        const time_x: i32 = 64 * @as(i32, @intCast(sc));
+        const time_y: i32 = @as(i32, @intCast(h)) - 48 * @as(i32, @intCast(sc)) - @as(i32, @intCast(clock_size / 2));
 
-        var ui = ui_mod.Ui.begin(
-            self.allocator,
-            font,
-            width,
-            height,
-            scale,
-            -1,
-            -1,
-            false,
-            1.0 / 60.0,
-        ) catch return;
-        defer ui.deinit();
+        // Draw clock text using FreeType glyph rendering directly.
+        self.drawTextDirect(font, target, time_str, time_x, time_y, clock_size, Color.rgb(255, 255, 255));
 
-        ui.root(.{
-            .direction = .column,
-            .align_x = .left,
-            .align_y = .top,
-            .padding = .{
-                .left = ui.su(64),
-                .right = ui.su(64),
-                .top = ui.su(48),
-                .bottom = ui.su(48),
-            },
-        });
+        // Only show input chars when typing — no box, no border, just font chars.
+        if (self.auth_state == .authenticating) {
+            const msg = "Verifying...";
+            const msg_size = 16 * sc;
+            const msg_x: i32 = @as(i32, @intCast((w - @as(u32, @intCast(msg.len)) * msg_size / 2) / 2));
+            const msg_y: i32 = @as(i32, @intCast(h)) - 60 * @as(i32, @intCast(sc));
+            self.drawTextDirect(font, target, msg, msg_x, msg_y, msg_size, Color.rgb(255, 255, 255));
+        } else if (self.password_len > 0) {
+            // Each char drawn with the font. All masked as 󰊠 except last shown as 󰮯.
+            const char_size = 20 * sc;
+            const char_size_i = @as(i32, @intCast(char_size));
+            const char_gap = @as(i32, @intCast(4 * sc));
+            const total_chars = self.password_len;
+            // Last char visible; rest masked.
+            const mask_str = "󰊠";
+            const last_str = "󰮯";
 
-        // Push layout to the bottom
-        ui.spacerSized(.{ .fixed = 0 }, .{ .grow = .{} });
+            // Measure approximate width to center.
+            const approx_char_w = char_size_i;
+            const tc = @as(i32, @intCast(total_chars));
+            const total_w_approx = tc * approx_char_w + (tc - 1) * char_gap;
+            var char_x = @divTrunc(@as(i32, @intCast(w)), 2) - @divTrunc(total_w_approx, 2);
+            const char_y = @as(i32, @intCast(h)) - 80 * @as(i32, @intCast(sc));
 
-        // Bottom section: clock/date at left corner, input box in center bottom on side of date
-        _ = ui.open(.{
-            .width = .{ .grow = .{} },
-            .direction = .row,
-            .align_y = .bottom,
-        });
-
-        const side_w: f32 = @floatFromInt(340 * scale);
-
-        // 1. Left corner: Clock & Date
-        _ = ui.open(.{
-            .width = .{ .fixed = side_w },
-            .direction = .column,
-            .align_x = .left,
-            .gap = ui.su(4),
-        });
-        ui.text(time_str, .{
-            .size = 72 * scale,
-            .color = Color.rgb(255, 255, 255),
-            .line_height = @intCast(76 * scale),
-        });
-        ui.text(date_full, .{
-            .size = 18 * scale,
-            .color = Color.init(220, 255, 255, 255),
-        });
-        ui.close(); // left corner
-
-        // 2. Center-bottom: Input box & feedback (on side of date)
-        _ = ui.open(.{
-            .width = .{ .grow = .{} },
-            .direction = .column,
-            .align_x = .center,
-            .align_y = .center,
-            .padding = .{ .bottom = ui.su(8) },
-            .gap = ui.su(8),
-        });
-
-        if (self.auth_state == .authenticating or self.password_len > 0) {
-            _ = ui.open(.{
-                .width = .fit,
-                .height = .{ .fixed = ui.s(42) },
-                .direction = .row,
-                .align_x = .center,
-                .align_y = .center,
-                .padding = .{
-                    .left = ui.su(18),
-                    .right = ui.su(18),
-                    .top = ui.su(6),
-                    .bottom = ui.su(6),
-                },
-                .gap = ui.su(8),
-                .bg = Color.init(175, 18, 22, 32),
-                .radius = ui.f(12),
-                .border = ui.su(1),
-                .border_color = if (self.auth_state == .failed)
-                    Color.init(180, 235, 87, 87)
-                else
-                    Color.init(45, 255, 255, 255),
-            });
-
-            if (self.auth_state == .authenticating) {
-                ui.text("Verifying...", .{
-                    .size = 14 * scale,
-                    .color = Color.init(230, 255, 255, 255),
-                });
-            } else if (self.password_len > 0) {
-                var glyph_buf: [512]u8 = undefined;
-                var g_pos: usize = 0;
-                const max_glyphs: usize = 7;
-                const start_idx = if (self.password_len > max_glyphs) self.password_len - max_glyphs else 0;
-                const visible_count = self.password_len;
-                var prev_idx: usize = 255;
-                var i: usize = start_idx;
-                while (i < visible_count) : (i += 1) {
-                    const seed = self.rng_seed +% @as(u64, @intCast(i)) *% 0xBF58476D1CE4E5B9 +% @as(u64, self.password_buf[i]);
-                    var idx = @as(usize, @intCast(splitmix64(seed) % LOCK_GLYPH_POOL.len));
-                    if (i > start_idx and idx == prev_idx) {
-                        idx = (idx + 1) % LOCK_GLYPH_POOL.len;
-                    }
-                    prev_idx = idx;
-                    const symbol = LOCK_GLYPH_POOL[idx];
-
-                    if (i > start_idx) {
-                        if (g_pos + 1 <= glyph_buf.len) {
-                            glyph_buf[g_pos] = ' ';
-                            g_pos += 1;
-                        }
-                    }
-                    if (g_pos + symbol.len <= glyph_buf.len) {
-                        @memcpy(glyph_buf[g_pos .. g_pos + symbol.len], symbol);
-                        g_pos += symbol.len;
-                    }
-                }
-                if (g_pos > 0) {
-                    ui.text(glyph_buf[0..g_pos], .{
-                        .size = 18 * scale,
-                        .color = Color.rgb(255, 255, 255),
-                    });
-                }
+            var i: usize = 0;
+            while (i < self.password_len) : (i += 1) {
+                const is_last = (i == self.password_len - 1);
+                const str_to_draw = if (is_last) last_str else mask_str;
+                self.drawTextDirect(font, target, str_to_draw, char_x, char_y, char_size, Color.rgb(255, 255, 255));
+                char_x += approx_char_w + char_gap;
             }
-            ui.close(); // input box
         }
 
-        // Status feedback below the input box
+        // Minimal status text — no rectangle, just font.
+        const status_y = @as(i32, @intCast(h)) - 36 * @as(i32, @intCast(sc));
         if (self.auth_state == .failed) {
-            _ = ui.open(.{
-                .direction = .row,
-                .align_x = .center,
-                .align_y = .center,
-                .gap = ui.su(6),
-            });
-            ui.text("", .{
-                .size = 13 * scale,
-                .color = Color.rgb(235, 87, 87),
-            });
-            ui.text("Incorrect password", .{
-                .size = 13 * scale,
-                .color = Color.rgb(235, 87, 87),
-            });
-            ui.close();
+            const msg = "Incorrect password";
+            const msg_size = 13 * sc;
+            const msg_x: i32 = @divTrunc(@as(i32, @intCast(w)), 2) - @as(i32, @intCast(msg.len)) * @as(i32, @intCast(@divTrunc(msg_size, 2)));
+            self.drawTextDirect(font, target, msg, msg_x, status_y, msg_size, Color.init(230, 235, 87, 87));
         } else if (self.caps_lock_active) {
-            _ = ui.open(.{
-                .direction = .row,
-                .align_x = .center,
-                .align_y = .center,
-                .gap = ui.su(6),
-            });
-            ui.text("󰘲", .{
-                .size = 13 * scale,
-                .color = Color.rgb(245, 180, 60),
-            });
-            ui.text("Caps Lock is ON", .{
-                .size = 13 * scale,
-                .color = Color.rgb(245, 180, 60),
-            });
-            ui.close();
+            const msg = "Caps Lock is ON";
+            const msg_size = 13 * sc;
+            const msg_x: i32 = @divTrunc(@as(i32, @intCast(w)), 2) - @as(i32, @intCast(msg.len)) * @as(i32, @intCast(@divTrunc(msg_size, 2)));
+            self.drawTextDirect(font, target, msg, msg_x, status_y, msg_size, Color.init(230, 245, 180, 60));
         }
-
-        ui.close(); // center column
-
-        // 3. Right dummy column balancing horizontal center
-        _ = ui.open(.{
-            .width = .{ .fixed = side_w },
-        });
-        ui.close();
-
-        ui.close(); // bottom row
-        ui.close(); // root
-
-        const commands = ui.endLayout();
-        ui.render(target, commands);
     }
 
-    fn drawTextWithFont(self: *LockApp, target: renderer.Renderer, font: *Font, text: []const u8, x: i32, y: i32, size: u32, color: Color) void {
+    fn drawTextDirect(self: *LockApp, font: *Font, target: renderer.Renderer, text: []const u8, x: i32, y: i32, size: u32, color: Color) void {
         _ = self;
         if (text.len == 0) return;
         var pen_x = x;
@@ -719,7 +525,20 @@ pub const LockApp = struct {
                 if (cg.width > 0 and cg.height > 0) {
                     const gx = pen_x + cg.left;
                     const gy = y - cg.top;
-                    drawGlyphBitmap(target, cg, gx, gy, color);
+                    for (0..cg.height) |gy_row| {
+                        const py = @as(i32, @intCast(gy + @as(i32, @intCast(gy_row))));
+                        if (py < 0 or py >= @as(i32, @intCast(target.height))) continue;
+                        for (0..cg.width) |gx_col| {
+                            const px = gx + @as(i32, @intCast(gx_col));
+                            if (px < 0 or px >= @as(i32, @intCast(target.width))) continue;
+                            const alpha = cg.bitmap[gy_row * cg.width + gx_col];
+                            if (alpha == 0) continue;
+                            const blend_a = @as(u8, @intCast((@as(u32, alpha) * @as(u32, color.a)) / 255));
+                            const blend_col = Color.init(blend_a, color.r, color.g, color.b);
+                            const idx = @as(u32, @intCast(py)) * target.stride / 4 + @as(u32, @intCast(px));
+                            target.pixels[idx] = blend_col.toArgb();
+                        }
+                    }
                 }
                 pen_x += cg.advance_x;
             } else {
@@ -728,39 +547,46 @@ pub const LockApp = struct {
         }
     }
 
-    fn drawGlyphBitmap(target: renderer.Renderer, cg: renderer.CachedGlyph, x: i32, y: i32, color: Color) void {
-        if (cg.width == 0 or cg.height == 0) return;
-        var gy: u32 = 0;
-        while (gy < cg.height) : (gy += 1) {
-            const sy = @as(i32, y) + @as(i32, @intCast(gy));
-            if (sy < 0 or sy >= @as(i32, @intCast(target.height))) {
-                continue;
-            }
-            var gx: u32 = 0;
-            while (gx < cg.width) : (gx += 1) {
-                const sx = x + @as(i32, @intCast(gx));
-                if (sx < 0 or sx >= @as(i32, @intCast(target.width))) {
-                    continue;
-                }
-                const alpha = cg.bitmap[gy * cg.width + gx];
-                if (alpha == 0) continue;
-                var col = color;
-                col.a = @intCast((@as(u32, alpha) * @as(u32, color.a)) / 255);
-                target.setPixel(sx, sy, col);
-            }
-        }
+    fn drawRoundedRectDirect(self: *LockApp, target: renderer.Renderer, x: i32, y: i32, w: i32, h: i32, radius: i32, col: Color) void {
+        _ = self;
+        const r = @min(@as(i32, @intCast(radius)), @divTrunc(w, 2));
+        const rr = @min(r, @divTrunc(h, 2));
+        const urr: u32 = @intCast(@max(0, rr));
+        target.fillRect(x + rr, y, @as(u32, @intCast(@max(0, w - 2 * rr))), @as(u32, @intCast(@max(0, h))), col);
+        target.fillRect(x, y + rr, urr, @as(u32, @intCast(@max(0, h - 2 * rr))), col);
+        target.fillRect(x + w - rr, y + rr, urr, @as(u32, @intCast(@max(0, h - 2 * rr))), col);
+        target.fillRect(x, y, urr, urr, col);
+        target.fillRect(x + w - rr, y, urr, urr, col);
+        target.fillRect(x, y + h - rr, urr, urr, col);
+        target.fillRect(x + w - rr, y + h - rr, urr, urr, col);
+    }
+
+    fn drawRoundedBorderDirect(self: *LockApp, target: renderer.Renderer, x: i32, y: i32, w: i32, h: i32, radius: i32, thickness: i32, col: Color) void {
+        _ = self;
+        const r2 = @min(@as(i32, @intCast(radius)), @divTrunc(w, 2));
+        _ = r2;
+        const uw: u32 = @intCast(@max(0, w));
+        const uthick: u32 = @intCast(@max(0, thickness));
+        target.fillRect(x, y, uw, uthick, col);
+        target.fillRect(x, y + h - thickness, uw, uthick, col);
+        target.fillRect(x, y + thickness, uthick, @intCast(@max(0, h - 2 * thickness)), col);
+        target.fillRect(x + w - thickness, y + thickness, uthick, @intCast(@max(0, h - 2 * thickness)), col);
+    }
+
+    fn splitmix64(seed: u64) u64 {
+        var z = seed +% 0x9E3779B97F4A7C15;
+        z = (z ^ (z >> 30)) *% 0xBF58476D1CE4E5B9;
+        z = (z ^ (z >> 27)) *% 0x94D049BB133111EB;
+        return z ^ (z >> 31);
     }
 };
 
 fn authWorker(self: *LockApp, mut_ctx: AuthContext) void {
     var ctx = mut_ctx;
-    defer {
-        @memset(&ctx.password, 0);
-    }
+    defer { @memset(&ctx.password, 0); }
     const user_z: [:0]const u8 = std.mem.span(@as([*c]const u8, @ptrCast(&ctx.username)));
     const pass_z: [:0]const u8 = std.mem.span(@as([*c]const u8, @ptrCast(&ctx.password)));
     const ok = self.auth_fn(user_z, pass_z);
-
     self.auth_success.store(ok, .release);
     self.auth_finished.store(true, .release);
 }
@@ -771,13 +597,11 @@ pub fn authenticatePAM(username: [:0]const u8, password: [:0]const u8) bool {
         .conv = pamConv,
         .appdata_ptr = @ptrCast(@constCast(password.ptr)),
     };
-
     const services = [_][:0]const u8{ "mizu", "swaylock", "login", "system-auth" };
     for (services) |service| {
         pamh = null;
         const ret = c.pam_start(service.ptr, username.ptr, &conv, &pamh);
         if (ret != c.PAM_SUCCESS or pamh == null) continue;
-
         const auth_ret = c.pam_authenticate(pamh.?, 0);
         if (auth_ret == c.PAM_SUCCESS) {
             _ = c.pam_setcred(pamh.?, c.PAM_REFRESH_CRED);
@@ -796,14 +620,11 @@ pub fn pamConv(
     appdata_ptr: ?*anyopaque,
 ) callconv(.c) c_int {
     if (num_msg <= 0 or msg == null or resp == null) return c.PAM_CONV_ERR;
-
     const count: usize = @intCast(num_msg);
     const reply_mem = c.calloc(count, @sizeOf(c.struct_pam_response));
     if (reply_mem == null) return c.PAM_BUF_ERR;
-
     const replies: [*c]c.struct_pam_response = @ptrCast(@alignCast(reply_mem));
     const pw: [*c]const u8 = if (appdata_ptr) |ptr| @ptrCast(ptr) else null;
-
     var i: usize = 0;
     while (i < count) : (i += 1) {
         const m = msg[i];
@@ -833,12 +654,10 @@ pub fn pamConv(
             replies[i].resp_retcode = 0;
         }
     }
-
     resp.* = replies;
     return c.PAM_SUCCESS;
 }
 
-// Active desktop wallpaper detection
 fn loadActiveWallpaper(allocator: std.mem.Allocator, cfg: config.Config) ?*Image {
     if (cfg.wallpaper) |wpath| {
         if (wpath.len > 0) {
@@ -847,7 +666,6 @@ fn loadActiveWallpaper(allocator: std.mem.Allocator, cfg: config.Config) ?*Image
     }
     const home = c.getenv("HOME") orelse return null;
     const home_str = std.mem.span(home);
-
     const cache_paths = [_][]const u8{
         "/.cache/mizu/wallpaper",
         "/.cache/wm/current_wallpaper",
@@ -858,10 +676,8 @@ fn loadActiveWallpaper(allocator: std.mem.Allocator, cfg: config.Config) ?*Image
         defer allocator.free(full_path_slice);
         const full_path_z = allocator.dupeSentinel(u8, full_path_slice, 0) catch continue;
         defer allocator.free(full_path_z);
-
         const f = c.fopen(full_path_z.ptr, "r") orelse continue;
         defer _ = c.fclose(f);
-
         var buf: [512]u8 = undefined;
         const n = c.fread(&buf, 1, buf.len - 1, f);
         if (n > 0) {
@@ -875,7 +691,6 @@ fn loadActiveWallpaper(allocator: std.mem.Allocator, cfg: config.Config) ?*Image
     return null;
 }
 
-// Wayland listeners
 const registry_listener = c.wl_registry_listener{
     .global = registry_global,
     .global_remove = registry_global_remove,
@@ -894,20 +709,16 @@ fn registry_global(data: ?*anyopaque, reg: ?*c.wl_registry, name: u32, iface: [*
             _ = c.wl_seat_add_listener(st, &seat_listener, @ptrCast(self));
         }
     } else if (std.mem.eql(u8, s, "wl_output")) {
-        const out_obj: ?*c.wl_output = @ptrCast(c.wl_registry_bind(reg, name, &c.wl_output_interface, @min(ver, 4)));
+        const out_obj = c.wl_registry_bind(reg, name, &c.wl_output_interface, @min(ver, 4));
         if (out_obj) |wo| {
             const out_ptr = self.allocator.create(LockOutput) catch return;
-            out_ptr.* = LockOutput{
-                .app = self,
-                .output = wo,
-                .global_name = name,
-            };
+            out_ptr.* = LockOutput{ .app = self, .output = @ptrCast(@alignCast(wo)), .global_name = name };
             self.outputs.append(self.allocator, out_ptr) catch {
                 self.allocator.destroy(out_ptr);
-                c.wl_output_destroy(wo);
+                c.wl_output_destroy(@ptrCast(@alignCast(wo)));
                 return;
             };
-            _ = c.wl_output_add_listener(wo, &output_listener, self);
+            _ = c.wl_output_add_listener(@ptrCast(@alignCast(wo)), &output_listener, self);
             if (self.session_lock != null and self.compositor != null) {
                 self.createLockSurfaceForOutput(out_ptr);
             }
@@ -927,51 +738,19 @@ fn registry_global_remove(data: ?*anyopaque, reg: ?*c.wl_registry, name: u32) ca
             _ = self.outputs.orderedRemove(idx);
             out.deinit();
             self.allocator.destroy(out);
-        } else {
-            idx += 1;
-        }
+        } else idx += 1;
     }
 }
 
 fn output_geometry(data: ?*anyopaque, wl_out: ?*c.wl_output, x: i32, y: i32, physical_width: i32, physical_height: i32, subpixel: i32, make: [*c]const u8, model: [*c]const u8, transform: i32) callconv(.c) void {
-    _ = data;
-    _ = wl_out;
-    _ = x;
-    _ = y;
-    _ = physical_width;
-    _ = physical_height;
-    _ = subpixel;
-    _ = make;
-    _ = model;
-    _ = transform;
+    _ = data; _ = wl_out; _ = x; _ = y; _ = physical_width; _ = physical_height; _ = subpixel; _ = make; _ = model; _ = transform;
 }
-
 fn output_mode(data: ?*anyopaque, wl_out: ?*c.wl_output, flags: u32, width: i32, height: i32, refresh: i32) callconv(.c) void {
-    _ = data;
-    _ = wl_out;
-    _ = flags;
-    _ = width;
-    _ = height;
-    _ = refresh;
+    _ = data; _ = wl_out; _ = flags; _ = width; _ = height; _ = refresh;
 }
-
-fn output_done(data: ?*anyopaque, wl_out: ?*c.wl_output) callconv(.c) void {
-    _ = data;
-    _ = wl_out;
-}
-
-fn output_name(data: ?*anyopaque, wl_out: ?*c.wl_output, name: [*c]const u8) callconv(.c) void {
-    _ = data;
-    _ = wl_out;
-    _ = name;
-}
-
-fn output_description(data: ?*anyopaque, wl_out: ?*c.wl_output, desc: [*c]const u8) callconv(.c) void {
-    _ = data;
-    _ = wl_out;
-    _ = desc;
-}
-
+fn output_done(data: ?*anyopaque, wl_out: ?*c.wl_output) callconv(.c) void { _ = data; _ = wl_out; }
+fn output_name(data: ?*anyopaque, wl_out: ?*c.wl_output, name: [*c]const u8) callconv(.c) void { _ = data; _ = wl_out; _ = name; }
+fn output_description(data: ?*anyopaque, wl_out: ?*c.wl_output, desc: [*c]const u8) callconv(.c) void { _ = data; _ = wl_out; _ = desc; }
 fn output_scale(data: ?*anyopaque, wl_out: ?*c.wl_output, factor: i32) callconv(.c) void {
     const self: *LockApp = @ptrCast(@alignCast(data.?));
     for (self.outputs.items) |out| {
@@ -980,9 +759,7 @@ fn output_scale(data: ?*anyopaque, wl_out: ?*c.wl_output, factor: i32) callconv(
                 out.scale = @as(u32, @intCast(factor));
                 if (out.configured) {
                     self.renderOutput(out);
-                    if (self.display) |disp| {
-                        _ = c.wl_display_flush(disp);
-                    }
+                    if (self.display) |disp| _ = c.wl_display_flush(disp);
                 }
             }
             break;
@@ -991,241 +768,116 @@ fn output_scale(data: ?*anyopaque, wl_out: ?*c.wl_output, factor: i32) callconv(
 }
 
 const output_listener = c.wl_output_listener{
-    .geometry = output_geometry,
-    .mode = output_mode,
-    .done = output_done,
-    .scale = output_scale,
-    .name = output_name,
-    .description = output_description,
+    .geometry = output_geometry, .mode = output_mode, .done = output_done,
+    .scale = output_scale, .name = output_name, .description = output_description,
 };
 
-const seat_listener = c.wl_seat_listener{
-    .capabilities = seat_capabilities,
-    .name = seat_name,
-};
+const seat_listener = c.wl_seat_listener{ .capabilities = seat_capabilities, .name = seat_name };
 
 fn seat_capabilities(data: ?*anyopaque, seat: ?*c.wl_seat, capabilities: u32) callconv(.c) void {
     const self: *LockApp = @ptrCast(@alignCast(data.?));
-    const has_keyboard = (capabilities & c.WL_SEAT_CAPABILITY_KEYBOARD) != 0;
-    if (has_keyboard and self.keyboard == null) {
+    const has_kbd = (capabilities & c.WL_SEAT_CAPABILITY_KEYBOARD) != 0;
+    if (has_kbd and self.keyboard == null) {
         self.keyboard = c.wl_seat_get_keyboard(seat);
-        if (self.keyboard) |kbd| {
-            _ = c.wl_keyboard_add_listener(kbd, &keyboard_listener, self);
-        }
-    } else if (!has_keyboard and self.keyboard != null) {
+        if (self.keyboard) |kbd| _ = c.wl_keyboard_add_listener(kbd, &keyboard_listener, self);
+    } else if (!has_kbd and self.keyboard != null) {
         c.wl_keyboard_destroy(self.keyboard.?);
         self.keyboard = null;
     }
-
-    const has_pointer = (capabilities & c.WL_SEAT_CAPABILITY_POINTER) != 0;
-    if (has_pointer and self.pointer == null) {
+    const has_ptr = (capabilities & c.WL_SEAT_CAPABILITY_POINTER) != 0;
+    if (has_ptr and self.pointer == null) {
         self.pointer = c.wl_seat_get_pointer(seat);
-        if (self.pointer) |ptr| {
-            _ = c.wl_pointer_add_listener(ptr, &pointer_listener, self);
-        }
-    } else if (!has_pointer and self.pointer != null) {
+        if (self.pointer) |ptr| _ = c.wl_pointer_add_listener(ptr, &pointer_listener, self);
+    } else if (!has_ptr and self.pointer != null) {
         c.wl_pointer_destroy(self.pointer.?);
         self.pointer = null;
     }
 }
+fn seat_name(data: ?*anyopaque, seat: ?*c.wl_seat, name: [*c]const u8) callconv(.c) void { _ = data; _ = seat; _ = name; }
 
-fn seat_name(data: ?*anyopaque, seat: ?*c.wl_seat, name: [*c]const u8) callconv(.c) void {
-    _ = data;
-    _ = seat;
-    _ = name;
-}
-
-const session_listener = c.ext_session_lock_v1_listener{
-    .locked = session_locked,
-    .finished = session_finished,
-};
-
+const session_listener = c.ext_session_lock_v1_listener{ .locked = session_locked, .finished = session_finished };
 fn session_locked(data: ?*anyopaque, sl: ?*c.ext_session_lock_v1) callconv(.c) void {
     _ = sl;
     const self: *LockApp = @ptrCast(@alignCast(data.?));
-    self.is_locked = true;
-    self.needs_redraw = true;
+    self.is_locked = true; self.needs_redraw = true;
 }
-
 fn session_finished(data: ?*anyopaque, sl: ?*c.ext_session_lock_v1) callconv(.c) void {
     _ = sl;
     const self: *LockApp = @ptrCast(@alignCast(data.?));
-    self.is_finished = true;
-    self.running = false;
+    self.is_finished = true; self.running = false;
 }
 
-// Pointer listener
 const pointer_listener = c.wl_pointer_listener{
-    .enter = pointer_enter,
-    .leave = pointer_leave,
-    .motion = pointer_motion,
-    .button = pointer_button,
-    .axis = pointer_axis,
-    .frame = pointer_frame,
-    .axis_source = pointer_axis_source,
-    .axis_stop = pointer_axis_stop,
+    .enter = pointer_enter, .leave = pointer_leave, .motion = pointer_motion,
+    .button = pointer_button, .axis = pointer_axis, .frame = pointer_frame,
+    .axis_source = pointer_axis_source, .axis_stop = pointer_axis_stop,
     .axis_discrete = pointer_axis_discrete,
 };
-
 fn pointer_enter(data: ?*anyopaque, pointer: ?*c.wl_pointer, serial: u32, surface: ?*c.wl_surface, sx: c.wl_fixed_t, sy: c.wl_fixed_t) callconv(.c) void {
-    _ = data;
-    _ = surface;
-    _ = sx;
-    _ = sy;
-    if (pointer) |p| {
-        c.wl_pointer_set_cursor(p, serial, null, 0, 0);
-    }
+    _ = data; _ = surface; _ = sx; _ = sy;
+    if (pointer) |p| c.wl_pointer_set_cursor(p, serial, null, 0, 0);
 }
-
-fn pointer_leave(data: ?*anyopaque, pointer: ?*c.wl_pointer, serial: u32, surface: ?*c.wl_surface) callconv(.c) void {
-    _ = data;
-    _ = pointer;
-    _ = serial;
-    _ = surface;
-}
-
-fn pointer_motion(data: ?*anyopaque, pointer: ?*c.wl_pointer, time: u32, sx: c.wl_fixed_t, sy: c.wl_fixed_t) callconv(.c) void {
-    _ = data;
-    _ = pointer;
-    _ = time;
-    _ = sx;
-    _ = sy;
-}
-
+fn pointer_leave(data: ?*anyopaque, pointer: ?*c.wl_pointer, serial: u32, surf: ?*c.wl_surface) callconv(.c) void { _ = data; _ = pointer; _ = serial; _ = surf; }
+fn pointer_motion(data: ?*anyopaque, pointer: ?*c.wl_pointer, time: u32, sx: c.wl_fixed_t, sy: c.wl_fixed_t) callconv(.c) void { _ = data; _ = pointer; _ = time; _ = sx; _ = sy; }
 fn pointer_button(data: ?*anyopaque, pointer: ?*c.wl_pointer, serial: u32, time: u32, button: u32, state: u32) callconv(.c) void {
-    _ = pointer;
-    _ = serial;
-    _ = time;
-    _ = button;
+    _ = pointer; _ = serial; _ = time; _ = button;
     const self: *LockApp = @ptrCast(@alignCast(data.?));
-    if (state == c.WL_POINTER_BUTTON_STATE_PRESSED) {
-        self.needs_redraw = true;
-    }
+    if (state == c.WL_POINTER_BUTTON_STATE_PRESSED) self.needs_redraw = true;
 }
-
-fn pointer_axis(data: ?*anyopaque, pointer: ?*c.wl_pointer, time: u32, axis: u32, value: c.wl_fixed_t) callconv(.c) void {
-    _ = data;
-    _ = pointer;
-    _ = time;
-    _ = axis;
-    _ = value;
-}
-
-fn pointer_frame(data: ?*anyopaque, pointer: ?*c.wl_pointer) callconv(.c) void {
-    _ = data;
-    _ = pointer;
-}
-
-fn pointer_axis_source(data: ?*anyopaque, pointer: ?*c.wl_pointer, axis_source: u32) callconv(.c) void {
-    _ = data;
-    _ = pointer;
-    _ = axis_source;
-}
-
-fn pointer_axis_stop(data: ?*anyopaque, pointer: ?*c.wl_pointer, time: u32, axis: u32) callconv(.c) void {
-    _ = data;
-    _ = pointer;
-    _ = time;
-    _ = axis;
-}
-
-fn pointer_axis_discrete(data: ?*anyopaque, pointer: ?*c.wl_pointer, axis: u32, discrete: i32) callconv(.c) void {
-    _ = data;
-    _ = pointer;
-    _ = axis;
-    _ = discrete;
-}
-
-// Keyboard listener
-fn keyboard_repeat_info(data: ?*anyopaque, kbd: ?*c.wl_keyboard, rate: i32, delay: i32) callconv(.c) void {
-    _ = data;
-    _ = kbd;
-    _ = rate;
-    _ = delay;
-}
+fn pointer_axis(data: ?*anyopaque, pointer: ?*c.wl_pointer, time: u32, axis: u32, value: c.wl_fixed_t) callconv(.c) void { _ = data; _ = pointer; _ = time; _ = axis; _ = value; }
+fn pointer_frame(data: ?*anyopaque, pointer: ?*c.wl_pointer) callconv(.c) void { _ = data; _ = pointer; }
+fn pointer_axis_source(data: ?*anyopaque, pointer: ?*c.wl_pointer, axis_source: u32) callconv(.c) void { _ = data; _ = pointer; _ = axis_source; }
+fn pointer_axis_stop(data: ?*anyopaque, pointer: ?*c.wl_pointer, time: u32, axis: u32) callconv(.c) void { _ = data; _ = pointer; _ = time; _ = axis; }
+fn pointer_axis_discrete(data: ?*anyopaque, pointer: ?*c.wl_pointer, axis: u32, discrete: i32) callconv(.c) void { _ = data; _ = pointer; _ = axis; _ = discrete; }
 
 const keyboard_listener = c.wl_keyboard_listener{
-    .keymap = keyboard_keymap,
-    .enter = keyboard_enter,
-    .leave = keyboard_leave,
-    .key = keyboard_key,
-    .modifiers = keyboard_modifiers,
-    .repeat_info = keyboard_repeat_info,
+    .keymap = keyboard_keymap, .enter = keyboard_enter, .leave = keyboard_leave,
+    .key = keyboard_key, .modifiers = keyboard_modifiers, .repeat_info = keyboard_repeat_info,
 };
-
+fn keyboard_repeat_info(data: ?*anyopaque, kbd: ?*c.wl_keyboard, rate: i32, delay: i32) callconv(.c) void { _ = data; _ = kbd; _ = rate; _ = delay; }
 fn keyboard_keymap(data: ?*anyopaque, kbd: ?*c.wl_keyboard, format: u32, fd: c_int, size: u32) callconv(.c) void {
     _ = kbd;
     const self: *LockApp = @ptrCast(@alignCast(data.?));
-    if (format != c.WL_KEYBOARD_KEYMAP_FORMAT_XKB_V1) {
-        _ = c.close(fd);
-        return;
-    }
+    if (format != c.WL_KEYBOARD_KEYMAP_FORMAT_XKB_V1) { _ = c.close(fd); return; }
     const map_shm = c.mmap(null, size, c.PROT_READ, c.MAP_SHARED, fd, 0);
-    if (map_shm == c.MAP_FAILED) {
-        _ = c.close(fd);
-        return;
-    }
+    if (map_shm == c.MAP_FAILED) { _ = c.close(fd); return; }
     defer _ = c.munmap(map_shm, size);
     defer _ = c.close(fd);
-
-    if (self.xkb_ctx == null) {
-        self.xkb_ctx = c.xkb_context_new(c.XKB_CONTEXT_NO_FLAGS);
-    }
+    if (self.xkb_ctx == null) self.xkb_ctx = c.xkb_context_new(c.XKB_CONTEXT_NO_FLAGS);
     if (self.xkb_ctx == null) return;
-
     const map_str: [*c]const u8 = @ptrCast(map_shm);
-    const keymap_len: usize = if (size > 0 and map_str[size - 1] == 0) size - 1 else size;
+    const keymap_len = if (size > 0 and map_str[size - 1] == 0) size - 1 else size;
     const keymap = c.xkb_keymap_new_from_buffer(self.xkb_ctx.?, map_str, keymap_len, c.XKB_KEYMAP_FORMAT_TEXT_V1, c.XKB_KEYMAP_COMPILE_NO_FLAGS);
     if (keymap == null) return;
-
     const state = c.xkb_state_new(keymap);
-    if (state == null) {
-        c.xkb_keymap_unref(keymap);
-        return;
-    }
-
+    if (state == null) { c.xkb_keymap_unref(keymap); return; }
     if (self.xkb_state) |st| c.xkb_state_unref(st);
     if (self.xkb_keymap) |km| c.xkb_keymap_unref(km);
     self.xkb_keymap = keymap;
     self.xkb_state = state;
 }
-
 fn keyboard_enter(data: ?*anyopaque, kbd: ?*c.wl_keyboard, serial: u32, surf: ?*c.wl_surface, keys: [*c]c.wl_array) callconv(.c) void {
-    _ = kbd;
-    _ = serial;
-    _ = surf;
-    _ = keys;
+    _ = kbd; _ = serial; _ = surf; _ = keys;
     const self: *LockApp = @ptrCast(@alignCast(data.?));
-    self.has_kbd_focus = true;
-    self.needs_redraw = true;
+    self.has_kbd_focus = true; self.needs_redraw = true;
 }
-
 fn keyboard_leave(data: ?*anyopaque, kbd: ?*c.wl_keyboard, serial: u32, surf: ?*c.wl_surface) callconv(.c) void {
-    _ = kbd;
-    _ = serial;
-    _ = surf;
+    _ = kbd; _ = serial; _ = surf;
     const self: *LockApp = @ptrCast(@alignCast(data.?));
     self.has_kbd_focus = false;
 }
-
 fn keyboard_key(data: ?*anyopaque, kbd: ?*c.wl_keyboard, serial: u32, time: u32, key: u32, state: u32) callconv(.c) void {
-    _ = kbd;
-    _ = serial;
-    _ = time;
+    _ = kbd; _ = serial; _ = time;
     const self: *LockApp = @ptrCast(@alignCast(data.?));
     self.handleKey(key, state);
     if (self.needs_redraw) {
         self.needs_redraw = false;
         self.renderAllOutputs();
-        if (self.display) |disp| {
-            _ = c.wl_display_flush(disp);
-        }
+        if (self.display) |disp| _ = c.wl_display_flush(disp);
     }
 }
-
 fn keyboard_modifiers(data: ?*anyopaque, kbd: ?*c.wl_keyboard, serial: u32, mods_depressed: u32, mods_latched: u32, mods_locked: u32, group: u32) callconv(.c) void {
-    _ = kbd;
-    _ = serial;
+    _ = kbd; _ = serial;
     const self: *LockApp = @ptrCast(@alignCast(data.?));
     if (self.xkb_state) |st| {
         _ = c.xkb_state_update_mask(st, mods_depressed, mods_latched, mods_locked, 0, 0, group);
@@ -1234,40 +886,29 @@ fn keyboard_modifiers(data: ?*anyopaque, kbd: ?*c.wl_keyboard, serial: u32, mods
             self.caps_lock_active = caps;
             self.needs_redraw = false;
             self.renderAllOutputs();
-            if (self.display) |disp| {
-                _ = c.wl_display_flush(disp);
-            }
+            if (self.display) |disp| _ = c.wl_display_flush(disp);
         }
     }
 }
 
-// Lock surface listener
 const lock_surface_listener = c.ext_session_lock_surface_v1_listener{
     .configure = lock_surface_configure,
 };
-
 fn lock_surface_configure(data: ?*anyopaque, ls: ?*c.ext_session_lock_surface_v1, serial: u32, width: u32, height: u32) callconv(.c) void {
     const out: *LockOutput = @ptrCast(@alignCast(data.?));
-    out.width = width;
-    out.height = height;
+    out.width = width; out.height = height;
     c.ext_session_lock_surface_v1_ack_configure(ls, serial);
     out.configured = true;
-    // Initial commit so compositor acknowledges lock and maps surface.
     out.app.renderOutput(out);
-    if (out.app.display) |disp| {
-        _ = c.wl_display_flush(disp);
-    }
+    if (out.app.display) |disp| _ = c.wl_display_flush(disp);
 }
 
 pub fn runLock(allocator: std.mem.Allocator, cfg: config.Config) !void {
     c.tzset();
     var app = try LockApp.init(allocator, cfg);
     defer app.deinit();
-
     const disp = c.wl_display_connect(null) orelse return error.ConnectFailed;
     app.display = disp;
-
-    // Get username for PAM.
     var user_found = false;
     if (c.getpwuid(c.getuid())) |pw| {
         if (pw.*.pw_name != null) {
@@ -1288,7 +929,6 @@ pub fn runLock(allocator: std.mem.Allocator, cfg: config.Config) !void {
             app.auth_username_len = len;
         }
     }
-
     app.timer_fd = c.timerfd_create(c.CLOCK_MONOTONIC, c.TFD_CLOEXEC | c.TFD_NONBLOCK);
     if (app.timer_fd >= 0) {
         var its: c.struct_itimerspec = .{
@@ -1297,31 +937,23 @@ pub fn runLock(allocator: std.mem.Allocator, cfg: config.Config) !void {
         };
         _ = c.timerfd_settime(app.timer_fd, 0, &its, null);
     }
-
     const reg = c.wl_display_get_registry(disp) orelse return error.RegistryFailed;
     app.registry = reg;
-
     _ = c.wl_registry_add_listener(reg, &registry_listener, &app);
     _ = c.wl_display_roundtrip(disp);
+    if (app.compositor == null or app.shm == null or app.session_lock_mgr == null) return error.ProtocolMissing;
 
-    if (app.compositor == null or app.shm == null or app.session_lock_mgr == null) {
-        return error.ProtocolMissing;
-    }
+    // Load wallpaper BEFORE acquiring lock so first frame is ready.
+    app.wallpaper_img = loadActiveWallpaper(allocator, cfg);
 
     const sl = c.ext_session_lock_manager_v1_lock(app.session_lock_mgr.?) orelse return error.LockFailed;
     app.session_lock = sl;
     _ = c.ext_session_lock_v1_add_listener(sl, &session_listener, &app);
-
-    // Load active wallpaper from config or system cache
-    app.wallpaper_img = loadActiveWallpaper(allocator, cfg);
-
-    // Create lock surfaces for all outputs.
     for (app.outputs.items) |out| {
         app.createLockSurfaceForOutput(out);
     }
     _ = c.wl_display_roundtrip(disp);
 
-    // Wait for compositor to lock the session.
     while (app.running and !app.is_locked and !app.is_finished) {
         if (c.wl_display_dispatch(disp) < 0) break;
         if (app.needs_redraw) {
@@ -1330,45 +962,25 @@ pub fn runLock(allocator: std.mem.Allocator, cfg: config.Config) !void {
             _ = c.wl_display_flush(disp);
         }
     }
-    if (!app.is_locked) {
-        return error.SessionLockFailed;
-    }
-
-    // Render initial frame to all configured surfaces
+    if (!app.is_locked) return error.SessionLockFailed;
     app.renderAllOutputs();
     _ = c.wl_display_flush(disp);
 
-    // Main event loop
     while (app.running and !app.is_finished) {
         while (c.wl_display_prepare_read(disp) != 0) {
             _ = c.wl_display_dispatch_pending(disp);
         }
         _ = c.wl_display_flush(disp);
-
         const fd = c.wl_display_get_fd(disp);
         var pfd = [_]c.struct_pollfd{
             .{ .fd = fd, .events = c.POLLIN, .revents = 0 },
             .{ .fd = if (app.timer_fd >= 0) app.timer_fd else -1, .events = c.POLLIN, .revents = 0 },
         };
         const pr = c.poll(&pfd, pfd.len, 50);
-        if (pr < 0) {
-            c.wl_display_cancel_read(disp);
-            continue;
-        }
-
-        if ((pfd[0].revents & (c.POLLHUP | c.POLLERR)) != 0) {
-            c.wl_display_cancel_read(disp);
-            break;
-        }
-
-        if ((pfd[0].revents & c.POLLIN) != 0) {
-            _ = c.wl_display_read_events(disp);
-        } else {
-            c.wl_display_cancel_read(disp);
-        }
+        if (pr < 0) { c.wl_display_cancel_read(disp); continue; }
+        if ((pfd[0].revents & (c.POLLHUP | c.POLLERR)) != 0) { c.wl_display_cancel_read(disp); break; }
+        if ((pfd[0].revents & c.POLLIN) != 0) { _ = c.wl_display_read_events(disp); } else { c.wl_display_cancel_read(disp); }
         _ = c.wl_display_dispatch_pending(disp);
-
-        // Timer tick for clock update
         if (app.timer_fd >= 0 and (pfd[1].revents & c.POLLIN) != 0) {
             var val: u64 = 0;
             _ = c.read(app.timer_fd, &val, @sizeOf(u64));
@@ -1380,256 +992,19 @@ pub fn runLock(allocator: std.mem.Allocator, cfg: config.Config) !void {
                 app.needs_redraw = true;
             }
         }
-
-        // Check authentication results from worker thread
         app.checkAuthResult();
-
-        if (app.auth_state == .success) {
-            break;
-        }
-
+        if (app.auth_state == .success) break;
         if (app.needs_redraw) {
             app.needs_redraw = false;
             app.renderAllOutputs();
             _ = c.wl_display_flush(disp);
         }
     }
-
-    // Only unlock after successful authentication
     if (app.is_locked and app.auth_state == .success) {
         if (app.session_lock) |lock_obj| {
             c.ext_session_lock_v1_unlock_and_destroy(lock_obj);
             app.session_lock = null;
             _ = c.wl_display_roundtrip(disp);
         }
-    }
-}
-
-// --- Unit & Integration Tests ---
-
-test "pamConv correctly handles PAM conversation and responds with password" {
-    const test_pass = "mypassword123";
-
-    // 1. Single prompt ECHO_OFF
-    var msg1 = c.struct_pam_message{
-        .msg_style = c.PAM_PROMPT_ECHO_OFF,
-        .msg = "Password: ",
-    };
-    var msg_list = [_][*c]const c.struct_pam_message{&msg1};
-    var resp_ptr: [*c]c.struct_pam_response = null;
-
-    const res = pamConv(1, &msg_list, &resp_ptr, @ptrCast(@constCast(test_pass.ptr)));
-    try std.testing.expectEqual(@as(c_int, c.PAM_SUCCESS), res);
-    try std.testing.expect(resp_ptr != null);
-    try std.testing.expect(resp_ptr[0].resp != null);
-    try std.testing.expectEqualStrings(test_pass, std.mem.span(resp_ptr[0].resp));
-    try std.testing.expectEqual(@as(c_int, 0), resp_ptr[0].resp_retcode);
-
-    c.free(resp_ptr[0].resp);
-    c.free(resp_ptr);
-
-    // 2. Info message: should receive null response
-    var msg_info = c.struct_pam_message{
-        .msg_style = c.PAM_TEXT_INFO,
-        .msg = "Welcome",
-    };
-    var msg_info_list = [_][*c]const c.struct_pam_message{&msg_info};
-    var resp_info: [*c]c.struct_pam_response = null;
-
-    const res2 = pamConv(1, &msg_info_list, &resp_info, @ptrCast(@constCast(test_pass.ptr)));
-    try std.testing.expectEqual(@as(c_int, c.PAM_SUCCESS), res2);
-    try std.testing.expect(resp_info != null);
-    try std.testing.expect(resp_info[0].resp == null);
-    c.free(resp_info);
-
-    // 3. Error conditions
-    try std.testing.expectEqual(@as(c_int, c.PAM_CONV_ERR), pamConv(0, null, null, null));
-    try std.testing.expectEqual(@as(c_int, c.PAM_CONV_ERR), pamConv(-1, null, null, null));
-}
-
-test "LockApp keyboard input handling, backspace, and modifiers" {
-    const allocator = std.testing.allocator;
-    var cfg = config.Config.init(allocator);
-    defer cfg.deinit(allocator);
-
-    var app = try LockApp.init(allocator, cfg);
-    defer app.deinit();
-
-    try std.testing.expectEqual(@as(usize, 0), app.password_len);
-    try std.testing.expect(!app.show_input);
-    try std.testing.expectEqual(AuthState.idle, app.auth_state);
-
-    // Keycode 24 is 'q' on QWERTY (key index 16 + 8 = 24)
-    app.handleKey(16, c.WL_KEYBOARD_KEY_STATE_PRESSED);
-    try std.testing.expectEqual(@as(usize, 1), app.password_len);
-    try std.testing.expect(app.show_input);
-    try std.testing.expectEqual(@as(u8, 'q'), app.password_buf[0]);
-
-    // Keycode 25 is 'w' (key index 17 + 8 = 25)
-    app.handleKey(17, c.WL_KEYBOARD_KEY_STATE_PRESSED);
-    try std.testing.expectEqual(@as(usize, 2), app.password_len);
-    try std.testing.expectEqualStrings("qw", app.password_buf[0..2]);
-
-    // Backspace (key index 14 + 8 = 22 -> KEY_BACKSPACE)
-    app.handleKey(14, c.WL_KEYBOARD_KEY_STATE_PRESSED);
-    try std.testing.expectEqual(@as(usize, 1), app.password_len);
-    try std.testing.expect(app.show_input);
-    try std.testing.expectEqualStrings("q", app.password_buf[0..1]);
-
-    // Backspace again -> empty, show_input false
-    app.handleKey(14, c.WL_KEYBOARD_KEY_STATE_PRESSED);
-    try std.testing.expectEqual(@as(usize, 0), app.password_len);
-    try std.testing.expect(!app.show_input);
-
-    // Escape clears password and resets state
-    app.handleKey(16, c.WL_KEYBOARD_KEY_STATE_PRESSED);
-    try std.testing.expectEqual(@as(usize, 1), app.password_len);
-    // Escape keycode 9 (key index 1 + 8 = 9)
-    app.handleKey(1, c.WL_KEYBOARD_KEY_STATE_PRESSED);
-    try std.testing.expectEqual(@as(usize, 0), app.password_len);
-    try std.testing.expect(!app.show_input);
-}
-
-fn mockAuthSecret(username: [:0]const u8, password: [:0]const u8) bool {
-    _ = username;
-    return std.mem.eql(u8, password, "secret123");
-}
-
-test "LockApp complete flow: incorrect password rejected, correct password unlocks" {
-    const allocator = std.testing.allocator;
-    var cfg = config.Config.init(allocator);
-    defer cfg.deinit(allocator);
-
-    var app = try LockApp.init(allocator, cfg);
-    defer app.deinit();
-
-    app.auth_fn = mockAuthSecret;
-    app.is_locked = true;
-
-    // 1. Initial state: idle, no input shown
-    try std.testing.expectEqual(AuthState.idle, app.auth_state);
-    try std.testing.expect(!app.show_input);
-
-    // 2. User types wrong password: "wrong"
-    const wrong = "wrong";
-    @memcpy(app.password_buf[0..wrong.len], wrong);
-    app.password_len = wrong.len;
-    app.show_input = true;
-
-    // 3. Submit authentication
-    app.submitAuth();
-    try std.testing.expectEqual(AuthState.authenticating, app.auth_state);
-    // Local password wiped immediately on submit
-    try std.testing.expectEqual(@as(usize, 0), app.password_len);
-    try std.testing.expect(!app.show_input);
-
-    // Wait for thread to finish
-    var attempts: usize = 0;
-    while (!app.auth_finished.load(.acquire) and attempts < 100) : (attempts += 1) {
-        _ = c.usleep(1_000);
-    }
-    app.checkAuthResult();
-
-    // 4. Verification of failure
-    try std.testing.expectEqual(AuthState.failed, app.auth_state);
-    try std.testing.expect(app.is_locked);
-
-    // 5. User starts typing again -> clears failed state
-    app.handleKey(16, c.WL_KEYBOARD_KEY_STATE_PRESSED); // types 'q'
-    try std.testing.expectEqual(AuthState.idle, app.auth_state);
-    try std.testing.expect(app.show_input);
-    app.wipePassword();
-
-    // 6. User types correct password: "secret123"
-    const correct = "secret123";
-    @memcpy(app.password_buf[0..correct.len], correct);
-    app.password_len = correct.len;
-    app.show_input = true;
-
-    // 7. Submit correct password
-    app.submitAuth();
-    try std.testing.expectEqual(AuthState.authenticating, app.auth_state);
-
-    attempts = 0;
-    while (!app.auth_finished.load(.acquire) and attempts < 100) : (attempts += 1) {
-        _ = c.usleep(1_000);
-    }
-    app.checkAuthResult();
-
-    // 8. Verification of success -> unlocks
-    try std.testing.expectEqual(AuthState.success, app.auth_state);
-}
-
-test "LockApp multi-monitor output management" {
-    const allocator = std.testing.allocator;
-    var cfg = config.Config.init(allocator);
-    defer cfg.deinit(allocator);
-
-    var app = try LockApp.init(allocator, cfg);
-    defer app.deinit();
-
-    try std.testing.expectEqual(@as(usize, 0), app.outputs.items.len);
-
-    // Verify safe deinit with empty outputs list
-    app.renderAllOutputs();
-}
-
-test "LockApp drawClayHud renders without crash across states" {
-    const allocator = std.testing.allocator;
-    var cfg = config.Config.init(allocator);
-    defer cfg.deinit(allocator);
-
-    var app = try LockApp.init(allocator, cfg);
-    defer app.deinit();
-
-    const pixels = try allocator.alloc(u32, 1920 * 1080);
-    defer allocator.free(pixels);
-    @memset(pixels, 0);
-
-    const target = try renderer.Renderer.init(pixels.ptr, 1920, 1080, 1920 * 4);
-
-    // 1. Idle state with empty password (placeholder + caret)
-    app.auth_state = .idle;
-    app.password_len = 0;
-    app.caret_blink = true;
-    app.drawClayHud(target, 1920, 1080, 1);
-
-    var non_zero: usize = 0;
-    for (pixels) |px| {
-        if (px != 0) non_zero += 1;
-    }
-    try std.testing.expect(non_zero > 0);
-
-    // 2. Typing state with password dots
-    const pass = "secret";
-    @memcpy(app.password_buf[0..pass.len], pass);
-    app.password_len = pass.len;
-    app.show_input = true;
-    app.drawClayHud(target, 1920, 1080, 1);
-
-    // 3. Failed state with error message
-    app.auth_state = .failed;
-    app.drawClayHud(target, 1920, 1080, 1);
-
-    // 4. Authenticating state
-    app.auth_state = .authenticating;
-    app.drawClayHud(target, 1920, 1080, 1);
-
-    // 5. Caps lock on
-    app.caps_lock_active = true;
-    app.auth_state = .idle;
-    app.drawClayHud(target, 1920, 1080, 1);
-}
-
-test "loadActiveWallpaper loads wallpaper without error" {
-    const allocator = std.testing.allocator;
-    var cfg = config.Config.init(allocator);
-    defer cfg.deinit(allocator);
-
-    const img = loadActiveWallpaper(allocator, cfg);
-    if (img) |im| {
-        defer im.deinit();
-        try std.testing.expect(im.width > 0);
-        try std.testing.expect(im.height > 0);
     }
 }

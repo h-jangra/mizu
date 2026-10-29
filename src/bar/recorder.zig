@@ -1,7 +1,7 @@
 const std = @import("std");
 const theme = @import("../core/theme.zig");
 const types = @import("context.zig");
-const c = @import("../c.zig").c;
+const c = @import("c");
 const ui_mod = @import("../core/ui.zig");
 
 pub const RecordAudioMode = enum {

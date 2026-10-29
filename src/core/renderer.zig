@@ -1,5 +1,5 @@
 const std = @import("std");
-const c = @import("../c.zig").c;
+const c = @import("c");
 const theme = @import("theme.zig");
 const Color = theme.Color;
 
@@ -2152,4 +2152,25 @@ test "Font fallback renders unicode ornament ❫ and symbols" {
     try std.testing.expect(glyph_enter != null);
     try std.testing.expect(glyph_enter.?.advance_x > 0);
 }
+
+test "Rect intersect and contains" {
+    const r1 = Rect.init(0, 0, 100, 100);
+    const r2 = Rect.init(50, 50, 100, 100);
+    const inter = r1.intersect(r2);
+    try std.testing.expectEqual(@as(i32, 50), inter.x);
+    try std.testing.expectEqual(@as(i32, 50), inter.y);
+    try std.testing.expectEqual(@as(u32, 50), inter.w);
+    try std.testing.expectEqual(@as(u32, 50), inter.h);
+    try std.testing.expect(r1.contains(10, 10));
+    try std.testing.expect(!r1.contains(150, 150));
+}
+
+test "Rect intersect no overlap" {
+    const r1 = Rect.init(0, 0, 50, 50);
+    const r2 = Rect.init(100, 100, 50, 50);
+    const inter = r1.intersect(r2);
+    try std.testing.expectEqual(@as(u32, 0), inter.w);
+    try std.testing.expectEqual(@as(u32, 0), inter.h);
+}
+
 

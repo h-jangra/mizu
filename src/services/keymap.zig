@@ -1,5 +1,5 @@
 const std = @import("std");
-const c = @import("../c.zig").c;
+const c = @import("c");
 const config = @import("../core/config.zig");
 const renderer = @import("../core/renderer.zig");
 const theme = @import("../core/theme.zig");
@@ -527,8 +527,7 @@ pub fn keyText(code: u16, shift: bool) []const u8 {
     };
 }
 
-// --- Tests ---
-
+// Tests
 test "shift is folded into character keys but kept for named keys" {
     var segs: [max_segments]Segment = undefined;
 

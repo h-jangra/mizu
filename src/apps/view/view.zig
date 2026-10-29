@@ -1,5 +1,5 @@
 const std = @import("std");
-const c = @import("../../c.zig").c;
+const c = @import("c");
 const buffer = @import("../../core/buffer.zig");
 const renderer = @import("../../core/renderer.zig");
 const theme = @import("../../core/theme.zig");
@@ -518,10 +518,7 @@ pub const ImageViewerApp = struct {
     }
 };
 
-// ==========================================
 // Stdin & Main Application Event Loop
-// ==========================================
-
 pub fn readAllFromStdin(allocator: std.mem.Allocator) ![]u8 {
     var list = std.ArrayListUnmanaged(u8).empty;
     errdefer list.deinit(allocator);

@@ -1,5 +1,5 @@
 const std = @import("std");
-const c = @import("../c.zig").c;
+const c = @import("c");
 const buffer = @import("buffer.zig");
 const renderer = @import("renderer.zig");
 const theme = @import("theme.zig");
@@ -396,10 +396,7 @@ pub const WindowApp = struct {
         self.needs_redraw = false;
     }
 
-    // ==========================================
     // Wayland Protocol Listeners
-    // ==========================================
-
     fn registry_global(
         data: ?*anyopaque,
         registry: ?*c.wl_registry,

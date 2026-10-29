@@ -1,5 +1,5 @@
 const std = @import("std");
-const c = @import("../c.zig").c;
+const c = @import("c");
 
 pub const DesktopApp = struct {
     id: []const u8,
@@ -237,11 +237,11 @@ fn scanDirectory(
     defer allocator.free(c_dir_path);
 
     // Use libc opendir/readdir to stay robust across POSIX environments
-    const dir = @import("../c.zig").c.opendir(c_dir_path.ptr) orelse return;
-    defer _ = @import("../c.zig").c.closedir(dir);
+    const dir = @import("c").opendir(c_dir_path.ptr) orelse return;
+    defer _ = @import("c").closedir(dir);
 
     while (true) {
-        const entry = @import("../c.zig").c.readdir(dir) orelse break;
+        const entry = @import("c").readdir(dir) orelse break;
         const name = std.mem.span(@as([*:0]const u8, @ptrCast(&entry.*.d_name)));
 
         if (std.mem.endsWith(u8, name, ".desktop")) {
@@ -268,18 +268,18 @@ fn readDesktopFile(allocator: std.mem.Allocator, path: []const u8) ?[]u8 {
     const c_path = allocator.dupeSentinel(u8, path, 0) catch return null;
     defer allocator.free(c_path);
 
-    const f = @import("../c.zig").c.fopen(c_path.ptr, "rb") orelse return null;
-    defer _ = @import("../c.zig").c.fclose(f);
+    const f = @import("c").fopen(c_path.ptr, "rb") orelse return null;
+    defer _ = @import("c").fclose(f);
 
-    _ = @import("../c.zig").c.fseek(f, 0, @import("../c.zig").c.SEEK_END);
-    const fsize = @import("../c.zig").c.ftell(f);
-    _ = @import("../c.zig").c.fseek(f, 0, @import("../c.zig").c.SEEK_SET);
+    _ = @import("c").fseek(f, 0, @import("c").SEEK_END);
+    const fsize = @import("c").ftell(f);
+    _ = @import("c").fseek(f, 0, @import("c").SEEK_SET);
 
     if (fsize <= 0 or fsize > 1024 * 1024) return null;
     const usize_len: usize = @intCast(fsize);
 
     const content = allocator.alloc(u8, usize_len) catch return null;
-    const bytes_read = @import("../c.zig").c.fread(content.ptr, 1, usize_len, f);
+    const bytes_read = @import("c").fread(content.ptr, 1, usize_len, f);
     return content[0..bytes_read];
 }
 
@@ -499,8 +499,7 @@ pub fn searchApplications(
     return results;
 }
 
-// ======================== Unit Tests ========================
-
+// Unit Tests
 test "cleanExec removes field codes" {
     const allocator = std.testing.allocator;
 
