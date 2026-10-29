@@ -11,6 +11,7 @@ const icons = @import("../../graphics/icons.zig");
 const Color = theme.Color;
 const Rect = renderer.Rect;
 const Font = renderer.Font;
+const quicksettings = @import("../../panels/quicksettings.zig");
 const ImageBuffer = image_ops.ImageBuffer;
 const WindowApp = wayland_win.WindowApp;
 
@@ -720,24 +721,29 @@ pub const AnnotateApp = struct {
     status_ticks: u32 = 0,
 
     // Dimensions
+    ui_scale: f32 = 1.0,
     toolbar_height: u32 = 48,
     statusbar_height: u32 = 28,
     layers_panel_width: u32 = 230,
     adjust_panel_width: u32 = 240,
 
     pub fn init(allocator: std.mem.Allocator, cfg: config.Config, image_to_load: ?ImageBuffer, file_path: ?[]const u8) !*AnnotateApp {
+        const scale_opt = quicksettings.loadDisplayScale();
+        var ui_scale: f32 = if (scale_opt) |s| @as(f32, @floatFromInt(s)) / 100.0 else 1.0;
+        if (ui_scale < 1.0) ui_scale = 1.0;
+
         var win = try WindowApp.init(allocator, .{
             .title = "Mizu Annotate & Editor",
             .app_id = "mizu-annotate",
-            .width = 1240,
-            .height = 760,
-            .min_width = 720,
-            .min_height = 460,
+            .width = @as(u32, @intFromFloat(1240.0 * ui_scale)),
+            .height = @as(u32, @intFromFloat(760.0 * ui_scale)),
+            .min_width = @as(u32, @intFromFloat(720.0 * ui_scale)),
+            .min_height = @as(u32, @intFromFloat(460.0 * ui_scale)),
         });
         errdefer win.deinit();
 
         const font = try allocator.create(Font);
-        font.* = try Font.init(allocator, cfg.theme.font_family, 13);
+        font.* = try Font.init(allocator, cfg.theme.font_family, @as(u32, @intFromFloat(13.0 * ui_scale)));
         errdefer {
             font.deinit();
             allocator.destroy(font);
@@ -775,11 +781,41 @@ pub const AnnotateApp = struct {
             .base_image = shared_base,
             .original_path = path_copy,
             .file_size_bytes = f_size,
+            .ui_scale = ui_scale,
+            .toolbar_height = @as(u32, @intFromFloat(48.0 * ui_scale)),
+            .statusbar_height = @as(u32, @intFromFloat(28.0 * ui_scale)),
+            .layers_panel_width = @as(u32, @intFromFloat(230.0 * ui_scale)),
+            .adjust_panel_width = @as(u32, @intFromFloat(240.0 * ui_scale)),
             .undo_mgr = UndoManager.init(allocator, 30),
         };
 
         app.fitToWindow();
         return app;
+    }
+
+    pub fn reloadScale(self: *AnnotateApp) void {
+        const scale_opt = quicksettings.loadDisplayScale();
+        var ui_scale: f32 = if (scale_opt) |s| @as(f32, @floatFromInt(s)) / 100.0 else 1.0;
+        if (ui_scale < 1.0) ui_scale = 1.0;
+        if (ui_scale == self.ui_scale) return;
+        self.ui_scale = ui_scale;
+
+        self.toolbar_height = @as(u32, @intFromFloat(48.0 * ui_scale));
+        self.statusbar_height = @as(u32, @intFromFloat(28.0 * ui_scale));
+        self.layers_panel_width = @as(u32, @intFromFloat(230.0 * ui_scale));
+        self.adjust_panel_width = @as(u32, @intFromFloat(240.0 * ui_scale));
+
+        const new_font = self.allocator.create(Font) catch return;
+        new_font.* = Font.init(self.allocator, self.cfg.theme.font_family, @as(u32, @intFromFloat(13.0 * ui_scale))) catch {
+            self.allocator.destroy(new_font);
+            return;
+        };
+        const old_font = self.font;
+        self.font = new_font;
+        old_font.deinit();
+        self.allocator.destroy(old_font);
+
+        self.win.needs_redraw = true;
     }
 
     pub fn deinit(self: *AnnotateApp) void {
@@ -3449,6 +3485,8 @@ pub fn run(allocator: std.mem.Allocator, cfg: config.Config, file_to_open: ?[]co
             }
         }
         _ = c.wl_display_dispatch_pending(app.win.display.?);
+
+        app.reloadScale();
 
         const cur_px = app.win.pointer_x;
         const cur_py = app.win.pointer_y;

@@ -10,6 +10,7 @@ const image_ops = @import("../../graphics/image_ops.zig");
 const Color = theme.Color;
 const Rect = renderer.Rect;
 const Font = renderer.Font;
+const quicksettings = @import("../../panels/quicksettings.zig");
 const ImageBuffer = image_ops.ImageBuffer;
 const WindowApp = wayland_win.WindowApp;
 
@@ -46,6 +47,7 @@ pub const ImageViewerApp = struct {
     win: *WindowApp,
     font: *Font,
     cfg: config.Config,
+    ui_scale: f32 = 1.0,
 
     image: ?ImageBuffer = null,
     file_path: ?[]const u8 = null,
@@ -69,18 +71,22 @@ pub const ImageViewerApp = struct {
     status_ticks: u32 = 0,
 
     pub fn init(allocator: std.mem.Allocator, cfg: config.Config, loaded_img: ?ImageBuffer, initial_path: ?[]const u8) !*ImageViewerApp {
+        const scale_opt = quicksettings.loadDisplayScale();
+        const ui_scale = if (scale_opt) |s| @as(f32, @floatFromInt(s)) / 100.0 else 1.0;
+        const s = if (ui_scale < 1.0) 1.0 else ui_scale;
+
         var win = try WindowApp.init(allocator, .{
             .title = "Mizu View",
             .app_id = "mizu-view",
-            .width = 1100,
-            .height = 700,
-            .min_width = 360,
-            .min_height = 260,
+            .width = @as(u32, @intFromFloat(1100.0 * s)),
+            .height = @as(u32, @intFromFloat(700.0 * s)),
+            .min_width = @as(u32, @intFromFloat(360.0 * s)),
+            .min_height = @as(u32, @intFromFloat(260.0 * s)),
         });
         errdefer win.deinit();
 
         const font = try allocator.create(Font);
-        font.* = try Font.init(allocator, cfg.theme.font_family, 12);
+        font.* = try Font.init(allocator, cfg.theme.font_family, @as(u32, @intFromFloat(12.0 * s)));
         errdefer {
             font.deinit();
             allocator.destroy(font);
@@ -92,6 +98,7 @@ pub const ImageViewerApp = struct {
             .win = win,
             .font = font,
             .cfg = cfg,
+            .ui_scale = s,
             .image = loaded_img,
             .file_path = if (initial_path) |p| try allocator.dupe(u8, p) else null,
             .file_size_bytes = 0,
@@ -107,6 +114,26 @@ pub const ImageViewerApp = struct {
         app.fitToWindow();
         app.updateTitle();
         return app;
+    }
+
+    pub fn reloadScale(self: *ImageViewerApp) void {
+        const scale_opt = quicksettings.loadDisplayScale();
+        const new_scale = if (scale_opt) |s| @as(f32, @floatFromInt(s)) / 100.0 else 1.0;
+        const s = if (new_scale < 1.0) 1.0 else new_scale;
+        if (s == self.ui_scale) return;
+        self.ui_scale = s;
+
+        const new_font = self.allocator.create(Font) catch return;
+        new_font.* = Font.init(self.allocator, self.cfg.theme.font_family, @as(u32, @intFromFloat(12.0 * s))) catch {
+            self.allocator.destroy(new_font);
+            return;
+        };
+        const old_font = self.font;
+        self.font = new_font;
+        old_font.deinit();
+        self.allocator.destroy(old_font);
+
+        self.win.needs_redraw = true;
     }
 
     pub fn deinit(self: *ImageViewerApp) void {
@@ -443,12 +470,12 @@ pub const ImageViewerApp = struct {
             const msg1 = "󰋼 No image opened";
             const msg2 = "Pipe image via stdin: grim - | mizu view";
             const msg3 = "Or open a file: mizu view <path>";
-            const w1 = r.measureTextWithSize(self.font, msg1, 15);
-            const w2 = r.measureTextWithSize(self.font, msg2, 12);
-            const w3 = r.measureTextWithSize(self.font, msg3, 12);
-            r.drawTextWithSize(self.font, msg1, cx - @divTrunc(@as(i32, @intCast(w1)), 2), cy - 24, 15, th.text_main);
-            r.drawTextWithSize(self.font, msg2, cx - @divTrunc(@as(i32, @intCast(w2)), 2), cy + 8, 12, th.text_muted);
-            r.drawTextWithSize(self.font, msg3, cx - @divTrunc(@as(i32, @intCast(w3)), 2), cy + 30, 12, th.text_muted);
+            const w1 = r.measureTextWithSize(self.font, msg1, @as(u32, @intFromFloat(15.0 * self.ui_scale)));
+            const w2 = r.measureTextWithSize(self.font, msg2, @as(u32, @intFromFloat(12.0 * self.ui_scale)));
+            const w3 = r.measureTextWithSize(self.font, msg3, @as(u32, @intFromFloat(12.0 * self.ui_scale)));
+            r.drawTextWithSize(self.font, msg1, cx - @divTrunc(@as(i32, @intCast(w1)), 2), cy - @as(i32, @intFromFloat(24.0 * self.ui_scale)), @as(u32, @intFromFloat(15.0 * self.ui_scale)), th.text_main);
+            r.drawTextWithSize(self.font, msg2, cx - @divTrunc(@as(i32, @intCast(w2)), 2), cy + @as(i32, @intFromFloat(8.0 * self.ui_scale)), @as(u32, @intFromFloat(12.0 * self.ui_scale)), th.text_muted);
+            r.drawTextWithSize(self.font, msg3, cx - @divTrunc(@as(i32, @intCast(w3)), 2), cy + @as(i32, @intFromFloat(30.0 * self.ui_scale)), @as(u32, @intFromFloat(12.0 * self.ui_scale)), th.text_muted);
         }
 
         // Floating HUD overlay
@@ -486,35 +513,35 @@ pub const ImageViewerApp = struct {
                 .{ name_str, img.width, img.height, zoom_pct, size_str },
             ) catch "";
 
-        const text_w = r.measureTextWithSize(self.font, hud_text, 11);
-        const pill_w: u32 = text_w + 32;
-        const pill_h: u32 = 32;
+        const text_w = r.measureTextWithSize(self.font, hud_text, @as(u32, @intFromFloat(11.0 * self.ui_scale)));
+        const pill_w: u32 = text_w + @as(u32, @intFromFloat(32.0 * self.ui_scale));
+        const pill_h: u32 = @as(u32, @intFromFloat(32.0 * self.ui_scale));
         const pill_x: i32 = @divTrunc(@as(i32, @intCast(win_w)) - @as(i32, @intCast(pill_w)), 2);
-        const pill_y: i32 = @as(i32, @intCast(win_h)) - 48;
+        const pill_y: i32 = @as(i32, @intCast(win_h)) - @as(i32, @intFromFloat(48.0 * self.ui_scale));
 
         // Shadow & translucent dark pill
-        r.drawSoftShadow(pill_x, pill_y, pill_w, pill_h, 8, 16, 4, Color.init(140, 0, 0, 0));
-        r.fillRoundedRect(pill_x, pill_y, pill_w, pill_h, 16, Color.init(215, 18, 20, 24));
-        r.drawRoundedBorder(pill_x, pill_y, pill_w, pill_h, 16, 1, Color.init(24, 255, 255, 255));
+        r.drawSoftShadow(pill_x, pill_y, pill_w, pill_h, @as(u32, @intFromFloat(8.0 * self.ui_scale)), @as(u32, @intFromFloat(16.0 * self.ui_scale)), @as(i32, @intFromFloat(4.0 * self.ui_scale)), Color.init(140, 0, 0, 0));
+        r.fillRoundedRect(pill_x, pill_y, pill_w, pill_h, @as(u32, @intFromFloat(16.0 * self.ui_scale)), Color.init(215, 18, 20, 24));
+        r.drawRoundedBorder(pill_x, pill_y, pill_w, pill_h, @as(u32, @intFromFloat(16.0 * self.ui_scale)), @as(u32, @intFromFloat(1.0 * self.ui_scale)), Color.init(24, 255, 255, 255));
 
-        r.drawTextWithSize(self.font, hud_text, pill_x + 16, pill_y + 20, 11, Color.hex(0xABB2BF));
+        r.drawTextWithSize(self.font, hud_text, pill_x + @as(i32, @intFromFloat(16.0 * self.ui_scale)), pill_y + @as(i32, @intFromFloat(20.0 * self.ui_scale)), @as(u32, @intFromFloat(11.0 * self.ui_scale)), Color.hex(0xABB2BF));
     }
 
     fn renderStatusToast(self: *ImageViewerApp, r: renderer.Renderer) void {
         const win_w = self.win.width;
         const msg = self.status_msg[0..self.status_len];
 
-        const text_w = r.measureTextWithSize(self.font, msg, 11);
-        const pill_w: u32 = text_w + 28;
-        const pill_h: u32 = 28;
+        const text_w = r.measureTextWithSize(self.font, msg, @as(u32, @intFromFloat(11.0 * self.ui_scale)));
+        const pill_w: u32 = text_w + @as(u32, @intFromFloat(28.0 * self.ui_scale));
+        const pill_h: u32 = @as(u32, @intFromFloat(28.0 * self.ui_scale));
         const pill_x: i32 = @divTrunc(@as(i32, @intCast(win_w)) - @as(i32, @intCast(pill_w)), 2);
         const pill_y: i32 = 20;
 
-        r.drawSoftShadow(pill_x, pill_y, pill_w, pill_h, 6, 12, 3, Color.init(120, 0, 0, 0));
-        r.fillRoundedRect(pill_x, pill_y, pill_w, pill_h, 14, Color.init(230, 24, 28, 36));
-        r.drawRoundedBorder(pill_x, pill_y, pill_w, pill_h, 14, 1, Color.init(120, 97, 175, 239));
+        r.drawSoftShadow(pill_x, pill_y, pill_w, pill_h, @as(u32, @intFromFloat(6.0 * self.ui_scale)), @as(u32, @intFromFloat(12.0 * self.ui_scale)), @as(i32, @intFromFloat(3.0 * self.ui_scale)), Color.init(120, 0, 0, 0));
+        r.fillRoundedRect(pill_x, pill_y, pill_w, pill_h, @as(u32, @intFromFloat(14.0 * self.ui_scale)), Color.init(230, 24, 28, 36));
+        r.drawRoundedBorder(pill_x, pill_y, pill_w, pill_h, @as(u32, @intFromFloat(14.0 * self.ui_scale)), @as(u32, @intFromFloat(1.0 * self.ui_scale)), Color.init(120, 97, 175, 239));
 
-        r.drawTextWithSize(self.font, msg, pill_x + 14, pill_y + 18, 11, Color.hex(0x61AFEF));
+        r.drawTextWithSize(self.font, msg, pill_x + @as(i32, @intFromFloat(14.0 * self.ui_scale)), pill_y + @as(i32, @intFromFloat(18.0 * self.ui_scale)), @as(u32, @intFromFloat(11.0 * self.ui_scale)), Color.hex(0x61AFEF));
     }
 };
 
@@ -596,6 +623,8 @@ pub fn run(allocator: std.mem.Allocator, cfg: config.Config, file_to_open: ?[]co
             }
         }
         _ = c.wl_display_dispatch_pending(app.win.display.?);
+
+        app.reloadScale();
 
         const cur_px = app.win.pointer_x;
         const cur_py = app.win.pointer_y;

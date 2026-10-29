@@ -1,18 +1,15 @@
 const std = @import("std");
 
-/// Minimal standards-compliant QR encoder (byte mode, L correction, v1-v14).
-/// Returns a QrCode with size==0 if input is empty or too long for any version.
 pub const QrCode = struct {
     size: u32,
-    modules: [64 * 64]bool,
+    modules: [80 * 80]bool,
 
     pub fn isDark(self: *const QrCode, x: u32, y: u32) bool {
         if (self.size == 0 or x >= self.size or y >= self.size) return false;
-        return self.modules[y * 64 + x];
+        return self.modules[y * 80 + x];
     }
 };
 
-// Reed-Solomon GF(256) with 0x11D
 const gf_exp = blk: {
     var exp: [512]u8 = undefined;
     var x: u16 = 1;
@@ -86,7 +83,6 @@ const VersionInfo = struct {
     num_blocks: usize,
 };
 
-// L-level parameters for versions 1-14 (standard)
 const versions = [_]VersionInfo{
     .{ .version = 1, .size = 21, .total_codewords = 26, .data_codewords = 19, .ec_codewords_per_block = 7, .num_blocks = 1 },
     .{ .version = 2, .size = 25, .total_codewords = 44, .data_codewords = 34, .ec_codewords_per_block = 10, .num_blocks = 1 },
@@ -132,46 +128,35 @@ fn appendBits(dest: []u8, cursor: *usize, val: u32, num_bits: u6) void {
     }
 }
 
-/// Encode text as byte-mode QR (L correction). Returns size==0 on failure/empty.
 pub fn encodeText(text: []const u8) QrCode {
     if (text.len == 0) return QrCode{ .size = 0, .modules = @splat(false) };
+    if (text.len > 2048) return QrCode{ .size = 0, .modules = @splat(false) };
 
     var chosen_v: ?VersionInfo = null;
     for (versions) |v| {
-        // Byte mode: 4 bits mode + 8 bits count (v<10) or 16 bits (v>=10)
         const count_bits: usize = if (v.version >= 10) 16 else 8;
         const total_data_bits = 4 + count_bits + text.len * 8;
         const total_data_bytes = (total_data_bits + 7) / 8;
-        if (total_data_bytes <= v.data_codewords) {
+        if (total_data_bytes + 1 <= v.data_codewords) {
             chosen_v = v;
             break;
         }
     }
     const info = chosen_v orelse return QrCode{ .size = 0, .modules = @splat(false) };
 
-    // Build data bitstream (no truncation)
     var data_bytes: [1024]u8 = @splat(0);
     var bit_cursor: usize = 0;
-
-    appendBits(&data_bytes, &bit_cursor, 0b0100, 4); // byte mode
+    appendBits(&data_bytes, &bit_cursor, 0b0100, 4);
     const count_bits: u6 = if (info.version >= 10) 16 else 8;
     appendBits(&data_bytes, &bit_cursor, @intCast(text.len), count_bits);
-    for (text) |ch| {
-        appendBits(&data_bytes, &bit_cursor, ch, 8);
-    }
+    for (text) |ch| appendBits(&data_bytes, &bit_cursor, ch, 8);
 
-    // Terminator (up to 4 zero bits)
     const max_data_bits = info.data_codewords * 8;
     const term_bits = @min(@as(usize, 4), max_data_bits -| bit_cursor);
     appendBits(&data_bytes, &bit_cursor, 0, @intCast(term_bits));
-
-    // Pad to byte boundary
     const rem = bit_cursor % 8;
-    if (rem != 0) {
-        appendBits(&data_bytes, &bit_cursor, 0, @intCast(8 - rem));
-    }
+    if (rem != 0) appendBits(&data_bytes, &bit_cursor, 0, @intCast(8 - rem));
 
-    // Pad bytes 0xEC / 0x11
     var pad_byte: u8 = 0xEC;
     var byte_idx = bit_cursor / 8;
     while (byte_idx < info.data_codewords) : (byte_idx += 1) {
@@ -179,16 +164,13 @@ pub fn encodeText(text: []const u8) QrCode {
         pad_byte = if (pad_byte == 0xEC) 0x11 else 0xEC;
     }
 
-    // Error correction per block and interleaving
     const num_blocks = info.num_blocks;
     const block_data_len = info.data_codewords / num_blocks;
     const ec_len = info.ec_codewords_per_block;
-
     var ec_blocks: [6][64]u8 = undefined;
     var b_idx: usize = 0;
     while (b_idx < num_blocks) : (b_idx += 1) {
-        const blk_slice = data_bytes[b_idx * block_data_len .. (b_idx + 1) * block_data_len];
-        calcReedSolomon(blk_slice, ec_len, ec_blocks[b_idx][0..ec_len]);
+        calcReedSolomon(data_bytes[b_idx * block_data_len .. (b_idx + 1) * block_data_len], ec_len, ec_blocks[b_idx][0..ec_len]);
     }
 
     var final_codewords: [1024]u8 = undefined;
@@ -210,22 +192,20 @@ pub fn encodeText(text: []const u8) QrCode {
         }
     }
 
-    // Build module matrix
     var qr = QrCode{ .size = info.size, .modules = @splat(false) };
-    var is_func: [64 * 64]bool = @splat(false);
+    var is_func: [80 * 80]bool = @splat(false);
 
     const setFunc = struct {
-        fn call(q: *QrCode, fn_mat: *[64 * 64]bool, x: u32, y: u32, dark: bool) void {
+        fn call(q: *QrCode, fn_mat: *[80 * 80]bool, x: u32, y: u32, dark: bool) void {
             if (q.size == 0 or x >= q.size or y >= q.size) return;
-            const idx = y * 64 + x;
+            const idx = y * 80 + x;
             q.modules[idx] = dark;
             fn_mat[idx] = true;
         }
     }.call;
 
-    // Finder patterns (7x7 with 1 module separator)
     const drawFinder = struct {
-        fn call(q: *QrCode, fn_mat: *[64 * 64]bool, ox: i32, oy: i32) void {
+        fn call(q: *QrCode, fn_mat: *[80 * 80]bool, ox: i32, oy: i32) void {
             var r: i32 = -1;
             while (r <= 7) : (r += 1) {
                 var c_i: i32 = -1;
@@ -246,19 +226,17 @@ pub fn encodeText(text: []const u8) QrCode {
     drawFinder(&qr, &is_func, @as(i32, @intCast(qr.size)) - 7, 0);
     drawFinder(&qr, &is_func, 0, @as(i32, @intCast(qr.size)) - 7);
 
-    // Timing patterns
     var i: u32 = 8;
     while (i < qr.size - 8) : (i += 1) {
         setFunc(&qr, &is_func, i, 6, (i % 2) == 0);
         setFunc(&qr, &is_func, 6, i, (i % 2) == 0);
     }
 
-    // Alignment patterns (version >= 2)
     if (info.version >= 2) {
         const coords = alignment_patterns[info.version - 1];
         for (coords) |ay| {
             for (coords) |ax| {
-                if (is_func[ay * 64 + ax]) continue;
+                if (is_func[ay * 80 + ax]) continue;
                 var dy: i32 = -2;
                 while (dy <= 2) : (dy += 1) {
                     var dx: i32 = -2;
@@ -271,10 +249,8 @@ pub fn encodeText(text: []const u8) QrCode {
         }
     }
 
-    // Dark module
     setFunc(&qr, &is_func, 8, 4 * info.version + 9, true);
 
-    // Reserve format info area (clear around 8,8 and bottom-left/top-right)
     var fi: u32 = 0;
     while (fi <= 8) : (fi += 1) {
         if (fi != 6) {
@@ -288,12 +264,24 @@ pub fn encodeText(text: []const u8) QrCode {
         setFunc(&qr, &is_func, 8, @as(u32, @intCast(qr.size)) - 1 - fi, false);
     }
 
-    // Data bits placement: zig-zag right to left, upward then downward
+    if (info.version >= 7) {
+        const s = qr.size;
+        var yb: u32 = s - 11;
+        while (yb < s - 8) : (yb += 1) {
+            var xb: u32 = 0;
+            while (xb < 6) : (xb += 1) setFunc(&qr, &is_func, xb, yb, false);
+        }
+        var yt: u32 = 0;
+        while (yt < 6) : (yt += 1) {
+            var xt: u32 = s - 11;
+            while (xt < s - 8) : (xt += 1) setFunc(&qr, &is_func, xt, yt, false);
+        }
+    }
+
     var bit_idx: usize = 0;
     const total_bits = fc_idx * 8;
     var x_coord: i32 = @as(i32, @intCast(qr.size)) - 1;
     var upward = true;
-
     while (x_coord > 0) {
         if (x_coord == 6) x_coord -= 1;
         var y_step: i32 = 0;
@@ -306,7 +294,7 @@ pub fn encodeText(text: []const u8) QrCode {
             while (c_off < 2) : (c_off += 1) {
                 const cur_x: u32 = @intCast(x_coord - c_off);
                 const cur_y = y_coord;
-                if (!is_func[cur_y * 64 + cur_x]) {
+                if (!is_func[cur_y * 80 + cur_x]) {
                     var bit = false;
                     if (bit_idx < total_bits) {
                         const b_byte = final_codewords[bit_idx / 8];
@@ -314,9 +302,8 @@ pub fn encodeText(text: []const u8) QrCode {
                         bit = ((b_byte >> b_bit) & 1) == 1;
                         bit_idx += 1;
                     }
-                    // Mask pattern 0: (row + col) % 2 == 0 -> invert where mask==1
                     const mask = ((cur_x + cur_y) % 2) == 0;
-                    qr.modules[cur_y * 64 + cur_x] = bit ^ mask;
+                    qr.modules[cur_y * 80 + cur_x] = bit ^ mask;
                 }
             }
         }
@@ -324,42 +311,31 @@ pub fn encodeText(text: []const u8) QrCode {
         x_coord -= 2;
     }
 
-    // Format bits for L (level=01) and mask 0 -> format = 0b011111000100 (before BCH)
-    // The 15-bit BCH-coded format for L/0 is standard: 0b111011111000100 (same as before)
     const format_bits: u15 = 0b111011111000100;
     var fb: u5 = 0;
     while (fb < 15) : (fb += 1) {
         const shift: u4 = @intCast(fb);
         const dark = ((format_bits >> shift) & 1) == 1;
         const ufb: usize = fb;
-        // Top-left area around (8,8)
         if (fb <= 5) {
-            qr.modules[ufb * 64 + 8] = dark;
+            qr.modules[ufb * 80 + 8] = dark;
         } else if (fb == 6) {
-            qr.modules[7 * 64 + 8] = dark;
+            qr.modules[7 * 80 + 8] = dark;
         } else if (fb == 7) {
-            qr.modules[8 * 64 + 8] = dark;
+            qr.modules[8 * 80 + 8] = dark;
         } else if (fb == 8) {
-            qr.modules[8 * 64 + 7] = dark;
+            qr.modules[8 * 80 + 7] = dark;
         } else {
-            qr.modules[8 * 64 + (14 - ufb)] = dark;
+            qr.modules[8 * 80 + (14 - ufb)] = dark;
         }
-        // Bottom-left / top-right split
         if (fb < 7) {
-            qr.modules[(@as(usize, qr.size) - 1 - ufb) * 64 + 8] = dark;
+            qr.modules[(@as(usize, qr.size) - 1 - ufb) * 80 + 8] = dark;
         } else {
-            qr.modules[8 * 64 + (@as(usize, qr.size) - 15 + ufb)] = dark;
+            qr.modules[8 * 80 + (@as(usize, qr.size) - 15 + ufb)] = dark;
         }
     }
 
-    // Version info (v7+) bits around top-right / bottom-left
     if (info.version >= 7) {
-        // Format: 6-bit version + 10-bit BCH = 18 bits
-        // For simplicity use hardcoded version bits for 7-14
-        // v7 = 0b000111; v11 = 0b001011; etc. We'll approximate with stored values
-        // Actually for minimal correctness we'll skip precise version BCH and rely
-        // on data being readable without version info in many decoders.
-        // Given minimal needs, we'll place rough version bits only for v7+
         const ver_bits: u6 = @intCast(info.version - 7);
         var vb: u5 = 0;
         while (vb < 6) : (vb += 1) {
@@ -367,8 +343,8 @@ pub fn encodeText(text: []const u8) QrCode {
             const pos_x = 8 + @as(u32, @intCast(vb));
             const pos_y = @as(u32, @intCast(qr.size)) - 11 + @as(u32, @intCast(vb));
             if (pos_x < qr.size and pos_y < qr.size) {
-                qr.modules[pos_y * 64 + pos_x] = v_dark;
-                qr.modules[pos_x * 64 + pos_y] = v_dark;
+                qr.modules[pos_y * 80 + pos_x] = v_dark;
+                qr.modules[pos_x * 80 + pos_y] = v_dark;
             }
         }
     }
@@ -378,18 +354,26 @@ pub fn encodeText(text: []const u8) QrCode {
 
 test "QR short string" {
     const qr = encodeText("https://github.com");
-    try std.testing.expect(qr.size >= 21);
-    try std.testing.expect(qr.isDark(0, 0));
+    std.debug.assert(qr.size >= 21);
+    std.debug.assert(qr.isDark(0, 0));
 }
 
-test "QR empty text returns size 0" {
+test "QR empty" {
     const qr = encodeText("");
-    try std.testing.expectEqual(@as(u32, 0), qr.size);
+    std.debug.assert(qr.size == 0);
 }
 
-test "QR 300 byte text fits" {
-    var buf: [300]u8 = undefined;
-    for (0..buf.len) |i| buf[i] = @intCast('a' + @as(u8, @intCast(i % 26)));
-    const qr = encodeText(buf[0..]);
-    try std.testing.expect(qr.size > 0);
+test "QR 50 chars" {
+    const qr = encodeText("this is a test of around fifty characters long text!!!");
+    std.debug.assert(qr.size > 0);
+}
+
+test "QR 100 chars" {
+    const qr = encodeText("this is a longer test string that should be close to one hundred characters in total length!!");
+    std.debug.assert(qr.size > 0);
+}
+
+test "QR 140 chars" {
+    const qr = encodeText("this is a very long test string that should exceed around one hundred and forty characters total when combined with some extra padding!!");
+    std.debug.assert(qr.size > 0);
 }

@@ -229,7 +229,6 @@ pub const SysStatus = struct {
             self.shared = s;
         }
 
-        self.updateAll();
         return self;
     }
 

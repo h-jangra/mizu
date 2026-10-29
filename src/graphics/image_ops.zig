@@ -1042,45 +1042,17 @@ pub const ImageBuffer = struct {
         const png_data = try self.savePngToMemory(allocator);
         defer allocator.free(png_data);
 
-        // Run wl-copy with stdin pipe
-        var pipe_fds: [2]c_int = undefined;
-        if (c.pipe(&pipe_fds) < 0) return error.PipeFailed;
-
-        const pid = c.fork();
-        if (pid < 0) {
-            _ = c.close(pipe_fds[0]);
-            _ = c.close(pipe_fds[1]);
-            return error.ForkFailed;
+        // Use popen (like wl-paste) to avoid fork/exec hang issues
+        const cmd_buf = "export PATH=\"$PATH:/usr/sbin:/sbin:/usr/local/bin:/usr/bin:$HOME/.local/bin\"; wl-copy --type image/png";
+        if (c.popen(cmd_buf, "w")) |pipe| {
+            defer _ = c.pclose(pipe);
+            var written: usize = 0;
+            while (written < png_data.len) {
+                const n = c.fwrite(png_data[written..].ptr, 1, png_data.len - written, pipe);
+                if (n == 0) break;
+                written += @intCast(n);
+            }
         }
-
-        if (pid == 0) {
-            // Child process
-            _ = c.close(pipe_fds[1]);
-            _ = c.dup2(pipe_fds[0], c.STDIN_FILENO);
-            _ = c.close(pipe_fds[0]);
-
-            var env_path_buf: [512]u8 = undefined;
-            const path_env = if (c.getenv("PATH")) |p| std.mem.span(p) else "/usr/bin";
-            const env_path = std.fmt.bufPrintSentinel(&env_path_buf, "{s}:/usr/bin:/usr/local/bin:/usr/sbin:/sbin", .{path_env}, 0) catch "/usr/bin";
-            _ = c.setenv("PATH", env_path.ptr, 1);
-
-            const args = [_][*c]const u8{ "wl-copy", "--type", "image/png", null };
-            _ = c.execvp("wl-copy", @ptrCast(&args));
-            c.exit(1);
-        }
-
-        // Parent process
-        _ = c.close(pipe_fds[0]);
-        var written: usize = 0;
-        while (written < png_data.len) {
-            const n = c.write(pipe_fds[1], png_data[written..].ptr, png_data.len - written);
-            if (n <= 0) break;
-            written += @intCast(n);
-        }
-        _ = c.close(pipe_fds[1]);
-
-        var status: c_int = 0;
-        _ = c.waitpid(pid, &status, 0);
     }
 
     /// Read image from Wayland clipboard via `wl-paste`

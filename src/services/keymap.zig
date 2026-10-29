@@ -10,6 +10,7 @@ pub const Mods = struct {
     ctrl: bool = false,
     alt: bool = false,
     super: bool = false,
+    fun: bool = false,
 };
 
 pub const KeyItem = struct {
@@ -192,6 +193,9 @@ pub const KeyOverlay = struct {
             } else if (code == 125 or code == 126) {
                 self.mods.super = (val != 0);
                 continue;
+            } else if (code == 464) {
+                self.mods.fun = (val != 0);
+                continue;
             }
 
             if (val != 1) continue;
@@ -242,6 +246,10 @@ pub const KeyOverlay = struct {
         }
         if (item.mods.alt) {
             out[n] = .{ .text = "alt" };
+            n += 1;
+        }
+        if (item.mods.fun) {
+            out[n] = .{ .text = "fn" };
             n += 1;
         }
         if (item.mods.shift and !isCharacterKey(item.code)) {
@@ -333,10 +341,10 @@ pub const KeyOverlay = struct {
         const box_x = @max(0, @divTrunc(phys_w - box_w, 2));
         const box_y: i32 = 3 * s;
 
-        // Flat container with slightly transparent background (around 72% opacity, alpha 185)
-        const bg_alpha: u8 = 185;
+        // Flat container transparent — only keycards visible
+        const bg_alpha: u8 = 0;
         const bg_color = theme.Color.init(bg_alpha, self.cfg.theme.panel_bg.r, self.cfg.theme.panel_bg.g, self.cfg.theme.panel_bg.b);
-        const border_alpha: u8 = 120;
+        const border_alpha: u8 = 0;
         const border_color = theme.Color.init(border_alpha, self.cfg.theme.panel_border.r, self.cfg.theme.panel_border.g, self.cfg.theme.panel_border.b);
 
         target.fillSquircle(box_x, box_y, @intCast(@max(1, box_w)), @intCast(@max(1, box_h)), 12 * scale, bg_color);
@@ -358,7 +366,7 @@ pub const KeyOverlay = struct {
         ui.root(.{
             .direction = .row,
             .align_x = .center,
-            .align_y = .center,
+            .align_y = .bottom,
         });
 
         _ = ui.open(.{
@@ -368,7 +376,7 @@ pub const KeyOverlay = struct {
             .padding = .all(ui.su(box_pad_l)),
             .gap = ui.su(item_gap_l),
             .align_x = .center,
-            .align_y = .center,
+            .align_y = .bottom,
         });
 
         // Flat keys: clean card background with subtle flat border
@@ -435,6 +443,7 @@ pub fn keyIcon(code: u16, shift: bool) ?[]const u8 {
         106 => "",
         108 => "",
         111 => "󰹿 ",
+        464 => "fn",
         else => null,
     };
 }
@@ -507,8 +516,22 @@ pub fn keyText(code: u16, shift: bool) []const u8 {
         68 => "F10",
         69 => "Num",
         70 => "Scroll",
+        71 => "7",
+        72 => "8",
+        73 => "9",
+        74 => "-",
+        75 => "4",
+        76 => "5",
+        77 => "6",
+        78 => "+",
+        79 => "1",
+        80 => "2",
+        81 => "3",
+        82 => "0",
+        83 => ".",
         87 => "F11",
         88 => "F12",
+        95 => ",",
         96 => "⏎",
         98 => "/",
         99 => " ",
@@ -522,7 +545,30 @@ pub fn keyText(code: u16, shift: bool) []const u8 {
         109 => "PgDn",
         110 => "INS",
         111 => "󰹿 ",
+        113 => "Mute",
+        114 => "VolDown",
+        115 => "VolUp",
         119 => "Pause",
+        464 => "fn",
+        466 => "F1",
+        467 => "F2",
+        468 => "F3",
+        469 => "F4",
+        470 => "F5",
+        471 => "F6",
+        472 => "F7",
+        473 => "F8",
+        474 => "F9",
+        475 => "F10",
+        476 => "F11",
+        477 => "F12",
+        478 => "1",
+        479 => "2",
+        480 => "D",
+        481 => "E",
+        482 => "F",
+        483 => "S",
+        484 => "B",
         else => "",
     };
 }

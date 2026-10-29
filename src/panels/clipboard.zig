@@ -791,6 +791,19 @@ pub const ClipboardPanel = struct {
                 }
             } else |_| {}
 
+            // Fallback: satty uses GTK clipboard; try wl-paste direct
+            if (result_len == 0) {
+                const paste_cmd = "export PATH=\"$PATH:/usr/sbin:/sbin:/usr/local/bin:/usr/bin:$HOME/.local/bin\"; wl-paste --type image/png 2>/dev/null || wl-paste --type image/jpeg 2>/dev/null || wl-paste 2>/dev/null";
+                if (c.popen(paste_cmd, "r")) |pipe| {
+                    while (result_len < result.len) {
+                        const n = c.fread(result[result_len..].ptr, 1, result.len - result_len, pipe);
+                        if (n == 0) break;
+                        result_len += n;
+                    }
+                    _ = c.pclose(pipe);
+                }
+            }
+
             if (ctx.stop.load(.acquire)) return;
 
             // Check if result is an image (starts with PNG/JPEG magic bytes)
@@ -858,8 +871,10 @@ pub const ClipboardPanel = struct {
                     "";
                 if (content.len == 0) continue;
 
-                // Check if entry contains cliphist binary image marker.
-                const is_image = std.mem.startsWith(u8, content, "[[ binary data") or std.mem.startsWith(u8, content, "[[ binary data ");
+                // Check if entry contains cliphist binary image marker OR raw PNG/JPEG bytes.
+                const is_png = content.len >= 8 and content[0] == 0x89 and content[1] == 0x50 and content[2] == 0x4E and content[3] == 0x47 and content[4] == 0x0D and content[5] == 0x0A and content[6] == 0x1A and content[7] == 0x0A;
+                const is_jpeg = content.len >= 2 and content[0] == 0xFF and content[1] == 0xD8;
+                const is_image = std.mem.startsWith(u8, content, "[[ binary data") or std.mem.startsWith(u8, content, "[[ binary data ") or is_png or is_jpeg;
 
                 var item = ClipItem{ .id = id, .clip_type = if (is_image) .image else .text };
                 const max_p = @min(content.len, item.preview.len);
@@ -873,6 +888,43 @@ pub const ClipboardPanel = struct {
                 item.first_line_loaded = true;
                 result_items[result_count] = item;
                 result_count += 1;
+            }
+        }
+
+        // Always include current clipboard directly (satty/GTK may miss cliphist)
+        if (result_count < result_items.len) {
+            var cmd_buf: [256]u8 = undefined;
+            if (std.fmt.bufPrintSentinel(&cmd_buf, "export PATH=\"$PATH:/usr/sbin:/sbin:/usr/local/bin:/usr/bin:$HOME/.local/bin\"; wl-paste --type image/png 2>/dev/null | head -c 1024 | cat; wl-paste --type image/jpeg 2>/dev/null | head -c 1024 | cat; wl-paste 2>/dev/null | head -c 1024 | cat", .{} , 0) catch null) |_| {
+                // Actually read binary image directly with wl-paste
+                const paste_cmd = "export PATH=\"$PATH:/usr/sbin:/sbin:/usr/local/bin:/usr/bin:$HOME/.local/bin\"; wl-paste --type image/png 2>/dev/null || wl-paste --type image/jpeg 2>/dev/null || wl-paste 2>/dev/null";
+                if (c.popen(paste_cmd, "r")) |pipe2| {
+                    defer _ = c.pclose(pipe2);
+                    var buf: [4096]u8 = undefined;
+                    var len: usize = 0;
+                    while (len < buf.len) {
+                        const n = c.fread(&buf[len], 1, buf.len - len, pipe2);
+                        if (n == 0) break;
+                        len += n;
+                    }
+                    if (len > 0) {
+                        const is_png = len >= 8 and buf[0] == 0x89 and buf[1] == 0x50 and buf[2] == 0x4E and buf[3] == 0x47;
+                        const is_jpeg = len >= 2 and buf[0] == 0xFF and buf[1] == 0xD8;
+                        const is_image = is_png or is_jpeg;
+                        var item = ClipItem{ .id = 999999, .clip_type = if (is_image) .image else .text };
+                        const max_p = @min(len, item.preview.len);
+                        const preview_len = trimToValidUtf8(buf[0..max_p]);
+                        @memcpy(item.preview[0..preview_len], buf[0..preview_len]);
+                        item.preview_len = preview_len;
+                        const max_f = @min(len, item.first_line.len);
+                        const first_len = trimToValidUtf8(buf[0..max_f]);
+                        @memcpy(item.first_line[0..first_len], buf[0..first_len]);
+                        item.first_line_len = first_len;
+                        item.first_line_loaded = true;
+                        // Insert at front by shifting (simplified: append, filter shows last)
+                        result_items[result_count] = item;
+                        result_count += 1;
+                    }
+                }
             }
         }
 
@@ -1534,7 +1586,7 @@ pub const ClipboardPanel = struct {
         const actual_idx = selected_actual_idx.?;
         const item = self.items.items[actual_idx];
         const preview_content = self.getDecodedContent(item);
-        const qr_available = preview_content.len > 0 and preview_content.len <= 300;
+        const qr_available = preview_content.len > 0 and preview_content.len <= 2048;
 
         // QR icon button replacing "Preview" label
         const qr_btn_x = x;
@@ -1573,7 +1625,7 @@ pub const ClipboardPanel = struct {
 
         if (self.show_qr) {
             const content = self.getDecodedContent(item);
-            const can_qr = content.len > 0 and content.len <= 300;
+            const can_qr = content.len > 0 and content.len <= 2048;
             var meta_buf: [64]u8 = undefined;
             const meta_str = if (item.clip_type == .image)
                 "QR Code"
@@ -1611,7 +1663,7 @@ pub const ClipboardPanel = struct {
                     }
                 }
             } else {
-                const msg = if (content.len == 0) "No content to generate QR" else "Content too long for QR (max 300 bytes)";
+                const msg = if (content.len == 0) "No content to generate QR" else "Clipboard content is too large (max 2 KB)";
                 const msg_w = target.measureTextWithSize(&self.font, msg, ui_sz);
                 const center_x = x + @divTrunc(@as(i32, @intCast(w)) - @as(i32, @intCast(msg_w)), 2);
                 const center_y = card_y + @divTrunc(@as(i32, @intCast(card_h)), 2);
