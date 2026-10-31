@@ -82,6 +82,7 @@ pub const WaylandApp = struct {
     power: ?*power_module.PowerOverlay = null,
     ipc: ?*mango_ipc.MangoIpc = null,
     has_kbd_focus: bool = false,
+    kbd_enter_time: i64 = 0,
 
     repeat_timer_fd: c_int = -1,
     repeat_delay: i32 = 280,
@@ -1071,6 +1072,17 @@ pub const WaylandApp = struct {
         _ = name;
     }
 
+    fn wm_base_ping(data: ?*anyopaque, wm_base: ?*c.struct_xdg_wm_base, serial: u32) callconv(.c) void {
+        _ = data;
+        if (wm_base) |wb| {
+            c.xdg_wm_base_pong(wb, serial);
+        }
+    }
+
+    const xdg_wm_base_listener = c.xdg_wm_base_listener{
+        .ping = wm_base_ping,
+    };
+
     const seat_listener = c.wl_seat_listener{
         .capabilities = seat_capabilities,
         .name = seat_name,
@@ -1200,6 +1212,7 @@ pub const WaylandApp = struct {
     }
 
     pub fn dispatchKey(self: *WaylandApp, sym: u32, utf8_slice: []const u8, is_ctrl: bool, is_shift: bool) void {
+        if (sym == c.XKB_KEY_Escape and getMonotonicMs() - self.kbd_enter_time < 150) return;
         if (self.calendar) |cal| {
             if (cal.handleKey(sym)) {
                 self.needs_redraw = true;
@@ -1224,6 +1237,7 @@ pub const WaylandApp = struct {
             }
 
             if (sym == c.XKB_KEY_Escape) {
+                if (getMonotonicMs() - self.kbd_enter_time < 150) return;
                 if (qs.view_mode != .main) {
                     qs.view_mode = .main;
                     qs.scroll_offset = 0;
@@ -1260,6 +1274,7 @@ pub const WaylandApp = struct {
         const self: *WaylandApp = @ptrCast(@alignCast(data.?));
         if (surface != null and self.surface != null and surface == self.surface) {
             self.has_kbd_focus = true;
+            self.kbd_enter_time = getMonotonicMs();
             self.stopRepeat();
         }
     }
@@ -1271,9 +1286,6 @@ pub const WaylandApp = struct {
         self.stopRepeat();
         if (self.has_kbd_focus and surface != null and self.surface != null and surface == self.surface) {
             self.has_kbd_focus = false;
-            if (self.launcher != null or self.quicksettings != null or self.memory_monitor != null or self.calendar != null or self.clipboard != null or self.power != null) {
-                self.running = false;
-            }
         }
     }
 

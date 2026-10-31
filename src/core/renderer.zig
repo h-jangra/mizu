@@ -1572,7 +1572,11 @@ pub const Renderer = struct {
         var thumb_cx: f64 = @as(f64, @floatFromInt(x)) + (@as(f64, @floatFromInt(w)) * @as(f64, @floatFromInt(clamped_pct))) / 100.0;
         const min_cx: f64 = @as(f64, @floatFromInt(x)) + thumb_r;
         const max_cx: f64 = @as(f64, @floatFromInt(x + @as(i32, @intCast(w)))) - thumb_r;
-        thumb_cx = std.math.clamp(thumb_cx, min_cx, max_cx);
+        if (min_cx <= max_cx) {
+            thumb_cx = std.math.clamp(thumb_cx, min_cx, max_cx);
+        } else {
+            thumb_cx = @as(f64, @floatFromInt(x)) + @as(f64, @floatFromInt(w)) / 2.0;
+        }
         const thumb_cy: f64 = @as(f64, @floatFromInt(y + @as(i32, @intCast(h / 2))));
 
         // Diffuse dark shadow under thumb

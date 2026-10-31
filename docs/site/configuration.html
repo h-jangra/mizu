@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Configuration — Mizu Documentation</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="top-nav">
+    <a href="overview.html" class="brand">
+      <span class="symbol">水</span>
+      <span>Mizu</span>
+    </a>
+    <div class="nav-links">
+      <a href="https://github.com/mizu-shell/mizu" target="_blank" rel="noopener">GitHub</a>
+    </div>
+  </header>
+
+  <div class="layout">
+    <aside class="sidebar">
+      <div class="sidebar-title">Documentation</div>
+      <nav>
+        <ul>
+          <li><a href="overview.html">Overview</a></li>
+          <li><a href="getting-started.html">Getting Started</a></li>
+          <li><a href="user-guide.html">User Guide</a></li>
+          <li><a href="configuration.html" class="active">Configuration</a></li>
+        </ul>
+      </nav>
+    </aside>
+
+    <main class="content">
+<h1>Configuration Reference</h1>
+<p>Mizu reads its configuration from <code>~/.config/mizu/config.ini</code> (or <code>$XDG_CONFIG_HOME/mizu/config.ini</code>). If absent, built-in defaults are used automatically.</p>
+<hr />
+<h2>Configuration Options</h2>
+<h3>1. Bar Dimensions &amp; Geometry</h3>
+<ul>
+<li><code>height</code>: Status bar height in pixels (default: <code>42</code>).</li>
+<li><code>margin_top</code>, <code>margin_bottom</code>, <code>margin_left</code>, <code>margin_right</code>: Outer screen margins.</li>
+<li><code>border_width</code>: Stroke width of bar and pill borders (default: <code>1</code>).</li>
+<li><code>bar_radius</code>: Corner radius of the status bar (default: <code>12</code>).</li>
+<li><code>pill_radius</code>: Corner radius of chips and pills (default: <code>10</code>).</li>
+<li><code>panel_radius</code>: Corner radius of floating overlay panels (default: <code>16</code>).</li>
+</ul>
+<h3>2. Typography (<code>[typography]</code>)</h3>
+<p>Logical pixel font sizes (clamped to 8–96):
+* <code>ui</code>: Standard interface text (default: <code>15</code>).
+* <code>secondary</code>: Descriptions and timestamps (default: <code>13</code>).
+* <code>heading</code>, <code>title</code>: Section and window headers (default: <code>18</code>, <code>20</code>).
+* <code>bar_text</code>, <code>bar_icon</code>: Bar chip labels and vector icons (default: <code>15</code>, <code>20</code>).
+* <code>quicksettings_text</code>, <code>quicksettings_icon</code>: Quick Settings text and icons.
+* <code>calendar_text</code>, <code>calendar_heading</code>: Calendar day numbers and navigation.</p>
+<h3>3. Themes &amp; Theme System</h3>
+<ul>
+<li><code>theme</code>: Active theme name (default: <code>nord</code>).</li>
+<li>Built-in themes: <code>nord</code>, <code>dracula</code>, <code>catppuccin</code>, <code>tokyo-night</code>, <code>rose-pine</code>, <code>frosted-neumorphic</code>.</li>
+<li><strong>Built-in Location</strong>: Shipped in <code>/usr/share/mizu/themes/</code>.</li>
+<li><strong>User Overrides</strong>: When a theme is selected, its files are copied to <code>~/.config/mizu/themes/&lt;theme_name&gt;/</code> and loaded from the user copy. User modifications are preserved and never overwritten on theme changes.</li>
+<li><strong>CSS-based Colors &amp; Styling</strong>: Each theme directory includes a <code>theme.css</code> file defining CSS variables (<code>--mizu-base</code>, <code>--mizu-accent</code>, <code>--mizu-radius-bar</code>, etc.) and GTK <code>@define-color</code> rules.</li>
+<li><strong>Automatic SVG Recoloring</strong>: SVG icons in theme directories and asset paths are automatically recolored using the active theme's palette where appropriate, with full anti-aliased rendering via Mizu's NanoSVG renderer.</li>
+<li><strong>Fallback Handling</strong>: If a user theme is missing or invalid, Mizu safely falls back to built-in themes without overwriting user customizations.</li>
+<li><code>font_family</code>: Primary font family (e.g. <code>Maple Mono NF, monospace</code>).</li>
+<li><code>clock_format</code>: Standard strftime format string (e.g. <code>%a %b %d %H:%M</code>).</li>
+<li><code>calendar_file</code>: Optional custom <code>.ics</code> calendar file for holiday dates.</li>
+</ul>
+<h3>4. Modular Layout</h3>
+<ul>
+<li><code>modules_left</code>: Comma-separated list of left-aligned modules.</li>
+<li><code>modules_center</code>: Comma-separated list of center-aligned modules.</li>
+<li><code>modules_right</code>: Comma-separated list of right-aligned modules.</li>
+</ul>
+<p>Available module names: <code>launcher</code>, <code>workspaces</code>, <code>buttons</code>, <code>keymaps</code>, <code>clock</code>, <code>mpris</code>, <code>recorder</code>, <code>tray</code>, <code>battery</code>, <code>memory</code>, <code>network</code>, <code>bluetooth</code>, <code>volume</code>, <code>quicksettings</code>, <code>theme_switch</code>, <code>separator</code>.</p>
+<h3>5. Custom Buttons (<code>[buttons]</code>)</h3>
+<p>Add custom quick-launch buttons to the bar (<code>Label = Command</code>):</p>
+<pre><code class="language-ini">[buttons]
+󰌌 Term = foot
+󰈹 Web = firefox
+󰅍 Clip = mizu clipboard
+</code></pre>
+<h3>6. Custom Panels (<code>[panels]</code>)</h3>
+<p>Register custom overlay panels toggleable via <code>mizu &lt;name&gt;</code>:</p>
+<pre><code class="language-ini">[panels]
+mixer = pavucontrol
+dashboard = foot -e btop
+</code></pre>
+<hr>
+<h2>Example Configuration</h2>
+<pre><code class="language-ini"># Mizu Configuration File
+# Location: ~/.config/mizu/config.ini
+
+# Bar dimensions and geometry
+height = 42
+margin_top = 4
+margin_bottom = 0
+margin_left = 8
+margin_right = 8
+border_width = 1
+bar_radius = 12
+pill_radius = 10
+panel_radius = 16
+
+# Font family and clock
+font_family = Maple Mono NF, monospace
+clock_format = %a %b %d  %H:%M
+
+# Typography (logical pixel sizes, clamped to 8-96)
+# ui: standard interface text; secondary: descriptions, timestamps, muted labels
+[typography]
+ui = 15
+secondary = 13
+heading = 18
+title = 20
+bar_text = 15
+bar_icon = 20
+quicksettings_text = 15
+quicksettings_icon = 23
+submenu_text = 15
+calendar_text = 16
+calendar_heading = 19
+button_text = 15
+keymap_text = 16
+
+# Legacy aliases still accepted: font_size -&gt; ui, bar_font_size -&gt; bar_text,
+# panel_font_size -&gt; ui
+
+# Desktop &amp; Lock Screen Wallpaper (PNG, JPEG)
+# If not specified, Mizu auto-detects and reuses the active desktop wallpaper without duplicating assets
+# wallpaper = /path/to/wallpaper.jpg
+
+# Theme System
+# Built-in themes: nord, dracula, catppuccin, tokyo-night, rose-pine, frosted-neumorphic
+# Built-in themes ship in /usr/share/mizu/themes/ (or &lt;prefix&gt;/share/mizu/themes/).
+# When selected, the theme is copied to ~/.config/mizu/themes/&lt;theme_name&gt;/ and loaded
+# from your user copy, preserving your local modifications.
+# Each theme directory contains:
+#   - theme.css: CSS custom properties (--mizu-base, --mizu-accent, etc.) and GTK colors
+#   - icons/: Theme-specific SVG icons (with automatic SVG recoloring via active theme palette)
+# Custom user themes can be placed in ~/.config/mizu/themes/&lt;custom_name&gt;/.
+theme = nord
+
+# On-screen keymap overlay (mizu keyoverlay)
+# Placement: top-left, top-center, top-right, bottom-left, bottom-center, bottom-right
+keymap_position = bottom-center
+# keymap_font_size = 16
+
+# Calendar holidays (optional)
+# Use your own local iCalendar file instead of the built-in India holiday feed.
+# Relative paths resolve from ~/.config/mizu (or $XDG_CONFIG_HOME/mizu).
+# calendar_file = holiday.ics
+
+# Modular Layout Configuration
+# Available modules: launcher, workspaces, buttons, keymaps, clock, mpris, recorder, tray, battery, memory, network, bluetooth, volume, theme_switch, separator
+modules_left = launcher, buttons, workspaces, keymaps
+modules_center = clock, mpris
+# Right modules build from right edge towards left:
+modules_right = theme_switch, volume, recorder, tray, bluetooth, network, memory, battery
+
+# Screen Recorder Settings
+# When recording: Left-click or right-click stops gracefully (SIGINT triggers save &amp; on-saved notification).
+# When idle:
+#   - Left-click: prompts window or region selection via slurp, records at constant 60 fps
+#   - Right-click: directly records entire screen at constant 60 fps
+# On finish: sends a notification popup confirming the saved video in ~/Videos.
+recorder_cmd = gpu-screen-recorder -w screen -f 60 -fm cfr -fallback-cpu-encoding yes -o &quot;$HOME/Videos/recording_$(date +%Y%m%d_%H%M%S).mp4&quot;
+recorder_hide_when_idle = false
+
+# Quick-launch Custom Buttons (shown when &#x27;buttons&#x27; is in modules_left/center/right)
+# Label = Shell Command or &#x27;mizu &lt;panel&gt;&#x27;
+# [buttons]
+# 󰌌 Term = foot
+# 󰈹 Web = firefox
+# 󰉋 Files = thunar
+# 󰅍 Clip = mizu clipboard
+# 󰸗 Cal = mizu calendar
+# 󰒓 QS = mizu quicksettings
+# 󰚝 Audio = mizu mixer
+# 󰐥 Power = wlogout
+
+# Custom Panels &amp; Drawers
+# Registered names can be launched or toggled directly via &#x27;mizu &lt;name&gt;&#x27;
+# [panels]
+# mixer = pavucontrol
+# dashboard = foot -e btop
+# files = thunar
+# notes = foot -e nvim ~/.notes.md
+# power = wlogout
+# calc = gnome-calculator
+
+# Custom Theme Colors Override (Hex format #RRGGBB or #AARRGGBB)
+# bar_bg = #161817
+# bar_border = #525E5A
+# pill_bg = #525E5A
+# ws_active_bg = #DF6124
+# ws_active_fg = #161817
+# panel_bg = #161817
+# panel_border = #525E5A
+# network_bg = #282C34
+# network_fg = #98C379</code></pre>
+    </main>
+  </div>
+
+  <footer class="doc-footer">
+    Mizu (水) Desktop Shell — Fast, lightweight Wayland shell for Void Linux and MangoWC
+  </footer>
+</body>
+</html>

@@ -551,6 +551,9 @@ fn fileExists(path: []const u8) bool {
 
 fn pathFor(buf: []u8, dir: []const u8, name: []const u8) ?[]const u8 {
     if (dir.len == 0) return null;
+    if (std.mem.endsWith(u8, name, ".svg")) {
+        return std.fmt.bufPrint(buf, "{s}/{s}", .{ dir, name }) catch null;
+    }
     return std.fmt.bufPrint(buf, "{s}/{s}.svg", .{ dir, name }) catch null;
 }
 
@@ -704,6 +707,9 @@ pub fn resolveIconPath(allocator: std.mem.Allocator, name: []const u8) ![]u8 {
 
     // Not found: return the default location so callers get a consistent path
     // (parsing will fail and the caller falls back gracefully).
+    if (std.mem.endsWith(u8, name, ".svg")) {
+        return try std.fmt.allocPrint(allocator, "assets/{s}", .{name});
+    }
     return try std.fmt.allocPrint(allocator, "assets/{s}.svg", .{name});
 }
 

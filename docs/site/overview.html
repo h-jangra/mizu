@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Overview — Mizu Documentation</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="top-nav">
+    <a href="overview.html" class="brand">
+      <span class="symbol">水</span>
+      <span>Mizu</span>
+    </a>
+    <div class="nav-links">
+      <a href="https://github.com/mizu-shell/mizu" target="_blank" rel="noopener">GitHub</a>
+    </div>
+  </header>
+
+  <div class="layout">
+    <aside class="sidebar">
+      <div class="sidebar-title">Documentation</div>
+      <nav>
+        <ul>
+          <li><a href="overview.html" class="active">Overview</a></li>
+          <li><a href="getting-started.html">Getting Started</a></li>
+          <li><a href="user-guide.html">User Guide</a></li>
+          <li><a href="configuration.html">Configuration</a></li>
+        </ul>
+      </nav>
+    </aside>
+
+    <main class="content">
+<h1>Mizu Overview</h1>
+<p><strong>Mizu (水)</strong> is a lightweight, high-performance Wayland desktop shell designed for Void Linux and MangoWC, written in Zig using native Wayland protocols.</p>
+<p>It provides a complete desktop shell suite—status bar, application launcher, quick settings drawer, notifications daemon, system tray, clipboard manager, calendar, process monitor, and session locker—as a single unified binary without GTK, Qt, Electron, or general-purpose UI toolkits.</p>
+<hr />
+<h2>Core Principles</h2>
+<ul>
+<li><strong>Zero Toolkit Overhead</strong>: Direct Wayland client rendering via <code>wl_shm</code> and <code>wlr-layer-shell</code>.</li>
+<li><strong>Zero Overhead While Closed</strong>: Overlay panels (launcher, quick settings, calendar, clipboard, power menu) instantiate on demand and free all memory when closed, consuming <strong>0 MB RAM</strong> while inactive.</li>
+<li><strong>Unified Layout Core</strong>: Uses <strong>Clay 0.14</strong> (<code>src/c/clay.h</code>) across the status bar and all overlay surfaces for sub-millisecond box layout, text measurement, and clipping.</li>
+<li><strong>Continuous-Curvature Squircles</strong>: Superellipse geometry ($n \approx 4$, G2 continuity) for panels, battery capsules, and accents.</li>
+</ul>
+<hr />
+<h2>Architecture &amp; Core</h2>
+<p>Mizu coordinates all components in a single process without IPC overhead:</p>
+<pre><code>Wayland Server (MangoWC)
+       │
+       ├─► Layer-Shell ──► Top Status Bar (src/bar/*)
+       │
+       └─► On-Demand ────► Overlay Panels (src/panels/*)
+                           (Launcher, QuickSettings, Calendar, Lock, etc.)
+</code></pre>
+<ul>
+<li><strong>Wayland Client (<code>src/core/wayland.zig</code>)</strong>: Manages <code>wl_display</code> event loop, layer-shell surface lifecycle, and input dispatching.</li>
+<li><strong>Software Rasterizer (<code>src/core/renderer.zig</code>)</strong>: 2D software rasterizer writing ARGB8888 pixels directly into double-buffered <code>wl_shm</code> memory pools (<code>src/core/buffer.zig</code>).</li>
+<li><strong>Declarative UI (<code>src/core/ui.zig</code>, <code>src/core/clay.zig</code>)</strong>: Wraps Clay 0.14 to build declarative UI trees, register input hitboxes, and measure FreeType font glyphs.</li>
+<li><strong>Async Workers (<code>src/core/async.zig</code>)</strong>: Offloads hardware scans (Wi-Fi, Bluetooth, PAM authentication) to worker threads using a non-blocking self-pipe wakeup mechanism for 0% idle CPU and stutter-free UI.</li>
+<li><strong>Theme Engine (<code>src/core/theme.zig</code>)</strong>: Built-in CSS-based themes (Nord, Dracula, Catppuccin, Tokyo Night, Rosé Pine, Frosted Neumorphic) installed in <code>/usr/share/mizu/themes/</code>, automatic copying to <code>~/.config/mizu/themes/</code>, dynamic runtime switching, and automatic SVG icon recoloring using the active theme's palette.</li>
+</ul>
+    </main>
+  </div>
+
+  <footer class="doc-footer">
+    Mizu (水) Desktop Shell — Fast, lightweight Wayland shell for Void Linux and MangoWC
+  </footer>
+</body>
+</html>

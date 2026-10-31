@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>User Guide — Mizu Documentation</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="top-nav">
+    <a href="overview.html" class="brand">
+      <span class="symbol">水</span>
+      <span>Mizu</span>
+    </a>
+    <div class="nav-links">
+      <a href="https://github.com/mizu-shell/mizu" target="_blank" rel="noopener">GitHub</a>
+    </div>
+  </header>
+
+  <div class="layout">
+    <aside class="sidebar">
+      <div class="sidebar-title">Documentation</div>
+      <nav>
+        <ul>
+          <li><a href="overview.html">Overview</a></li>
+          <li><a href="getting-started.html">Getting Started</a></li>
+          <li><a href="user-guide.html" class="active">User Guide</a></li>
+          <li><a href="configuration.html">Configuration</a></li>
+        </ul>
+      </nav>
+    </aside>
+
+    <main class="content">
+<h1>User Guide</h1>
+<h2>CLI Commands &amp; Subcommands</h2>
+<p>Mizu is controlled through a single unified CLI executable:</p>
+<pre><code class="language-text">Usage: mizu [command] [options]
+</code></pre>
+<table>
+<thead>
+<tr>
+<th>Command</th>
+<th>Aliases</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><em>(none)</em></td>
+<td><code>bar</code>, <code>daemon</code>, <code>run</code></td>
+<td>Starts desktop shell daemon (status bar + notification server + tray)</td>
+</tr>
+<tr>
+<td><code>launcher</code></td>
+<td><code>-l</code>, <code>--launcher</code></td>
+<td>Toggle centered 5x3 application launcher overlay</td>
+</tr>
+<tr>
+<td><code>quicksettings</code></td>
+<td><code>qs</code>, <code>panel</code>, <code>-q</code></td>
+<td>Toggle floating quick settings control drawer</td>
+</tr>
+<tr>
+<td><code>calendar</code></td>
+<td><code>cal</code>, <code>-c</code></td>
+<td>Toggle interactive month/year calendar</td>
+</tr>
+<tr>
+<td><code>clipboard</code></td>
+<td><code>clip</code></td>
+<td>Toggle searchable clipboard history manager</td>
+</tr>
+<tr>
+<td><code>system-monitor</code></td>
+<td><code>sysmon</code>, <code>memmon</code></td>
+<td>Toggle real-time process memory &amp; CPU monitor</td>
+</tr>
+<tr>
+<td><code>lock</code></td>
+<td>—</td>
+<td>Lock session via <code>ext-session-lock-v1</code> and PAM</td>
+</tr>
+<tr>
+<td><code>power</code></td>
+<td><code>session</code></td>
+<td>Open modal power actions overlay (lock, reboot, shutdown)</td>
+</tr>
+<tr>
+<td><code>notify</code></td>
+<td>—</td>
+<td>Send desktop notification popup (<code>mizu notify &lt;title&gt; [body]</code>)</td>
+</tr>
+<tr>
+<td><code>theme</code></td>
+<td>—</td>
+<td>Switch themes (<code>mizu theme [next\|prev\|set &lt;name&gt;\|list]</code>)</td>
+</tr>
+<tr>
+<td><code>keyoverlay</code></td>
+<td><code>keys</code>, <code>keymap</code></td>
+<td>Toggle keyboard shortcuts cheatsheet HUD</td>
+</tr>
+<tr>
+<td><code>caffeine</code></td>
+<td>—</td>
+<td>Run Wayland idle inhibitor daemon</td>
+</tr>
+<tr>
+<td><code>list</code></td>
+<td>—</td>
+<td>List all built-in and configured custom panels</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2>Status Bar Modules</h2>
+<p>The top bar layout is defined in <code>~/.config/mizu/config.ini</code> via <code>modules_left</code>, <code>modules_center</code>, and <code>modules_right</code>:</p>
+<ul>
+<li><strong><code>workspaces</code></strong>: Roman numerals (<code>Ⅰ</code>–<code>Ⅸ</code>) with active, occupied, and urgent tags via MangoWC IPC.</li>
+<li><strong><code>clock</code></strong>: Formatted date and time (<code>clock_format</code>); clicking opens Calendar.</li>
+<li><strong><code>volume</code></strong>: Volume level icon and percentage; scroll wheel adjusts volume in 5% steps (<code>wpctl</code>); click toggles mute.</li>
+<li><strong><code>battery</code></strong>: Continuous-curvature capsule with percentage and charging status read from <code>/sys/class/power_supply</code>.</li>
+<li><strong><code>network</code></strong>: Wi-Fi SSID and 4-tier signal strength or Ethernet indicator; click opens Quick Settings Wi-Fi drawer.</li>
+<li><strong><code>bluetooth</code></strong>: BlueZ adapter state and connected peripheral indicator.</li>
+<li><strong><code>memory</code></strong>: RAM usage in GB/percent; clicking opens System Monitor.</li>
+<li><strong><code>mpris</code></strong>: Media player track title and playback controls (Previous, Play/Pause, Next); auto-hides when idle.</li>
+<li><strong><code>tray</code></strong>: StatusNotifierItem (SNI) system tray hosting applet icons.</li>
+<li><strong><code>recorder</code></strong>: Screen recording status indicator and toggle button (<code>gpu-screen-recorder</code> / <code>wl-screenrec</code>).</li>
+<li><strong><code>buttons</code></strong>: Custom quick-launch buttons defined in <code>[buttons]</code>.</li>
+<li><strong><code>theme_switch</code></strong>: Interactive theme cycling chip; scroll or click to switch themes.</li>
+<li><strong><code>separator</code></strong>: Vertical divider (<code>|</code>) for separating module groups.</li>
+</ul>
+<hr />
+<h2>Overlay Panels &amp; Widgets</h2>
+<ul>
+<li><strong>Application Launcher (<code>mizu launcher</code>)</strong>: 5x3 card grid with usage-ranked search (<code>~/.cache/mizu/app_usage</code>), inline math calculation (e.g. <code>125 * 4</code>), and file browsing.</li>
+<li><strong>Quick Settings (<code>mizu quicksettings</code>)</strong>: Top-right drawer with quick toggles (Wi-Fi, Bluetooth, Audio, Power Profiles, Caffeine), volume/brightness sliders, and MPRIS controls.</li>
+<li><strong>Interactive Calendar (<code>mizu calendar</code>)</strong>: Month/year view with custom iCalendar (<code>.ics</code>) holiday markers.</li>
+<li><strong>Clipboard History (<code>mizu clipboard</code>)</strong>: Searchable clipboard history with image thumbnail and text preview; press Enter to paste.</li>
+<li><strong>Process Memory Monitor (<code>mizu system-monitor</code>)</strong>: Live tree inspector grouping browser subprocesses with interactive <code>SIGTERM</code>/<code>SIGKILL</code> actions.</li>
+<li><strong>Session Lock Screen (<code>mizu lock</code>)</strong>: Secure screen blanking via <code>ext-session-lock-v1</code> with PAM password authentication.</li>
+</ul>
+    </main>
+  </div>
+
+  <footer class="doc-footer">
+    Mizu (水) Desktop Shell — Fast, lightweight Wayland shell for Void Linux and MangoWC
+  </footer>
+</body>
+</html>

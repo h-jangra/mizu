@@ -53,6 +53,8 @@ pub const BoxOptions = struct {
     gap: u16 = 0,
     bg: ?Color = null,
     radius: f32 = 0,
+    radius_top: ?f32 = null,
+    radius_bottom: ?f32 = null,
     border: u16 = 0,
     border_color: ?Color = null,
     clip_horizontal: bool = false,
@@ -85,6 +87,29 @@ pub const Custom = union(enum) {
         function: *const fn (target: renderer.Renderer, rect: Rect, data: *const anyopaque) void,
         data: *const anyopaque,
     },
+};
+
+pub const M3ButtonType = enum { filled, tonal, outlined, text, icon, elevated, fab };
+
+pub const M3Component = struct {
+    pub fn filledButton(self: *Ui, label: []const u8, opts: BoxOptions, color: Color, text_color: Color) void {
+        var o = opts;
+        o.bg = color;
+        o.radius = 100.0;
+        o.padding = .{ .left = 16, .right = 16, .top = 8, .bottom = 8 };
+        _ = self.open(o);
+        self.text(label, .{ .size = 14, .color = text_color, .text_align = .left });
+        self.close();
+    }
+    pub fn chip(self: *Ui, label: []const u8, active: bool, opts: BoxOptions, bg: Color, fg: Color) void {
+        var o = opts;
+        o.bg = if (active) bg else Color.init(20, bg.r, bg.g, bg.b);
+        o.radius = 8;
+        o.padding = .{ .left = 12, .right = 12, .top = 6, .bottom = 6 };
+        _ = self.open(o);
+        self.text(label, .{ .size = 12, .color = fg, .text_align = .left });
+        self.close();
+    }
 };
 
 pub const Ui = struct {
@@ -194,11 +219,13 @@ pub const Ui = struct {
             },
         };
         if (opts.bg) |bg| decl.backgroundColor = clay.color(bg);
+        const radius_top = opts.radius_top orelse opts.radius;
+        const radius_bottom = opts.radius_bottom orelse opts.radius;
         decl.cornerRadius = .{
-            .topLeft = opts.radius,
-            .topRight = opts.radius,
-            .bottomLeft = opts.radius,
-            .bottomRight = opts.radius,
+            .topLeft = radius_top,
+            .topRight = radius_top,
+            .bottomLeft = radius_bottom,
+            .bottomRight = radius_bottom,
         };
         if (opts.border > 0) {
             decl.border = .{
@@ -404,11 +431,36 @@ pub const Ui = struct {
                 const data = cmd.renderData.rectangle;
                 const col = self.applyOverlay(rectFromClay(data.backgroundColor));
                 if (col.a == 0 or bw == 0 or bh == 0) return;
-                const radius: u32 = @intFromFloat(@max(
-                    @max(data.cornerRadius.topLeft, data.cornerRadius.topRight),
-                    @max(data.cornerRadius.bottomLeft, data.cornerRadius.bottomRight),
-                ));
-                target.fillRoundedRect(bx, by, bw, bh, radius, col);
+                const rt_f = @max(data.cornerRadius.topLeft, data.cornerRadius.topRight);
+                const rb_f = @max(data.cornerRadius.bottomLeft, data.cornerRadius.bottomRight);
+                if (@abs(rt_f - rb_f) < 0.01) {
+                    const radius: u32 = @intFromFloat(@max(rt_f, rb_f));
+                    target.fillRoundedRect(bx, by, bw, bh, radius, col);
+                } else {
+                    // Mixed top/bottom rounding (e.g. first/last rows of a list):
+                    // a rounded top cap, a square body, and a rounded bottom cap.
+                    // Caps are clipped so nothing overlaps, otherwise translucent
+                    // fill colors get blended twice and show as a dark band.
+                    const bhi: i32 = @intCast(bh);
+                    const rt: i32 = @intFromFloat(rt_f);
+                    const rb: i32 = @intFromFloat(rb_f);
+                    const top = @max(rt, 0);
+                    const bottom = @max(rb, 0);
+                    if (top > 0) {
+                        const cap_h: i32 = @min(top * 2, bhi);
+                        var cap = target.withClip(.init(bx, by, bw, @intCast(top)));
+                        cap.fillRoundedRect(bx, by, bw, @intCast(cap_h), @intCast(top), col);
+                    }
+                    const body_h = bhi - top - bottom;
+                    if (body_h > 0) {
+                        target.fillRect(bx, by + top, bw, @intCast(body_h), col);
+                    }
+                    if (bottom > 0) {
+                        const cap_h: i32 = @min(bottom * 2, bhi);
+                        var cap = target.withClip(.init(bx, by + @max(bhi - bottom, 0), bw, @intCast(bottom)));
+                        cap.fillRoundedRect(bx, by + @max(bhi - cap_h, 0), bw, @intCast(cap_h), @intCast(bottom), col);
+                    }
+                }
             },
             c.CLAY_RENDER_COMMAND_TYPE_BORDER => {
                 const data = cmd.renderData.border;

@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Getting Started — Mizu Documentation</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="top-nav">
+    <a href="overview.html" class="brand">
+      <span class="symbol">水</span>
+      <span>Mizu</span>
+    </a>
+    <div class="nav-links">
+      <a href="https://github.com/mizu-shell/mizu" target="_blank" rel="noopener">GitHub</a>
+    </div>
+  </header>
+
+  <div class="layout">
+    <aside class="sidebar">
+      <div class="sidebar-title">Documentation</div>
+      <nav>
+        <ul>
+          <li><a href="overview.html">Overview</a></li>
+          <li><a href="getting-started.html" class="active">Getting Started</a></li>
+          <li><a href="user-guide.html">User Guide</a></li>
+          <li><a href="configuration.html">Configuration</a></li>
+        </ul>
+      </nav>
+    </aside>
+
+    <main class="content">
+<h1>Getting Started</h1>
+<h2>Dependencies (Void Linux)</h2>
+<p>Mizu compiles with <strong>Zig 0.16.0</strong> and links against standard C system libraries:</p>
+<pre><code class="language-bash">sudo xbps-install -S \
+  zig \
+  wayland-devel \
+  wayland-protocols \
+  libxkbcommon-devel \
+  freetype-devel \
+  fontconfig-devel \
+  libpng-devel \
+  libjpeg-turbo-devel \
+  pam-devel \
+  dbus-devel \
+  pkg-config
+</code></pre>
+<hr />
+<h2>Building &amp; Installation</h2>
+<p>Compile with the Zig build system:</p>
+<pre><code class="language-bash">git clone https://github.com/mizu-shell/mizu.git
+cd mizu
+
+# Release build (recommended)
+zig build -Doptimize=ReleaseFast
+
+# Symlink to user PATH
+mkdir -p ~/.local/bin
+ln -sf $(pwd)/zig-out/bin/mizu ~/.local/bin/mizu
+</code></pre>
+<p>Run tests to verify the build:</p>
+<pre><code class="language-bash">zig build test
+</code></pre>
+<hr />
+<h2>Autostart in MangoWC</h2>
+<p>Start the desktop shell daemon (status bar, notification server, and system tray) in your MangoWC startup script (<code>~/.config/mangowc/autostart</code>):</p>
+<pre><code class="language-bash">mizu &amp;
+</code></pre>
+<h3>Recommended Keybindings</h3>
+<p>Bind compositor shortcuts to toggle Mizu's overlay surfaces:</p>
+<pre><code class="language-ini"># Application Launcher (Super + Space)
+bind = SUPER, Space, exec, mizu launcher
+
+# Quick Settings Drawer (Super + S)
+bind = SUPER, S, exec, mizu quicksettings
+
+# Interactive Calendar (Super + C)
+bind = SUPER, C, exec, mizu calendar
+
+# Clipboard Manager (Super + V)
+bind = SUPER, V, exec, mizu clipboard
+
+# Process Memory Monitor (Super + M)
+bind = SUPER, M, exec, mizu system-monitor
+
+# Screen Lock (Super + L)
+bind = SUPER, L, exec, mizu lock
+
+# Power / Session Menu (Super + Backspace)
+bind = SUPER, Backspace, exec, mizu power
+</code></pre>
+<p>All panel commands toggle automatically: running a command while the panel is active closes it cleanly.</p>
+    </main>
+  </div>
+
+  <footer class="doc-footer">
+    Mizu (水) Desktop Shell — Fast, lightweight Wayland shell for Void Linux and MangoWC
+  </footer>
+</body>
+</html>

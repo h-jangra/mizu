@@ -1,5 +1,5 @@
 const std = @import("std");
-const c = @import("c");
+const c = @import("c.zig").c;
 const config = @import("core/config.zig");
 const theme = @import("core/theme.zig");
 const mango_ipc = @import("services/mango_ipc.zig");
@@ -22,7 +22,6 @@ const ink_module = @import("apps/ink/ink.zig");
 const annotate_module = ink_module;
 const image_viewer_module = @import("apps/view/view.zig");
 const wallpaper_module = @import("panels/wallpaper.zig");
-const colorpicker_module = @import("apps/colorpicker/colorpicker.zig");
 
 test {
     _ = @import("services/desktop_entries.zig");
@@ -47,8 +46,8 @@ test {
     _ = @import("services/caffeine.zig");
     _ = @import("graphics/image_ops.zig");
     _ = @import("core/wayland_window.zig");
-    _ = @import("apps/ink/ink.zig");
-    _ = @import("apps/view/view.zig");
+    _ = @import("apps/annotate.zig");
+    _ = @import("apps/image_viewer.zig");
     _ = @import("panels/wallpaper.zig");
 }
 
@@ -179,7 +178,6 @@ const Command = enum {
     image,
     view,
     wallpaper,
-    colorpicker,
     list,
     help,
     version,
@@ -202,8 +200,6 @@ fn parseCommand(arg: []const u8) ?Command {
         return .ink;
     } else if (std.mem.eql(u8, arg, "wallpaper") or std.mem.eql(u8, arg, "wall") or std.mem.eql(u8, arg, "bg")) {
         return .wallpaper;
-    } else if (std.mem.eql(u8, arg, "colorpicker") or std.mem.eql(u8, arg, "color") or std.mem.eql(u8, arg, "pick") or std.mem.eql(u8, arg, "picker")) {
-        return .colorpicker;
     } else if (std.mem.eql(u8, arg, "launcher") or std.mem.eql(u8, arg, "-l") or std.mem.eql(u8, arg, "--launcher")) {
         return .launcher;
     } else if (std.mem.eql(u8, arg, "quicksettings") or std.mem.eql(u8, arg, "qs") or std.mem.eql(u8, arg, "panel") or std.mem.eql(u8, arg, "-q") or std.mem.eql(u8, arg, "--quicksettings")) {
@@ -251,7 +247,6 @@ fn printUsage() void {
         \\  view            Fast, minimal image viewer with low RAM usage (aliases: v)
         \\  ink             Open unified image annotator & editor (aliases: annotate, image, shot, draw, img)
         \\  wallpaper       Set or switch wallpapers (mizu wallpaper [switch|set <path>])
-        \\  colorpicker     Native Wayland color picker (aliases: color, pick, picker)
         \\  notify          Show a desktop notification popup (mizu notify <title> [body])
         \\  theme           Switch or inspect themes (mizu theme [next|prev|set <name>|list])
         \\  keyoverlay      Show on-screen key combination overlay (aliases: keymap, keys)
@@ -388,65 +383,6 @@ fn runCustomPanel(allocator: std.mem.Allocator, name: []const u8, cmd: []const u
     }
 }
 
-fn runInkStandalone(arg_it: anytype) u8 {
-    const allocator = std.heap.c_allocator;
-    var cfg = loadConfig(allocator);
-    defer cfg.deinit(allocator);
-
-    var screenshot_mode = false;
-    var file_to_open: ?[]const u8 = null;
-
-    while (arg_it.next()) |arg| {
-        if (std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "--help")) {
-            std.debug.print("Usage: mizu-ink [-s|--screenshot] [image_file|-]\n", .{});
-            return 0;
-        } else if (std.mem.eql(u8, arg, "-v") or std.mem.eql(u8, arg, "--version")) {
-            printVersion();
-            return 0;
-        } else if (std.mem.eql(u8, arg, "-s") or std.mem.eql(u8, arg, "--screenshot")) {
-            screenshot_mode = true;
-        } else if (std.mem.eql(u8, arg, "-")) {
-            file_to_open = "-";
-        } else if (!std.mem.startsWith(u8, arg, "-")) {
-            file_to_open = arg;
-        }
-    }
-
-    const ret = ink_module.run(allocator, cfg, file_to_open, screenshot_mode) catch |err| {
-        std.debug.print("mizu-ink error: {any}\n", .{err});
-        return 1;
-    };
-    return ret;
-}
-
-fn runViewStandalone(arg_it: anytype) u8 {
-    const allocator = std.heap.c_allocator;
-    var cfg = loadConfig(allocator);
-    defer cfg.deinit(allocator);
-
-    var file_to_open: ?[]const u8 = null;
-
-    while (arg_it.next()) |arg| {
-        if (std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "--help")) {
-            std.debug.print("Usage: mizu-view [image_file|-]\n\nFast, minimal Wayland image viewer with low RAM usage.\n", .{});
-            return 0;
-        } else if (std.mem.eql(u8, arg, "-v") or std.mem.eql(u8, arg, "--version")) {
-            printVersion();
-            return 0;
-        } else if (std.mem.eql(u8, arg, "-")) {
-            file_to_open = "-";
-        } else if (!std.mem.startsWith(u8, arg, "-")) {
-            file_to_open = arg;
-        }
-    }
-
-    const ret = image_viewer_module.run(allocator, cfg, file_to_open) catch |err| {
-        std.debug.print("mizu-view error: {any}\n", .{err});
-        return 1;
-    };
-    return ret;
-}
-
 fn handleThemeCommand(arg_it: anytype) u8 {
     const sub1 = arg_it.next();
     if (sub1 == null or std.mem.eql(u8, sub1.?, "get") or std.mem.eql(u8, sub1.?, "current")) {
@@ -473,15 +409,16 @@ fn handleThemeCommand(arg_it: anytype) u8 {
         _ = theme.selectTheme(prv.id());
         std.debug.print("Switched theme to {s} {s}\n", .{ prv.icon(), prv.name() });
         return 0;
-    } else if (std.mem.eql(u8, sub1.?, "generate") or std.mem.eql(u8, sub1.?, "gen") or std.mem.eql(u8, sub1.?, "install") or std.mem.eql(u8, sub1.?, "copy")) {
+    } else if (std.mem.eql(u8, sub1.?, "generate") or std.mem.eql(u8, sub1.?, "gen")) {
         const target = arg_it.next();
         if (target == null or std.mem.eql(u8, target.?, "all")) {
-            theme.ensureAllUserThemes();
-            std.debug.print("Themes installed to ~/.config/mizu/themes/\n", .{});
+            theme.generateAllThemes();
+            std.debug.print("Generated configuration bundles for all built-in themes in themes/<theme>/\n", .{});
             return 0;
         } else {
-            theme.ensureUserTheme(target.?);
-            std.debug.print("Theme '{s}' installed to ~/.config/mizu/themes/{s}/\n", .{ target.?, target.? });
+            const th = theme.loadTheme(target.?);
+            theme.generateThemeDirectory(target.?, &th);
+            std.debug.print("Generated configuration bundle for theme '{s}' in themes/{s}/\n", .{ target.?, target.? });
             return 0;
         }
     } else if (std.mem.eql(u8, sub1.?, "set")) {
@@ -513,20 +450,7 @@ pub fn main(init: std.process.Init.Minimal) u8 {
     _ = c.sigprocmask(c.SIG_BLOCK, &init_sig_mask, null);
 
     var arg_it = std.process.Args.Iterator.init(init.args);
-    const bin_raw = arg_it.next() orelse "mizu";
-    const bin_name = if (std.mem.lastIndexOfScalar(u8, bin_raw, '/')) |slash|
-        bin_raw[slash + 1 ..]
-    else
-        bin_raw;
-
-    if (std.mem.eql(u8, bin_name, "mizu-ink") or
-        std.mem.eql(u8, bin_name, "mizu-annotate") or
-        std.mem.eql(u8, bin_name, "mizu-image"))
-    {
-        return runInkStandalone(&arg_it);
-    } else if (std.mem.eql(u8, bin_name, "mizu-view")) {
-        return runViewStandalone(&arg_it);
-    }
+    _ = arg_it.next(); // skip binary name
 
     const maybe_cmd_str = arg_it.next();
     if (maybe_cmd_str == null) {
@@ -572,10 +496,55 @@ pub fn main(init: std.process.Init.Minimal) u8 {
             return caffeine_module.run();
         },
         .view => {
-            return runViewStandalone(&arg_it);
+            const allocator = std.heap.c_allocator;
+            var cfg = loadConfig(allocator);
+            defer cfg.deinit(allocator);
+
+            var file_to_open: ?[]const u8 = null;
+
+            while (arg_it.next()) |arg| {
+                if (std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "--help")) {
+                    std.debug.print("Usage: mizu view [image_file|-]\n\nFast, minimal Wayland image viewer with low RAM usage.\n", .{});
+                    return 0;
+                } else if (std.mem.eql(u8, arg, "-")) {
+                    file_to_open = "-";
+                } else if (!std.mem.startsWith(u8, arg, "-")) {
+                    file_to_open = arg;
+                }
+            }
+
+            const ret = image_viewer_module.run(allocator, cfg, file_to_open) catch |err| {
+                std.debug.print("mizu view error: {any}\n", .{err});
+                return 1;
+            };
+            return ret;
         },
         .ink, .annotate, .image => {
-            return runInkStandalone(&arg_it);
+            const allocator = std.heap.c_allocator;
+            var cfg = loadConfig(allocator);
+            defer cfg.deinit(allocator);
+
+            var screenshot_mode = false;
+            var file_to_open: ?[]const u8 = null;
+
+            while (arg_it.next()) |arg| {
+                if (std.mem.eql(u8, arg, "-s") or std.mem.eql(u8, arg, "--screenshot")) {
+                    screenshot_mode = true;
+                } else if (std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "--help")) {
+                    std.debug.print("Usage: mizu ink [-s|--screenshot] [image_file|-]\n", .{});
+                    return 0;
+                } else if (std.mem.eql(u8, arg, "-")) {
+                    file_to_open = "-";
+                } else if (!std.mem.startsWith(u8, arg, "-")) {
+                    file_to_open = arg;
+                }
+            }
+
+            const ret = ink_module.run(allocator, cfg, file_to_open, screenshot_mode) catch |err| {
+                std.debug.print("mizu ink error: {any}\n", .{err});
+                return 1;
+            };
+            return ret;
         },
         .wallpaper => {
             const allocator = std.heap.c_allocator;
@@ -594,17 +563,6 @@ pub fn main(init: std.process.Init.Minimal) u8 {
             } else {
                 return wallpaper_module.runSetter(allocator, subcmd.?);
             }
-        },
-        .colorpicker => {
-            if (!toggleOrLockInstance("colorpicker")) return 0;
-            defer cleanupPidFile("colorpicker");
-            const allocator = std.heap.c_allocator;
-            var cfg = loadConfig(allocator);
-            defer cfg.deinit(allocator);
-            return colorpicker_module.run(allocator, cfg) catch |err| {
-                std.debug.print("mizu colorpicker error: {any}\n", .{err});
-                return 1;
-            };
         },
         .version => {
             printVersion();
@@ -940,10 +898,8 @@ fn runBar(allocator: std.mem.Allocator, cfg: config.Config) !void {
     app.bar = &bar;
     app.ipc = &ipc;
 
-    // Create bar surface
     try app.createSurface();
 
-    // Render first frame immediately so bar appears without delay
     _ = bar.tick();
     app.needs_redraw = true;
     try app.redraw();
@@ -974,7 +930,6 @@ fn runBar(allocator: std.mem.Allocator, cfg: config.Config) !void {
         if (sig_fd >= 0) _ = c.close(sig_fd);
     }
 
-    // Start D-Bus notification daemon service (org.freedesktop.Notifications)
     const dbus_init_res = notify_dbus.mizu_dbus_notify_init(onDbusNotification, null);
     if (dbus_init_res == 0) {
         std.debug.print("Mizu notification daemon active on org.freedesktop.Notifications\n", .{});
@@ -986,7 +941,6 @@ fn runBar(allocator: std.mem.Allocator, cfg: config.Config) !void {
     global_bar_app = &app;
     defer global_bar_app = null;
 
-    // StatusNotifierWatcher for system tray (org.kde.StatusNotifierWatcher)
     const tray_init_res = tray_dbus.mizu_tray_dbus_init(onTrayUpdate, null);
     if (tray_init_res == 0) {
         std.debug.print("Mizu StatusNotifierWatcher active on org.kde.StatusNotifierWatcher\n", .{});

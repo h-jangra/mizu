@@ -162,14 +162,14 @@ pub const Bar = struct {
                 if (area.scroll) |s| {
                     switch (s) {
                         .volume => {
-                            self.sys_status.stepVolume(if (scroll_delta < 0) 5 else -5);
+                            self.sys_status.stepVolume(if (scroll_delta < 0) 1 else -1);
                             return true;
                         },
                         .backlight => {
                             if (scroll_delta < 0) {
-                                sys_status.spawnCmd("brightnessctl set +5%");
+                                sys_status.spawnCmd("brightnessctl set +1%");
                             } else {
-                                sys_status.spawnCmd("brightnessctl set 5%-");
+                                sys_status.spawnCmd("brightnessctl set 1%-");
                             }
                             self.sys_status.updateBacklight();
                             return true;
@@ -299,6 +299,7 @@ pub const Bar = struct {
 
         const new_th = theme.selectTheme(self.current_theme_kind.id());
         self.cfg.theme = new_th;
+        theme.saveCurrentTheme(self.current_theme_kind);
     }
 
     fn renderLeftModule(self: *Bar, mod: config.ModuleKind, ctx: *types.BarContext, ui: *ui_mod.Ui) !void {

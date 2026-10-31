@@ -8,11 +8,46 @@ pub fn monotonicMs() u64 {
     return @as(u64, @intCast(ts.tv_sec)) * 1_000 + @as(u64, @intCast(ts.tv_nsec)) / 1_000_000;
 }
 
+pub const CubicBezierParams = struct { x1: f32, y1: f32, x2: f32, y2: f32 };
+
+/// Cubic bezier helper for M3 easing curves.
+fn cubicBezier(p: CubicBezierParams, t: f32) f32 {
+    const uu = 1.0 - t;
+    const uu_sq = uu * uu;
+    const tt = t * t;
+    const tt_cu = tt * t;
+    const y = 3.0 * uu_sq * t * p.y1 + 3.0 * uu * tt * p.y2 + tt_cu * 1.0;
+    return y;
+}
+
+fn bezierX(p: CubicBezierParams, t: f32) f32 {
+    const uu = 1.0 - t;
+    const uu_sq = uu * uu;
+    const tt = t * t;
+    const tt_cu = tt * t;
+    return 3.0 * uu_sq * t * p.x1 + 3.0 * uu * tt * p.x2 + tt_cu * 1.0;
+}
+
+pub fn applyBezier(p: CubicBezierParams, x: f32) f32 {
+    if (x <= 0.0) return 0.0;
+    if (x >= 1.0) return 1.0;
+    var lo: f32 = 0.0;
+    var hi: f32 = 1.0;
+    var t: f32 = 0.5;
+    for (0..32) |_| {
+        const mid = lo + (hi - lo) * 0.5;
+        const x_mid = bezierX(p, mid);
+        if (x_mid < x) lo = mid else hi = mid;
+        t = lo + (hi - lo) * 0.5;
+    }
+    return cubicBezier(p, t);
+}
+
 /// Reusable easing functions. All take a normalized progress `t` in [0, 1]
 /// and return an eased progress in [0, 1].
 pub const Easing = struct {
     pub fn linear(t: f32) f32 {
-        return t;
+        return std.math.clamp(t, 0.0, 1.0);
     }
 
     /// Fast start, slow end.
@@ -28,7 +63,7 @@ pub const Easing = struct {
         return if (clamped < 0.5)
             4.0 * clamped * clamped * clamped
         else
-            1.0 - (-2.0 * clamped + 2.0) ^ 3 / 2.0;
+            1.0 - (-2.0 * clamped + 2.0) * (-2.0 * clamped + 2.0) * (-2.0 * clamped + 2.0) / 2.0;
     }
 
     /// Very fast end (strong ease-out).
@@ -42,6 +77,41 @@ pub const Easing = struct {
     pub fn easeInOutSine(t: f32) f32 {
         const clamped = std.math.clamp(t, 0.0, 1.0);
         return -(std.math.cos(clamped * std.math.pi) - 1.0) / 2.0;
+    }
+
+    /// M3 Standard easing: cubic-bezier(0.25, 0.1, 0.25, 1.0)
+    pub fn standard(t: f32) f32 {
+        const clamped = std.math.clamp(t, 0.0, 1.0);
+        const curve = CubicBezierParams{ .x1 = 0.25, .y1 = 0.1, .x2 = 0.25, .y2 = 1.0 };
+        return applyBezier(curve, clamped);
+    }
+
+    /// M3 Standard Deceleration easing: cubic-bezier(0.05, 0, 0.1, 1.0)
+    pub fn standardDeceleration(t: f32) f32 {
+        const clamped = std.math.clamp(t, 0.0, 1.0);
+        const curve = CubicBezierParams{ .x1 = 0.05, .y1 = 0.0, .x2 = 0.1, .y2 = 1.0 };
+        return applyBezier(curve, clamped);
+    }
+
+    /// M3 Standard Acceleration easing: cubic-bezier(0.3, 0, 1, 1.0)
+    pub fn standardAcceleration(t: f32) f32 {
+        const clamped = std.math.clamp(t, 0.0, 1.0);
+        const curve = CubicBezierParams{ .x1 = 0.3, .y1 = 0.0, .x2 = 1.0, .y2 = 1.0 };
+        return applyBezier(curve, clamped);
+    }
+
+    /// M3 Emphasized Deceleration easing: cubic-bezier(0.05, 0, 0.7, 1.0)
+    pub fn emphasizedDeceleration(t: f32) f32 {
+        const clamped = std.math.clamp(t, 0.0, 1.0);
+        const curve = CubicBezierParams{ .x1 = 0.05, .y1 = 0.0, .x2 = 0.7, .y2 = 1.0 };
+        return applyBezier(curve, clamped);
+    }
+
+    /// M3 Emphasized Acceleration easing: cubic-bezier(0.3, 0, 1.2, 1.0)
+    pub fn emphasizedAcceleration(t: f32) f32 {
+        const clamped = std.math.clamp(t, 0.0, 1.0);
+        const curve = CubicBezierParams{ .x1 = 0.3, .y1 = 0.0, .x2 = 1.2, .y2 = 1.0 };
+        return applyBezier(curve, clamped);
     }
 };
 
@@ -167,6 +237,60 @@ pub const AnimationGroup = struct {
     }
 };
 
+/// Check whether reduced motion is preferred (respect accessibility settings).
+pub fn reducedMotionPreferred() bool {
+    const env = c.getenv("MIZU_REDUCED_MOTION");
+    if (env) |v| {
+        const slice = std.mem.sliceTo(v, 0);
+        if (std.mem.eql(u8, slice, "1") or std.mem.eql(u8, slice, "true")) return true;
+    }
+    return false;
+}
+
+/// Quick single-animation helper for 120ms fade/slide with standard easing.
+pub fn quickFadeIn(anim: *Animation) void {
+    if (reducedMotionPreferred()) {
+        anim.start(1.0, 1.0, 0, &Easing.linear);
+    } else {
+        anim.start(0.0, 1.0, 120, &Easing.standard);
+    }
+}
+
+pub fn quickFadeOut(anim: *Animation) void {
+    if (reducedMotionPreferred()) {
+        anim.start(0.0, 0.0, 0, &Easing.linear);
+    } else {
+        anim.start(1.0, 0.0, 130, &Easing.standard);
+    }
+}
+
+/// Quick slide-up animation (from positive y offset to 0).
+pub fn quickSlideUp(anim: *Animation) void {
+    if (reducedMotionPreferred()) {
+        anim.start(0.0, 0.0, 0, &Easing.linear);
+    } else {
+        anim.start(16.0, 0.0, 150, &Easing.emphasizedDeceleration);
+    }
+}
+
+/// Quick slide-down animation.
+pub fn quickSlideDown(anim: *Animation) void {
+    if (reducedMotionPreferred()) {
+        anim.start(0.0, 0.0, 0, &Easing.linear);
+    } else {
+        anim.start(0.0, 16.0, 140, &Easing.emphasizedDeceleration);
+    }
+}
+
+/// Subtle scale animation for hover/press effects.
+pub fn quickScaleUp(anim: *Animation) void {
+    anim.start(1.0, 1.035, 100, &Easing.easeOutCubic);
+}
+
+pub fn quickScaleDown(anim: *Animation) void {
+    anim.start(1.035, 1.0, 100, &Easing.easeOutCubic);
+}
+
 test "Animation interpolates and completes" {
     var a = Animation.init();
     a.start(0.0, 100.0, 100, &Easing.linear);
@@ -212,4 +336,36 @@ test "Animation cancel" {
     try std.testing.expect(a.active);
     a.cancel();
     try std.testing.expect(!a.active);
+}
+
+// Test M3 easing curves
+
+test "M3 standard easing" {
+    try std.testing.expectApproxEqAbs(@as(f32, 0.0), Easing.standard(0.0), 0.001);
+    try std.testing.expect(Easing.standard(0.5) > 0.0 and Easing.standard(0.5) < 1.0);
+    try std.testing.expectApproxEqAbs(@as(f32, 1.0), Easing.standard(1.0), 0.001);
+}
+
+test "M3 standardDeceleration easing" {
+    try std.testing.expectApproxEqAbs(@as(f32, 0.0), Easing.standardDeceleration(0.0), 0.001);
+    try std.testing.expect(Easing.standardDeceleration(0.5) > 0.0 and Easing.standardDeceleration(0.5) < 1.0);
+    try std.testing.expectApproxEqAbs(@as(f32, 1.0), Easing.standardDeceleration(1.0), 0.001);
+}
+
+test "M3 standardAcceleration easing" {
+    try std.testing.expectApproxEqAbs(@as(f32, 0.0), Easing.standardAcceleration(0.0), 0.001);
+    try std.testing.expect(Easing.standardAcceleration(0.5) > 0.0 and Easing.standardAcceleration(0.5) < 1.0);
+    try std.testing.expectApproxEqAbs(@as(f32, 1.0), Easing.standardAcceleration(1.0), 0.001);
+}
+
+test "M3 emphasizedDeceleration easing" {
+    try std.testing.expectApproxEqAbs(@as(f32, 0.0), Easing.emphasizedDeceleration(0.0), 0.001);
+    try std.testing.expect(Easing.emphasizedDeceleration(0.5) > 0.0 and Easing.emphasizedDeceleration(0.5) < 1.0);
+    try std.testing.expectApproxEqAbs(@as(f32, 1.0), Easing.emphasizedDeceleration(1.0), 0.001);
+}
+
+test "M3 emphasizedAcceleration easing" {
+    try std.testing.expectApproxEqAbs(@as(f32, 0.0), Easing.emphasizedAcceleration(0.0), 0.001);
+    try std.testing.expect(Easing.emphasizedAcceleration(0.5) > 0.0 and Easing.emphasizedAcceleration(0.5) < 1.0);
+    try std.testing.expectApproxEqAbs(@as(f32, 1.0), Easing.emphasizedAcceleration(1.0), 0.001);
 }

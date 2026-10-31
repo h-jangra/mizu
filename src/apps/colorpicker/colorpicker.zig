@@ -12,9 +12,7 @@ const ImageBuffer = image_ops.ImageBuffer;
 const WindowApp = wayland_win.WindowApp;
 const WindowConfig = wayland_win.WindowConfig;
 
-// ============================================================================
 // Native Wayland Screencopy (hyprpicker style via zwlr_screencopy_manager_v1)
-// ============================================================================
 
 const ScreencopyState = struct {
     display: ?*c.wl_display = null,
@@ -318,9 +316,7 @@ fn captureScreenGrim(allocator: std.mem.Allocator) ?ImageBuffer {
     return ImageBuffer.loadFromFile(allocator, tmp_path) catch null;
 }
 
-// ============================================================================
 // Main Color Picker Entrypoint
-// ============================================================================
 
 pub fn run(allocator: std.mem.Allocator, cfg: config.Config) !u8 {
     // Attempt native screencopy first (hyprpicker-style), fallback to grim only if unsupported

@@ -1450,13 +1450,28 @@ pub const ClipboardPanel = struct {
                     .align_y = .center,
                 });
 
+                // Show image info for image items, text preview for text items
+                var display_str: []const u8 = t_str;
+                var has_thumbnail = false;
+                if (item.clip_type == .image) {
+                    // Show image label with dimensions instead of binary garbage
+                    var img_info_buf: [128]u8 = undefined;
+                    const img_str = std.fmt.bufPrint(&img_info_buf, "Image · {d}x{d} · {s}", .{ item.image_width, item.image_height, if (item.image_format.len > 0) item.image_format else "unknown" }) catch "Image";
+                    display_str = img_str;
+                    has_thumbnail = true;
+                }
+
                 _ = ui.open(.{
                     .width = .{ .grow = .{} },
                     .height = .{ .grow = .{} },
                     .align_y = .center,
                     .clip_horizontal = true,
                 });
-                ui.text(t_str, .{
+                if (has_thumbnail and item.clip_type == .image) {
+                    ui.icon("image", 16 * scale, self.cfg.theme.accent, 0);
+                    ui.spacerSized(.{ .fixed = ui.s(6) }, .{ .fixed = 0 });
+                }
+                ui.text(display_str, .{
                     .size = self.cfg.typography.ui * scale,
                     .color = if (is_selected) self.cfg.theme.text_bright else self.cfg.theme.text_main,
                 });
@@ -1643,14 +1658,17 @@ pub const ClipboardPanel = struct {
                 const quiet_zone: u32 = 2;
                 const total_modules = qr.size + quiet_zone * 2;
                 const max_box = @min(if (w > 48 * scale) w - 48 * scale else w, if (card_h > 48 * scale) card_h - 48 * scale else card_h);
+                // Pixel-perfect integer scaling: maximize module size without exceeding box
                 const mod_size = @max(1, max_box / total_modules);
                 const qr_px = total_modules * mod_size;
                 const qr_box_x = x + @divTrunc(@as(i32, @intCast(w)) - @as(i32, @intCast(qr_px)), 2);
                 const qr_box_y = card_y + @divTrunc(@as(i32, @intCast(card_h)) - @as(i32, @intCast(qr_px)), 2);
 
+                // Sharp high-contrast background with quiet zone
                 target.fillSquircle(qr_box_x, qr_box_y, qr_px, qr_px, 8 * scale, theme.Color.rgb(255, 255, 255));
-                target.drawSquircleBorder(qr_box_x, qr_box_y, qr_px, qr_px, 8 * scale, 1, theme.Color.rgb(220, 220, 220));
+                target.drawSquircleBorder(qr_box_x, qr_box_y, qr_px, qr_px, 8 * scale, 1, theme.Color.rgb(200, 200, 200));
 
+                // Crisp pixel-perfect modules: pure black on pure white
                 var qy: u32 = 0;
                 while (qy < qr.size) : (qy += 1) {
                     var qx: u32 = 0;
@@ -1658,7 +1676,7 @@ pub const ClipboardPanel = struct {
                         if (qr.isDark(qx, qy)) {
                             const mx = qr_box_x + @as(i32, @intCast((quiet_zone + qx) * mod_size));
                             const my = qr_box_y + @as(i32, @intCast((quiet_zone + qy) * mod_size));
-                            target.fillRect(mx, my, mod_size, mod_size, theme.Color.rgb(18, 18, 18));
+                            target.fillRect(mx, my, mod_size, mod_size, theme.Color.rgb(0, 0, 0));
                         }
                     }
                 }

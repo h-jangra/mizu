@@ -1,0 +1,131 @@
+/* Theme - Nord Frost */
+
+@define-color theme_bg #2e3440;
+@define-color theme_fg #eceff4;
+@define-color theme_sidebar #434c5e;
+@define-color theme_surface #3b4252;
+@define-color theme_border #434c5e;
+@define-color theme_accent #88c0d0;
+@define-color theme_accent_alt #81a1c1;
+@define-color theme_selected_bg #88c0d0;
+@define-color theme_selected_fg #2e3440;
+@define-color theme_urgent #bf616a;
+@define-color theme_success #a3be8c;
+
+@define-color accent #88c0d0;
+@define-color accent_alt #81a1c1;
+@define-color bg #2e3440;
+@define-color fg #eceff4;
+@define-color border #434c5e;
+@define-color sidebar #434c5e;
+@define-color surface #3b4252;
+@define-color urgent #bf616a;
+@define-color success #a3be8c;
+
+@define-color theme_bg_color @theme_bg;
+@define-color theme_fg_color @theme_fg;
+@define-color theme_base_color @theme_bg;
+@define-color theme_text_color @theme_fg;
+@define-color theme_selected_bg_color @theme_selected_bg;
+@define-color theme_selected_fg_color @theme_selected_fg;
+
+@define-color theme_unfocused_bg_color @theme_bg;
+@define-color theme_unfocused_fg_color @theme_fg;
+@define-color theme_unfocused_base_color @theme_bg;
+@define-color theme_unfocused_text_color @theme_fg;
+@define-color theme_unfocused_selected_bg_color @theme_selected_bg;
+@define-color theme_unfocused_selected_fg_color @theme_selected_fg;
+
+@define-color insensitive_bg_color @theme_bg;
+@define-color insensitive_fg_color alpha(@theme_fg, 0.45);
+@define-color insensitive_base_color @theme_bg;
+@define-color unfocused_insensitive_color alpha(@theme_fg, 0.35);
+
+@define-color borders @theme_border;
+@define-color unfocused_borders @theme_border;
+@define-color warning_color @theme_urgent;
+@define-color error_color @theme_urgent;
+@define-color success_color @theme_success;
+@define-color info_color @theme_accent;
+@define-color question_color @theme_accent;
+@define-color link_color @theme_accent;
+@define-color link_visited_color @theme_accent_alt;
+
+@define-color window_bg_color @theme_bg;
+@define-color window_fg_color @theme_fg;
+@define-color window_border_color @theme_border;
+@define-color view_bg_color @theme_bg;
+@define-color view_fg_color @theme_fg;
+@define-color content_view_bg @theme_bg;
+@define-color text_view_bg @theme_bg;
+
+@define-color headerbar_bg_color @theme_sidebar;
+@define-color headerbar_fg_color @theme_fg;
+@define-color headerbar_border_color @theme_border;
+@define-color headerbar_backdrop_color @theme_bg;
+@define-color headerbar_shade_color rgba(0, 0, 0, 0.2);
+
+@define-color toolbar_bg_color @theme_sidebar;
+@define-color toolbar_fg_color @theme_fg;
+@define-color toolbar_border_color @theme_border;
+@define-color toolbar_backdrop_color @theme_bg;
+@define-color actionbar_bg_color @theme_sidebar;
+@define-color actionbar_fg_color @theme_fg;
+@define-color actionbar_border_color @theme_border;
+@define-color actionbar_backdrop_color @theme_bg;
+@define-color searchbar_bg_color @theme_sidebar;
+@define-color searchbar_fg_color @theme_fg;
+@define-color searchbar_border_color @theme_border;
+@define-color statusbar_bg_color @theme_sidebar;
+@define-color statusbar_fg_color @theme_fg;
+@define-color menubar_bg_color @theme_sidebar;
+@define-color menubar_fg_color @theme_fg;
+@define-color infobar_bg_color @theme_surface;
+@define-color infobar_fg_color @theme_fg;
+
+@define-color sidebar_bg_color @theme_sidebar;
+@define-color sidebar_fg_color @theme_fg;
+@define-color sidebar_backdrop_color @theme_bg;
+@define-color sidebar_border_color @theme_border;
+@define-color secondary_sidebar_bg_color @theme_bg;
+@define-color secondary_sidebar_fg_color @theme_fg;
+
+@define-color card_bg_color @theme_surface;
+@define-color card_fg_color @theme_fg;
+@define-color card_border_color @theme_border;
+@define-color card_shade_color rgba(0, 0, 0, 0.15);
+@define-color dialog_bg_color @theme_bg;
+@define-color dialog_fg_color @theme_fg;
+@define-color popover_bg_color @theme_surface;
+@define-color popover_fg_color @theme_fg;
+@define-color popover_shade_color rgba(0, 0, 0, 0.25);
+@define-color overview_bg_color @theme_surface;
+@define-color overview_fg_color @theme_fg;
+
+@define-color tooltip_bg_color @theme_surface;
+@define-color tooltip_fg_color @theme_fg;
+@define-color tooltip_border_color @theme_border;
+@define-color theme_tooltip_bg_color @theme_surface;
+@define-color theme_tooltip_fg_color @theme_fg;
+@define-color progress_bg_color @theme_accent;
+@define-color progress_trough_color @theme_surface;
+@define-color shade_color rgba(0, 0, 0, 0.25);
+@define-color scrollbar_outline_color transparent;
+
+@define-color accent_color @theme_accent;
+@define-color accent_bg_color @theme_accent;
+@define-color accent_fg_color @theme_selected_fg;
+@define-color destructive_color @theme_urgent;
+@define-color destructive_bg_color @theme_urgent;
+@define-color destructive_fg_color @theme_selected_fg;
+@define-color theme_destructive_bg @theme_urgent;
+@define-color theme_destructive_hover alpha(@theme_urgent, 0.85);
+@define-color theme_destructive_active @theme_urgent;
+@define-color theme_border_dim alpha(@theme_border, 0.6);
+@define-color warning_bg_color @theme_urgent;
+@define-color warning_fg_color @theme_selected_fg;
+@define-color success_bg_color @theme_success;
+@define-color success_fg_color @theme_selected_fg;
+@define-color error_color @theme_urgent;
+@define-color error_bg_color @theme_urgent;
+@define-color error_fg_color @theme_selected_fg;

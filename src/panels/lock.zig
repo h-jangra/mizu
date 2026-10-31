@@ -478,20 +478,22 @@ pub const LockApp = struct {
             const char_size = 20 * sc;
             const char_size_i = @as(i32, @intCast(char_size));
             const char_gap = @as(i32, @intCast(4 * sc));
-            const total_chars = self.password_len;
+            const total_chars = @min(self.password_len, 8);
+            const start_idx = self.password_len - total_chars;
             // Last char visible; rest masked.
             const mask_str = "󰊠";
             const last_str = "󰮯";
 
-            // Measure approximate width to center.
+            // Measure approximate width to center (max 8 chars so it never overflows).
             const approx_char_w = char_size_i;
             const tc = @as(i32, @intCast(total_chars));
             const total_w_approx = tc * approx_char_w + (tc - 1) * char_gap;
             var char_x = @divTrunc(@as(i32, @intCast(w)), 2) - @divTrunc(total_w_approx, 2);
             const char_y = @as(i32, @intCast(h)) - 80 * @as(i32, @intCast(sc));
 
-            var i: usize = 0;
-            while (i < self.password_len) : (i += 1) {
+            var idx: usize = 0;
+            while (idx < total_chars) : (idx += 1) {
+                const i = start_idx + idx;
                 const is_last = (i == self.password_len - 1);
                 const str_to_draw = if (is_last) last_str else mask_str;
                 self.drawTextDirect(font, target, str_to_draw, char_x, char_y, char_size, Color.rgb(255, 255, 255));

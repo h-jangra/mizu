@@ -247,9 +247,9 @@ const QsSliderDraw = struct {
         const text_w = self.panel.font.measureTextWithSize(num_str, font_sz);
         const tip_pad_x: u32 = 5 * scale;
         const tip_w: u32 = text_w + tip_pad_x * 2;
-        const tip_h: u32 = 14 * scale;
+        const tip_h: u32 = 30 * scale;
 
-        const thumb_r: f64 = 7.5 * @as(f64, @floatFromInt(scale));
+        const thumb_r: f64 = 10 * @as(f64, @floatFromInt(scale));
         var thumb_cx: f64 = @as(f64, @floatFromInt(rect.x)) + (@as(f64, @floatFromInt(rect.w)) * @as(f64, @floatFromInt(pct))) / 100.0;
         const min_cx: f64 = @as(f64, @floatFromInt(rect.x)) + thumb_r;
         const max_cx: f64 = @as(f64, @floatFromInt(rect.x + @as(i32, @intCast(rect.w)))) - thumb_r;
@@ -301,8 +301,8 @@ pub const QuickSettings = struct {
     font: renderer.Font,
     sys: sys_status.SysStatus,
 
-    width: u32 = 400,
-    height: u32 = 360,
+    width: u32 = 520,
+    height: u32 = 480,
     running: bool = true,
 
     view_mode: ViewMode = .main,
@@ -379,7 +379,7 @@ pub const QuickSettings = struct {
     pub fn getDesiredHeight(self: *const QuickSettings) u32 {
         return switch (self.view_mode) {
             .main => blk: {
-                var h: u32 = 360;
+                var h: u32 = 480;
                 if (self.sys.mpris_state != .stopped and self.sys.mpris_track_len > 0) {
                     h += 56;
                 }
@@ -415,8 +415,8 @@ pub const QuickSettings = struct {
             .cfg = cfg,
             .font = font,
             .sys = sys,
-            .width = 400,
-            .height = 360,
+            .width = 520,
+            .height = 480,
             .hit_areas = std.ArrayList(HitArea).empty,
             .wifi_items = std.ArrayList(WifiItem).empty,
             .bt_items = std.ArrayList(BluetoothItem).empty,
@@ -1170,7 +1170,7 @@ pub const QuickSettings = struct {
                         return true;
                     },
                     .open_session_power_menu => {
-                        sys_status.spawnCmd("mizu power 2>/dev/null || true");
+                        sys_status.spawnCmd("mizu session 2>/dev/null || true");
                         self.running = false;
                         return true;
                     },
@@ -2718,13 +2718,168 @@ pub const QuickSettings = struct {
         else
             "Off";
         const is_bt_on = self.sys.bluetooth_enabled;
-        const prof_sub = switch (self.sys.power_profile) {
-            .power_saver => "Power Saver",
-            .balanced => "Balanced",
-            .performance => "Performance",
+
+        // Compact battery info header + settings/lock buttons
+        _ = ui.open(.{
+            .width = .{ .grow = .{} },
+            .height = .{ .fixed = ui.s(48) },
+            .direction = .row,
+            .padding = .{ .left = ui.su(12), .right = ui.su(12) },
+            .gap = ui.su(12),
+            .bg = self.cfg.theme.surface,
+            .radius = ui.f(QsLayout.radius),
+            .align_y = .center,
+        });
+        // Battery icon + info
+        const bb_bat_pct = if (self.sys.has_battery) self.sys.bat_capacity else 100;
+        const bb_plugged = self.sys.ac_online;
+        const bb_is_charging = self.sys.bat_status == .charging;
+        const bb_is_full = self.sys.bat_status == .full;
+        const bb_bat_color = if (bb_plugged or bb_is_full) self.cfg.theme.success_color else if (bb_bat_pct <= 20) self.cfg.theme.error_color else self.cfg.theme.text_bright;
+        const bb_bat_svg = if (bb_plugged or bb_is_charging) "battery-charging" else if (bb_is_full) "battery-full" else if (bb_bat_pct <= 20) "battery-empty" else if (bb_bat_pct <= 50) "battery-low" else if (bb_bat_pct <= 80) "battery-middle" else "battery-high";
+
+        // Battery icon
+        _ = ui.open(.{ .width = .{ .fixed = ui.s(24) }, .height = .{ .fixed = ui.s(24) }, .align_x = .center, .align_y = .center });
+        ui.icon(bb_bat_svg, 20 * scale, bb_bat_color, 0);
+        ui.close();
+
+        // Battery text info
+        var bat_buf: [64]u8 = undefined;
+        const bat_str = blk: {
+            if (!self.sys.has_battery) break :blk "AC Power";
+            switch (self.sys.bat_status) {
+                .charging => {
+                    if (self.sys.bat_seconds_remaining) |secs| {
+                        const mins = @divTrunc(@rem(secs, 3600), 60);
+                        if (mins > 0) break :blk std.fmt.bufPrint(&bat_buf, "{d}% · Charging · {d}m to full", .{ bb_bat_pct, mins }) catch "Charging";
+                    }
+                    break :blk std.fmt.bufPrint(&bat_buf, "{d}% · Charging", .{bb_bat_pct}) catch "Charging";
+                },
+                .discharging => {
+                    if (self.sys.bat_seconds_remaining) |secs| {
+                        const hrs = @divTrunc(secs, 3600);
+                        const mins = @divTrunc(@rem(secs, 3600), 60);
+                        if (hrs > 0) break :blk std.fmt.bufPrint(&bat_buf, "{d}% · {d}h {d}m remaining", .{ bb_bat_pct, hrs, mins }) catch "Discharging";
+                        break :blk std.fmt.bufPrint(&bat_buf, "{d}% · {d}m remaining", .{ bb_bat_pct, mins }) catch "Discharging";
+                    }
+                    break :blk std.fmt.bufPrint(&bat_buf, "{d}%", .{bb_bat_pct}) catch "Discharging";
+                },
+                .full => break :blk std.fmt.bufPrint(&bat_buf, "{d}% · Full", .{bb_bat_pct}) catch "Full",
+                else => break :blk std.fmt.bufPrint(&bat_buf, "{d}%", .{bb_bat_pct}) catch "Battery",
+            }
         };
-        const is_rec_active = recorder.isRecordingActive();
-        const rec_sub = if (is_rec_active) "Recording" else self.record_audio_mode.toShortLabel();
+        ui.text(bat_str, .{ .size = ui_sz, .color = self.cfg.theme.text_bright, .line_height = @intCast(ui_sz + 2) });
+
+        // Spacer between battery and buttons
+        ui.spacerSized(.{ .grow = .{} }, .{ .fixed = 0 });
+
+        // Lock and power buttons (right-aligned, no settings duplicate)
+        const lock_hov = ui.hovered("qs-header-btn", 0);
+        const pwr_hov = ui.hovered("qs-header-btn", 1);
+        for ([_]struct { icon: []const u8, act: Action, idx: u32, hov: bool }{
+            .{ .icon = "lock", .act = .lock, .idx = 0, .hov = lock_hov },
+            .{ .icon = "power", .act = .open_session_power_menu, .idx = 1, .hov = pwr_hov },
+        }) |btn| {
+            _ = ui.open(.{
+                .id = "qs-header-btn",
+                .index = btn.idx,
+                .width = .{ .fixed = ui.s(36) },
+                .height = .{ .fixed = ui.s(36) },
+                .bg = if (btn.hov) self.cfg.theme.card_hover_bg else self.cfg.theme.card_bg,
+                .radius = ui.f(18),
+                .align_x = .center,
+                .align_y = .center,
+            });
+            ui.icon(btn.icon, 18 * scale, if (btn.hov) self.cfg.theme.accent else self.cfg.theme.text_bright, 0);
+            ui.close();
+        }
+        ui.close(); // header row
+
+        // Combined slider row: brightness | mute | volume (Dux Shell style)
+        {
+            const bri_icon_name = if (self.sys.backlight_percent > 50) "sun-filled" else "sun";
+            const bri_slider_hov = ui.hovered("qs-bri-slider", 0);
+            const mute_hov = ui.hovered("qs-vol-icon", 0);
+            const vol_slider_hov = ui.hovered("qs-vol-slider", 0);
+            const aud_icon_name = if (self.sys.volume_muted)
+                "volume-muted"
+            else if (self.sys.volume_percent <= 33)
+                "volume-low"
+            else if (self.sys.volume_percent <= 66)
+                "volume-medium"
+            else
+                "volume-high";
+
+            // Outer slider row — no card background
+            _ = ui.open(.{
+                .width = .{ .grow = .{} },
+                .height = .{ .fixed = ui.s(QsLayout.slider_h) },
+                .direction = .row,
+                .padding = .{ .left = ui.su(10), .right = ui.su(10) },
+                .gap = ui.su(8),
+                .bg = null,
+                .border = ui.su(0),
+                .align_y = .center,
+            });
+
+            // Brightness icon (left)
+            _ = ui.open(.{
+                .width = .{ .fixed = ui.s(26) },
+                .height = .{ .fixed = ui.s(26) },
+                .align_x = .center,
+                .align_y = .center,
+            });
+            ui.icon(bri_icon_name, 17 * scale, self.cfg.theme.text_bright, 1);
+            ui.close();
+
+            // Brightness slider (grows ~half width)
+            _ = ui.open(.{
+                .id = "qs-bri-slider",
+                .width = .{ .grow = .{} },
+                .height = .{ .fixed = ui.s(36) },
+                .align_y = .center,
+            });
+            const data_bri = try ui.allocator.create(QsSliderDraw);
+            data_bri.* = .{ .panel = self, .kind = .brightness, .hovered = bri_slider_hov, .scale = scale };
+            const custom_bri = try ui.allocator.create(ui_mod.Custom);
+            custom_bri.* = .{ .callback = .{ .function = QsSliderDraw.draw, .data = data_bri } };
+            ui.custom(.{ .grow = .{} }, .{ .grow = .{} }, custom_bri, 0);
+            ui.close();
+            ui.close(); // bri slider wrapper
+
+            // Vertical divider (1px)
+            ui.rect(.{ .fixed = ui.s(1) }, .{ .fixed = ui.s(28) }, self.cfg.theme.border, ui.f(1), .{});
+
+            // Mute button (centre separator)
+            _ = ui.open(.{
+                .id = "qs-vol-icon",
+                .width = .{ .fixed = ui.s(32) },
+                .height = .{ .fixed = ui.s(32) },
+                .bg = if (mute_hov) self.cfg.theme.card_hover_bg else null,
+                .radius = ui.f(16),
+                .align_x = .center,
+                .align_y = .center,
+            });
+            ui.icon(aud_icon_name, 17 * scale, if (self.sys.volume_muted) self.cfg.theme.error_color else (if (mute_hov) self.cfg.theme.accent else self.cfg.theme.text_bright), 0);
+            ui.close();
+
+            // Volume slider (grows ~half width)
+            _ = ui.open(.{
+                .id = "qs-vol-slider",
+                .width = .{ .grow = .{} },
+                .height = .{ .fixed = ui.s(36) },
+                .align_y = .center,
+            });
+            const data_vol = try ui.allocator.create(QsSliderDraw);
+            data_vol.* = .{ .panel = self, .kind = .volume, .hovered = vol_slider_hov, .scale = scale };
+            const custom_vol = try ui.allocator.create(ui_mod.Custom);
+            custom_vol.* = .{ .callback = .{ .function = QsSliderDraw.draw, .data = data_vol } };
+            ui.custom(.{ .grow = .{} }, .{ .grow = .{} }, custom_vol, 0);
+            ui.close();
+            ui.close(); // vol slider wrapper
+
+            ui.close(); // combined slider card
+        }
 
         // Row 1: Wi-Fi and Bluetooth.
         _ = ui.open(.{
@@ -2737,23 +2892,33 @@ pub const QuickSettings = struct {
         try self.renderExpandableCard(ui, 1, "bluetooth", "bluetooth", "Bluetooth", if (is_bt_on) "On" else "Off", is_bt_on, icon_sz, ui_sz, sec_sz, scale);
         ui.close();
 
-        // Row 2: Recording and Power Mode.
-        _ = ui.open(.{
-            .width = .{ .grow = .{} },
-            .height = .{ .fixed = ui.s(QsLayout.row_h) },
-            .direction = .row,
-            .gap = ui.su(QsLayout.section_gap),
-        });
-        try self.renderExpandableCard(ui, 2, "record", "record", "Recording", rec_sub, is_rec_active, icon_sz, ui_sz, sec_sz, scale);
-        const power_icon = switch (self.sys.power_profile) {
-            .power_saver => "saver",
-            .balanced => "powermode",
-            .performance => "performance",
-        };
-        try self.renderExpandableCard(ui, 3, power_icon, power_icon, "Power Mode", prof_sub, (self.sys.power_profile != .balanced), icon_sz, ui_sz, sec_sz, scale);
-        ui.close();
+        // Row 2: Screen Recording and Power Mode.
+        {
+            const is_recording = recorder.isRecordingActive();
+            const rec_sub = if (is_recording) "Recording" else "Not recording";
+            const prof_sub = switch (self.sys.power_profile) {
+                .power_saver => "Power Saver",
+                .balanced => "Balanced",
+                .performance => "Performance",
+            };
+            const rec_icon = if (is_recording) "record" else "record";
+            const prof_icon = switch (self.sys.power_profile) {
+                .power_saver => "saver",
+                .balanced => "powermode",
+                .performance => "performance",
+            };
+            _ = ui.open(.{
+                .width = .{ .grow = .{} },
+                .height = .{ .fixed = ui.s(QsLayout.row_h) },
+                .direction = .row,
+                .gap = ui.su(QsLayout.section_gap),
+            });
+            try self.renderExpandableCard(ui, 2, rec_icon, rec_icon, "Screen Recording", rec_sub, is_recording, icon_sz, ui_sz, sec_sz, scale);
+            try self.renderExpandableCard(ui, 3, prof_icon, prof_icon, "Power Mode", prof_sub, (self.sys.power_profile != .balanced), icon_sz, ui_sz, sec_sz, scale);
+            ui.close();
+        }
 
-        // Row 3: Caffeine, Clipboard, Keymaps, DND.
+        // Row 3: Eye comfort / theme, DND, Caffeine, Screenshot/keymap.
         _ = ui.open(.{
             .width = .{ .grow = .{} },
             .height = .{ .fixed = ui.s(QsLayout.row3_h) },
@@ -2762,26 +2927,15 @@ pub const QuickSettings = struct {
         });
         const keymap_active = keymap_module.isKeymapsActive();
         const row3_items = [_]struct { icon: []const u8, active: bool }{
-            .{ .icon = "caffeine", .active = self.caffeine_enabled },
-            .{ .icon = "clipboard", .active = false },
-            .{ .icon = "keyboard", .active = keymap_active },
+            .{ .icon = "moon", .active = self.eye_comfort_enabled },
             .{ .icon = if (self.dnd_enabled) "bell-off" else "bell", .active = self.dnd_enabled },
+            .{ .icon = "caffeine", .active = self.caffeine_enabled },
+            .{ .icon = "keyboard", .active = keymap_active },
         };
         for (row3_items, 0..) |it, idx| {
             const hov = ui.hovered("qs-row3-btn", @intCast(idx));
-            var bg = if (it.active) self.cfg.theme.accent else self.cfg.theme.card_bg;
-            if (hov) {
-                bg = if (it.active)
-                    theme.Color.init(225, self.cfg.theme.accent.r, self.cfg.theme.accent.g, self.cfg.theme.accent.b)
-                else
-                    self.cfg.theme.card_hover_bg;
-            }
-            const border_col = if (it.active)
-                self.cfg.theme.accent
-            else if (hov)
-                self.cfg.theme.border_focused
-            else
-                self.cfg.theme.border;
+            var bg = if (it.active) self.cfg.theme.accent else self.cfg.theme.surface;
+            if (hov and !it.active) bg = self.cfg.theme.card_hover_bg;
             const fg = if (it.active) self.cfg.theme.accent_fg else (if (hov) self.cfg.theme.accent else self.cfg.theme.text_bright);
 
             _ = ui.open(.{
@@ -2792,149 +2946,14 @@ pub const QuickSettings = struct {
                 .direction = .row,
                 .bg = bg,
                 .radius = ui.f(QsLayout.radius),
-                .border = ui.su(1),
-                .border_color = border_col,
+                .border = ui.su(0),
                 .align_x = .center,
                 .align_y = .center,
             });
-            ui.icon(it.icon, 30 * scale, fg, 0);
+            ui.icon(it.icon, 28 * scale, fg, 0);
             ui.close();
         }
         ui.close(); // row 3
-
-        // Brightness slider card.
-        {
-            const bri_icon_name = if (self.sys.backlight_percent > 50) "sun-filled" else "sun";
-            const mon_hov = ui.hovered("qs-bri-monitor", 0);
-            const slider_hov = ui.hovered("qs-bri-slider", 0);
-
-            _ = ui.open(.{
-                .width = .{ .grow = .{} },
-                .height = .{ .fixed = ui.s(QsLayout.slider_h) },
-                .direction = .row,
-                .padding = .{ .left = ui.su(10), .right = ui.su(8) },
-                .gap = ui.su(QsLayout.section_gap),
-                .bg = self.cfg.theme.card_bg,
-                .radius = ui.f(QsLayout.radius),
-                .border = ui.su(0),
-                .align_y = .center,
-            });
-
-            // Left icon: brightness
-            _ = ui.open(.{
-                .width = .{ .fixed = ui.s(28) },
-                .height = .{ .fixed = ui.s(28) },
-                .align_x = .center,
-                .align_y = .center,
-            });
-            ui.icon(bri_icon_name, 18 * scale, self.cfg.theme.text_bright, 1);
-            ui.close();
-
-            // Center: slider
-            _ = ui.open(.{
-                .id = "qs-bri-slider",
-                .width = .{ .grow = .{} },
-                .height = .{ .fixed = ui.s(32) },
-                .align_y = .center,
-            });
-            const data_bri = try ui.allocator.create(QsSliderDraw);
-            data_bri.* = .{ .panel = self, .kind = .brightness, .hovered = slider_hov, .scale = scale };
-            const custom_bri = try ui.allocator.create(ui_mod.Custom);
-            custom_bri.* = .{ .callback = .{ .function = QsSliderDraw.draw, .data = data_bri } };
-            ui.custom(.{ .grow = .{} }, .{ .grow = .{} }, custom_bri, 0);
-            ui.close(); // custom
-            ui.close(); // slider wrapper
-
-            // Right button: monitor.svg (opens display settings)
-            _ = ui.open(.{
-                .id = "qs-bri-monitor",
-                .width = .{ .fixed = ui.s(32) },
-                .height = .{ .fixed = ui.s(32) },
-                .bg = if (mon_hov) self.cfg.theme.card_hover_bg else null,
-                .radius = ui.f(8),
-                .border = if (mon_hov) ui.su(1) else 0,
-                .border_color = if (mon_hov) self.cfg.theme.border_focused else null,
-                .align_x = .center,
-                .align_y = .center,
-            });
-            ui.icon("monitor", 18 * scale, if (mon_hov) self.cfg.theme.accent else self.cfg.theme.text_bright, 0);
-            ui.close();
-
-            ui.close(); // brightness card
-        }
-
-        // Volume slider card.
-        {
-            const is_aud_on = !self.sys.volume_muted;
-            const aud_icon_name = if (!is_aud_on)
-                "volume-muted"
-            else if (self.sys.volume_percent <= 33)
-                "volume-low"
-            else if (self.sys.volume_percent <= 66)
-                "volume-medium"
-            else
-                "volume-high";
-            const mute_hov = ui.hovered("qs-vol-icon", 0);
-            const set_hov = ui.hovered("qs-aud-settings", 0);
-            const slider_hov = ui.hovered("qs-vol-slider", 0);
-
-            _ = ui.open(.{
-                .width = .{ .grow = .{} },
-                .height = .{ .fixed = ui.s(QsLayout.slider_h) },
-                .direction = .row,
-                .padding = .{ .left = ui.su(10), .right = ui.su(8) },
-                .gap = ui.su(QsLayout.section_gap),
-                .bg = self.cfg.theme.card_bg,
-                .radius = ui.f(QsLayout.radius),
-                .border = ui.su(0),
-                .align_y = .center,
-            });
-
-            // Left icon button: volume (clicking toggles mute)
-            _ = ui.open(.{
-                .id = "qs-vol-icon",
-                .width = .{ .fixed = ui.s(28) },
-                .height = .{ .fixed = ui.s(28) },
-                .bg = if (mute_hov) self.cfg.theme.card_hover_bg else null,
-                .radius = ui.f(8),
-                .align_x = .center,
-                .align_y = .center,
-            });
-            ui.icon(aud_icon_name, 18 * scale, if (self.sys.volume_muted) self.cfg.theme.error_color else (if (mute_hov) self.cfg.theme.accent else self.cfg.theme.text_bright), 0);
-            ui.close();
-
-            // Center: slider
-            _ = ui.open(.{
-                .id = "qs-vol-slider",
-                .width = .{ .grow = .{} },
-                .height = .{ .fixed = ui.s(32) },
-                .align_y = .center,
-            });
-            const data_vol = try ui.allocator.create(QsSliderDraw);
-            data_vol.* = .{ .panel = self, .kind = .volume, .hovered = slider_hov, .scale = scale };
-            const custom_vol = try ui.allocator.create(ui_mod.Custom);
-            custom_vol.* = .{ .callback = .{ .function = QsSliderDraw.draw, .data = data_vol } };
-            ui.custom(.{ .grow = .{} }, .{ .grow = .{} }, custom_vol, 0);
-            ui.close(); // custom
-            ui.close(); // slider wrapper
-
-            // Right button: settings.svg (opens audio settings)
-            _ = ui.open(.{
-                .id = "qs-aud-settings",
-                .width = .{ .fixed = ui.s(32) },
-                .height = .{ .fixed = ui.s(32) },
-                .bg = if (set_hov) self.cfg.theme.card_hover_bg else null,
-                .radius = ui.f(8),
-                .border = if (set_hov) ui.su(1) else 0,
-                .border_color = if (set_hov) self.cfg.theme.border_focused else null,
-                .align_x = .center,
-                .align_y = .center,
-            });
-            ui.icon("speaker", 18 * scale, if (set_hov) self.cfg.theme.accent else self.cfg.theme.text_bright, 0);
-            ui.close();
-
-            ui.close(); // audio card
-        }
 
         // MPRIS media card (if playing)
         if (self.sys.mpris_state != .stopped and self.sys.mpris_track_len > 0) {
@@ -2944,10 +2963,9 @@ pub const QuickSettings = struct {
                 .direction = .row,
                 .padding = .{ .left = ui.su(10), .right = ui.su(10) },
                 .gap = ui.su(10),
-                .bg = self.cfg.theme.card_bg,
+                .bg = self.cfg.theme.surface,
                 .radius = ui.f(QsLayout.radius),
-                .border = ui.su(1),
-                .border_color = self.cfg.theme.border,
+                .border = ui.su(0),
                 .align_y = .center,
             });
             self.updateCoverArt();
@@ -2996,126 +3014,39 @@ pub const QuickSettings = struct {
             ui.close();
         }
 
-        // Bottom bar: battery, uptime, and power button.
+        // Bottom toggle row
         _ = ui.open(.{
             .width = .{ .grow = .{} },
-            .height = .{ .fixed = ui.s(QsLayout.bottom_h) },
+            .height = .{ .fixed = ui.s(52) },
             .direction = .row,
-            .gap = ui.su(QsLayout.section_gap),
+            .gap = ui.su(10),
             .align_y = .center,
         });
-
-        // Leftmost: Battery card
-        const bat_pct = if (self.sys.has_battery) self.sys.bat_capacity else 100;
-        const plugged = self.sys.ac_online;
-        const is_charging = self.sys.bat_status == .charging;
-        const is_full = self.sys.bat_status == .full;
-        const bat_color = if (plugged or is_full)
-            self.cfg.theme.success_color
-        else if (bat_pct <= 20)
-            self.cfg.theme.error_color
-        else
-            self.cfg.theme.text_bright;
-        const bat_svg = if (plugged or is_charging)
-            "battery-charging"
-        else if (bat_pct <= 20)
-            "battery-empty"
-        else if (bat_pct <= 50)
-            "battery-low"
-        else if (bat_pct <= 80)
-            "battery-middle"
-        else if (bat_pct <= 90)
-            "battery-high"
-        else
-            "battery-full";
-
-        var bat_buf: [64]u8 = undefined;
-        const bat_str = blk: {
-            if (self.sys.bat_seconds_remaining) |secs| {
-                const hrs = @divTrunc(secs, 3600);
-                const mins = @divTrunc(@rem(secs, 3600), 60);
-                if (is_charging) {
-                    if (hrs > 0) {
-                        break :blk std.fmt.bufPrint(&bat_buf, "{d}% · {d}h {d}m to full", .{ bat_pct, hrs, mins }) catch "Charging";
-                    } else {
-                        break :blk std.fmt.bufPrint(&bat_buf, "{d}% · {d}m to full", .{ bat_pct, mins }) catch "Charging";
-                    }
-                } else {
-                    if (hrs > 0) {
-                        break :blk std.fmt.bufPrint(&bat_buf, "{d}% · {d}h {d}m left", .{ bat_pct, hrs, mins }) catch "Discharging";
-                    } else {
-                        break :blk std.fmt.bufPrint(&bat_buf, "{d}% · {d}m left", .{ bat_pct, mins }) catch "Discharging";
-                    }
-                }
-            } else {
-                if (is_full) {
-                    break :blk std.fmt.bufPrint(&bat_buf, "{d}% · Full", .{bat_pct}) catch "Fully charged";
-                } else if (is_charging) {
-                    break :blk std.fmt.bufPrint(&bat_buf, "{d}% · Charging", .{bat_pct}) catch "Charging";
-                } else if (plugged) {
-                    break :blk std.fmt.bufPrint(&bat_buf, "{d}% · Plugged", .{bat_pct}) catch "Plugged";
-                } else {
-                    break :blk std.fmt.bufPrint(&bat_buf, "{d}%", .{bat_pct}) catch "100%";
-                }
-            }
+        const toggle_items = [_]struct { icon: []const u8, active: bool, act: Action }{
+            .{ .icon = "theme", .active = true, .act = .cycle_theme },
+            .{ .icon = "moon", .active = self.eye_comfort_enabled, .act = .toggle_eye_comfort },
+            .{ .icon = if (self.dnd_enabled) "bell-off" else "bell", .active = self.dnd_enabled, .act = .toggle_dnd },
+            .{ .icon = "record", .active = recorder.isRecordingActive(), .act = .toggle_recording },
         };
-
-        _ = ui.open(.{
-            .width = .fit,
-            .height = .{ .grow = .{} },
-            .direction = .row,
-            .padding = .{ .left = ui.su(10), .right = ui.su(10) },
-            .gap = ui.su(6),
-            .bg = self.cfg.theme.card_bg,
-            .radius = ui.f(14),
-            .border = ui.su(1),
-            .border_color = self.cfg.theme.border,
-            .align_y = .center,
-        });
-        ui.icon(bat_svg, 20 * scale, bat_color, 0);
-        ui.text(bat_str, .{ .size = sec_sz, .color = self.cfg.theme.text_bright });
-        ui.close(); // battery card
-
-        // Spacer pushing uptime and power button to the right
-        ui.spacerSized(.{ .grow = .{} }, .{ .fixed = 0 });
-
-        // Uptime card on left of power button
-        var uptime_buf: [32]u8 = undefined;
-        const uptime_raw = self.sys.formatUptime(&uptime_buf);
-        const uptime_str = if (std.mem.startsWith(u8, uptime_raw, "Uptime · ")) uptime_raw[9..] else uptime_raw;
-        _ = ui.open(.{
-            .width = .fit,
-            .height = .{ .grow = .{} },
-            .direction = .row,
-            .padding = .{ .left = ui.su(10), .right = ui.su(10) },
-            .gap = ui.su(6),
-            .bg = self.cfg.theme.card_bg,
-            .radius = ui.f(14),
-            .border = ui.su(1),
-            .border_color = self.cfg.theme.border,
-            .align_y = .center,
-        });
-        ui.icon("uptime", 16 * scale, self.cfg.theme.text_muted, 0);
-        ui.text(uptime_str, .{ .size = sec_sz, .color = self.cfg.theme.text_muted });
-        ui.close(); // uptime card
-
-        // Single power button at bottom-right
-        const pwr_hov = ui.hovered("qs-power-btn", 0);
-        _ = ui.open(.{
-            .id = "qs-power-btn",
-            .width = .{ .fixed = ui.s(36) },
-            .height = .{ .fixed = ui.s(36) },
-            .bg = if (pwr_hov) self.cfg.theme.error_color else self.cfg.theme.card_bg,
-            .radius = ui.f(18),
-            .border = ui.su(1),
-            .border_color = if (pwr_hov) self.cfg.theme.error_color else self.cfg.theme.border,
-            .align_x = .center,
-            .align_y = .center,
-        });
-        ui.icon("power", 18 * scale, if (pwr_hov) theme.Color.rgb(255, 255, 255) else self.cfg.theme.text_bright, 0);
-        ui.close();
-
-        ui.close(); // bottom section
+        for (toggle_items, 0..) |it, idx| {
+            const hov = ui.hovered("qs-toggle-btn", @intCast(idx));
+            const bg = if (it.active) self.cfg.theme.accent else self.cfg.theme.surface;
+            const fg = if (it.active) self.cfg.theme.accent_fg else self.cfg.theme.accent;
+            _ = ui.open(.{
+                .id = "qs-toggle-btn",
+                .index = @intCast(idx),
+                .width = .{ .grow = .{} },
+                .height = .{ .grow = .{} },
+                .bg = if (hov and !it.active) self.cfg.theme.card_hover_bg else bg,
+                .radius = ui.f(24),
+                .border = ui.su(0),
+                .align_x = .center,
+                .align_y = .center,
+            });
+            ui.icon(it.icon, 20 * scale, fg, 0);
+            ui.close();
+        }
+        ui.close(); // bottom toggles
     }
 
     fn renderExpandableCard(
@@ -3132,99 +3063,72 @@ pub const QuickSettings = struct {
         sec_sz: u32,
         scale: u32,
     ) !void {
+        _ = scale;
         const main_hov = ui.hovered("qs-card-main", idx);
-        const chev_hov = ui.hovered("qs-card-chev", idx);
-        const any_hov = main_hov or chev_hov;
 
-        var bg = if (is_active) self.cfg.theme.accent else self.cfg.theme.card_bg;
-        if (any_hov) {
-            bg = if (is_active)
-                theme.Color.init(225, self.cfg.theme.accent.r, self.cfg.theme.accent.g, self.cfg.theme.accent.b)
-            else
-                self.cfg.theme.card_hover_bg;
-        }
+        // Dark rounded card background with subtle border and hover/pressed states
+        const card_bg = self.cfg.theme.surface;
+        const hover_bg = self.cfg.theme.card_hover_bg;
+        const bg = if (main_hov) hover_bg else card_bg;
 
-        const border_col = if (is_active)
-            self.cfg.theme.accent
-        else if (any_hov)
-            self.cfg.theme.border_focused
-        else
-            self.cfg.theme.border;
+        const border_col = self.cfg.theme.border;
+        const fg = self.cfg.theme.text_bright;
+        const sub_fg = if (is_active) self.cfg.theme.accent else self.cfg.theme.text_muted;
 
-        const fg = if (is_active) self.cfg.theme.accent_fg else self.cfg.theme.text_bright;
-        const sub_fg = if (is_active)
-            theme.Color.init(210, self.cfg.theme.accent_fg.r, self.cfg.theme.accent_fg.g, self.cfg.theme.accent_fg.b)
-        else
-            self.cfg.theme.text_muted;
-
-        _ = ui.open(.{
-            .width = .{ .grow = .{} },
-            .height = .{ .grow = .{} },
-            .direction = .row,
-            .gap = 0,
-            .bg = bg,
-            .radius = ui.f(QsLayout.radius),
-            .border = ui.su(1),
-            .border_color = border_col,
-            .clip_horizontal = true,
-        });
-
-        // Left clickable area (toggles state)
         _ = ui.open(.{
             .id = "qs-card-main",
             .index = idx,
             .width = .{ .grow = .{} },
-            .height = .{ .grow = .{} },
+            .height = .{ .fixed = ui.s(QsLayout.row_h) },
             .direction = .row,
-            .padding = .{ .left = ui.su(12), .right = ui.su(6) },
-            .gap = ui.su(8),
-            .align_y = .center,
-            .bg = if (main_hov and !chev_hov)
-                (if (is_active) theme.Color.init(25, 255, 255, 255) else theme.Color.init(15, 255, 255, 255))
-            else
-                null,
+            .padding = .{ .left = ui.su(12), .right = ui.su(12), .top = ui.su(8), .bottom = ui.su(8) },
+            .gap = ui.su(10),
+            .bg = bg,
             .radius = ui.f(QsLayout.radius),
+            .border = ui.su(1),
+            .border_color = if (main_hov) self.cfg.theme.accent else border_col,
+            .align_y = .center,
         });
+
+        // Rounded-square accent-colored icon container
+        const icon_tile_size = @as(f32, @floatFromInt(icon_sz + 8));
+        const icon_bg = self.cfg.theme.accent;
+        const icon_color = self.cfg.theme.accent_fg;
+
         _ = ui.open(.{
-            .width = .{ .fixed = @floatFromInt(icon_sz) },
-            .height = .{ .fixed = @floatFromInt(icon_sz) },
+            .width = .{ .fixed = icon_tile_size },
+            .height = .{ .fixed = icon_tile_size },
+            .bg = icon_bg,
+            .radius = ui.f(12),
             .align_x = .center,
             .align_y = .center,
         });
-        ui.icon(if (is_active) active_icon_name else icon_name, icon_sz, fg, 0);
+        ui.icon(if (is_active) active_icon_name else icon_name, icon_sz, icon_color, 0);
         ui.close();
 
+        // Two-line text layout
         _ = ui.open(.{
             .width = .{ .grow = .{} },
             .height = .{ .grow = .{} },
             .direction = .column,
-            .gap = 0,
-            .align_y = .center,
-            .clip_horizontal = true,
-        });
-        ui.text(title, .{ .size = ui_sz, .color = fg, .line_height = @intCast(ui_sz + 1) });
-        ui.text(subtitle, .{ .size = sec_sz, .color = sub_fg, .line_height = @intCast(sec_sz + 1) });
-        ui.close();
-        ui.close(); // main
-
-        // Right clickable chevron `>` (opens sub-menu)
-        _ = ui.open(.{
-            .id = "qs-card-chev",
-            .index = idx,
-            .width = .{ .fixed = ui.s(34) },
-            .height = .{ .grow = .{} },
-            .bg = if (chev_hov)
-                (if (is_active) theme.Color.init(45, 255, 255, 255) else theme.Color.init(30, 255, 255, 255))
-            else
-                null,
-            .radius = ui.f(QsLayout.radius),
-            .align_x = .center,
+            .gap = ui.su(2),
             .align_y = .center,
         });
-        ui.icon("right", 16 * scale, if (is_active) self.cfg.theme.accent_fg else self.cfg.theme.text_muted, 0);
+        ui.text(title, .{
+            .size = ui_sz,
+            .color = fg,
+            .line_height = @intCast(ui_sz + 2),
+            .text_align = .left,
+        });
+        ui.text(subtitle, .{
+            .size = sec_sz,
+            .color = sub_fg,
+            .line_height = @intCast(sec_sz + 1),
+            .text_align = .left,
+        });
         ui.close();
 
-        ui.close(); // outer card
+        ui.close();
     }
 
     fn renderSubMenu(
@@ -3270,10 +3174,10 @@ pub const QuickSettings = struct {
             .id = "qs-back",
             .width = .{ .fixed = @floatFromInt(btn_size) },
             .height = .{ .fixed = @floatFromInt(btn_size) },
-            .bg = if (back_hov) self.cfg.theme.card_hover_bg else self.cfg.theme.card_bg,
+            .bg = if (back_hov) self.cfg.theme.surface else self.cfg.theme.card_bg,
             .radius = ui.f(17),
             .border = ui.su(1),
-            .border_color = self.cfg.theme.glass_border,
+            .border_color = if (back_hov) self.cfg.theme.accent else self.cfg.theme.glass_border,
             .align_x = .center,
             .align_y = .center,
         });
@@ -4364,53 +4268,53 @@ pub const QuickSettings = struct {
                 }
 
                 // Battery card without background.
-                const bat_pct = if (self.sys.has_battery) self.sys.bat_capacity else 100;
-                const plugged = self.sys.ac_online;
-                const is_charging = self.sys.bat_status == .charging;
-                const is_full = self.sys.bat_status == .full;
-                const bat_color = if (plugged or is_full)
+                const bb_bat_pct = if (self.sys.has_battery) self.sys.bat_capacity else 100;
+                const bb_plugged = self.sys.ac_online;
+                const bb_is_charging = self.sys.bat_status == .charging;
+                const bb_is_full = self.sys.bat_status == .full;
+                const bb_bat_color = if (bb_plugged or bb_is_full)
                     self.cfg.theme.success_color
-                else if (bat_pct <= 20)
+                else if (bb_bat_pct <= 20)
                     self.cfg.theme.error_color
                 else
                     self.cfg.theme.text_bright;
-                const bat_svg = if (plugged or is_charging)
+                const bb_bat_svg = if (bb_plugged or bb_is_charging)
                     "battery-charging"
-                else if (bat_pct <= 20)
+                else if (bb_bat_pct <= 20)
                     "battery-empty"
-                else if (bat_pct <= 50)
+                else if (bb_bat_pct <= 50)
                     "battery-low"
-                else if (bat_pct <= 80)
+                else if (bb_bat_pct <= 80)
                     "battery-middle"
-                else if (bat_pct <= 90)
+                else if (bb_bat_pct <= 90)
                     "battery-high"
                 else
                     "battery-full";
 
-                var bat_buf: [64]u8 = undefined;
-                const bat_str = blk: {
+                var bb_bat_buf: [64]u8 = undefined;
+                const bb_bat_str = blk: {
                     if (self.sys.bat_seconds_remaining) |secs| {
                         const hrs = @divTrunc(secs, 3600);
                         const mins = @divTrunc(@rem(secs, 3600), 60);
-                        if (is_charging) {
+                        if (bb_is_charging) {
                             if (hrs > 0) {
-                                break :blk std.fmt.bufPrint(&bat_buf, "{d}h {d}m to full", .{ hrs, mins }) catch "Charging";
+                                break :blk std.fmt.bufPrint(&bb_bat_buf, "{d}h {d}m to full", .{ hrs, mins }) catch "Charging";
                             } else {
-                                break :blk std.fmt.bufPrint(&bat_buf, "{d}m to full", .{mins}) catch "Charging";
+                                break :blk std.fmt.bufPrint(&bb_bat_buf, "{d}m to full", .{mins}) catch "Charging";
                             }
                         } else {
                             if (hrs > 0) {
-                                break :blk std.fmt.bufPrint(&bat_buf, "{d}h {d}m left", .{ hrs, mins }) catch "Discharging";
+                                break :blk std.fmt.bufPrint(&bb_bat_buf, "{d}h {d}m left", .{ hrs, mins }) catch "Discharging";
                             } else {
-                                break :blk std.fmt.bufPrint(&bat_buf, "{d}m left", .{mins}) catch "Discharging";
+                                break :blk std.fmt.bufPrint(&bb_bat_buf, "{d}m left", .{mins}) catch "Discharging";
                             }
                         }
                     } else {
-                        if (is_full) {
+                        if (bb_is_full) {
                             break :blk "Fully Charged";
-                        } else if (is_charging) {
+                        } else if (bb_is_charging) {
                             break :blk "Charging";
-                        } else if (plugged) {
+                        } else if (bb_plugged) {
                             break :blk "Plugged In";
                         } else {
                             break :blk "On Battery";
@@ -4429,11 +4333,11 @@ pub const QuickSettings = struct {
                 });
 
                 // Battery icon
-                ui.icon(bat_svg, 32 * scale, bat_color, 0);
+                ui.icon(bb_bat_svg, 32 * scale, bb_bat_color, 0);
 
                 // Battery percentage
                 var pct_buf: [16]u8 = undefined;
-                const pct_str = std.fmt.bufPrint(&pct_buf, "{d}%", .{bat_pct}) catch "100%";
+                const pct_str = std.fmt.bufPrint(&pct_buf, "{d}%", .{bb_bat_pct}) catch "100%";
                 ui.text(pct_str, .{
                     .size = 20 * scale,
                     .color = self.cfg.theme.text_bright,
@@ -4446,7 +4350,7 @@ pub const QuickSettings = struct {
                 });
 
                 // Status / duration remaining label
-                ui.text(bat_str, .{
+                ui.text(bb_bat_str, .{
                     .size = 15 * scale,
                     .color = self.cfg.theme.text_muted,
                 });
@@ -4590,23 +4494,26 @@ pub const QuickSettings = struct {
                 if (ui.rectOf("qs-card-main", i)) |rect| {
                     try self.appendRect(rect, scale, mainActionForCardIndex(i));
                 }
-                if (ui.rectOf("qs-card-chev", i)) |rect| {
-                    try self.appendRect(rect, scale, mainChevronForCardIndex(i));
-                }
             }
 
             // Row 3 buttons
-            if (ui.rectOf("qs-row3-btn", 0)) |rect| try self.appendRect(rect, scale, .toggle_caffeine);
-            if (ui.rectOf("qs-row3-btn", 1)) |rect| try self.appendRect(rect, scale, .open_clipboard);
-            if (ui.rectOf("qs-row3-btn", 2)) |rect| try self.appendRect(rect, scale, .open_keymap_menu);
-            if (ui.rectOf("qs-row3-btn", 3)) |rect| try self.appendRect(rect, scale, .toggle_dnd);
+            if (ui.rectOf("qs-row3-btn", 0)) |rect| try self.appendRect(rect, scale, .toggle_eye_comfort);
+            if (ui.rectOf("qs-row3-btn", 1)) |rect| try self.appendRect(rect, scale, .toggle_dnd);
+            if (ui.rectOf("qs-row3-btn", 2)) |rect| try self.appendRect(rect, scale, .toggle_caffeine);
+            if (ui.rectOf("qs-row3-btn", 3)) |rect| try self.appendRect(rect, scale, .open_keymap_menu);
 
             // Sliders
             if (ui.rectOf("qs-bri-slider", 0)) |rect| try self.appendRect(rect, scale, .slider_brightness);
-            if (ui.rectOf("qs-bri-monitor", 0)) |rect| try self.appendRect(rect, scale, .open_display_menu);
             if (ui.rectOf("qs-vol-icon", 0)) |rect| try self.appendRect(rect, scale, .toggle_audio_mute);
             if (ui.rectOf("qs-vol-slider", 0)) |rect| try self.appendRect(rect, scale, .slider_volume);
-            if (ui.rectOf("qs-aud-settings", 0)) |rect| try self.appendRect(rect, scale, .open_audio_menu);
+
+            // Quick profile actions (settings, lock, power)
+            for (0..3) |i| {
+                if (ui.rectOf("qs-quick-act", @intCast(i))) |rect| {
+                    const act = [_]Action{ .open_display_menu, .lock, .open_session_power_menu };
+                    try self.appendRect(rect, scale, act[i]);
+                }
+            }
 
             // Power button
             if (ui.rectOf("qs-power-btn", 0)) |rect| try self.appendRect(rect, scale, .open_session_power_menu);
@@ -4757,11 +4664,11 @@ pub const QuickSettings = struct {
 
     fn mainActionForCardIndex(idx: usize) Action {
         return switch (idx) {
-            0 => .toggle_wifi,
-            1 => .toggle_bluetooth,
-            2 => .toggle_recording,
-            3 => .cycle_power_profile,
-            else => .toggle_wifi,
+            0 => .open_wifi_menu,
+            1 => .open_bluetooth_menu,
+            2 => .open_recording_menu,
+            3 => .open_power_menu,
+            else => .open_wifi_menu,
         };
     }
 
@@ -4769,8 +4676,8 @@ pub const QuickSettings = struct {
         return switch (idx) {
             0 => .open_wifi_menu,
             1 => .open_bluetooth_menu,
-            2 => .open_recording_menu,
-            3 => .open_power_menu,
+            2 => .open_audio_menu,
+            3 => .open_audio_menu,
             else => .open_wifi_menu,
         };
     }

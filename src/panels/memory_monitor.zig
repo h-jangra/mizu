@@ -6,6 +6,7 @@ const icons = @import("../graphics/icons.zig");
 const text_input = @import("../core/text_input.zig");
 const theme_mod = @import("../core/theme.zig");
 const proc_mem = @import("../services/process_memory.zig");
+const sys_status = @import("../services/system_status.zig");
 const ui_mod = @import("../core/ui.zig");
 const desktop_entries = @import("../services/desktop_entries.zig");
 
@@ -22,8 +23,7 @@ const PAD: f64 = 16.0;
 const HEADER_H: f64 = 122.0;
 const FILTER_TOP: f64 = 122.0;
 const FILTER_H: f64 = 36.0;
-const COLUMNS_H: f64 = 28.0;
-const LIST_TOP: f64 = 186.0;
+const LIST_TOP: f64 = 170.0;
 const LIST_BOTTOM_PAD: f64 = 12.0;
 const ROW_H: f64 = 40.0;
 
@@ -1229,6 +1229,7 @@ pub const MemoryMonitor = struct {
             .height = .{ .grow = .{} },
             .direction = .column,
             .padding = .{ .left = ui.su(PAD), .right = ui.su(PAD) },
+            .gap = ui.su(10),
             .bg = th.panel_bg,
             .radius = ui.f(16),
             .border = ui.su(1),
@@ -1236,37 +1237,61 @@ pub const MemoryMonitor = struct {
             .align_y = .top,
         });
 
-        // System stat cards: RAM, CPU, Disk, Network.
-        _ = ui.open(.{
-            .width = .{ .grow = .{} },
-            .height = .{ .fixed = ui.s(HEADER_H) },
-            .direction = .column,
-            .padding = .{ .top = ui.su(12) },
-            .gap = ui.su(6),
-            .align_y = .top,
-        });
+        // Host info bar
+        {
+            var uptime_buf: [64]u8 = undefined;
+            var uptime_str_slice: []const u8 = "";
+            {
+                const f = c.fopen("/proc/uptime", "r") orelse null;
+                if (f == null) {
+                    uptime_str_slice = "";
+                } else {
+                    defer _ = c.fclose(f);
+                    var read_buf: [32]u8 = undefined;
+                    const n = c.fread(&read_buf, 1, read_buf.len - 1, f);
+                    if (n > 0) {
+                        read_buf[n] = 0;
+                        var end_idx: usize = 0;
+                        while (end_idx < n and read_buf[end_idx] != ' ' and read_buf[end_idx] != '.') end_idx += 1;
+                        if (end_idx > 0) {
+                            const total_sec = std.fmt.parseInt(u64, read_buf[0..end_idx], 10) catch 0;
+                            const hours = total_sec / 3600;
+                            const mins = (total_sec % 3600) / 60;
+                            if (hours > 0) {
+                                uptime_str_slice = std.fmt.bufPrint(&uptime_buf, "{d}h {d}m", .{ hours, mins }) catch "";
+                            } else {
+                                uptime_str_slice = std.fmt.bufPrint(&uptime_buf, "{d}m", .{mins}) catch "";
+                            }
+                        }
+                    }
+                }
+            }
+            var info_buf: [128]u8 = undefined;
+            const info = std.fmt.bufPrint(&info_buf, "Uptime: {s} · {d} procs", .{ uptime_str_slice, self.processes.items.len }) catch "";
+            _ = ui.open(.{
+                .width = .{ .grow = .{} },
+                .height = .{ .fixed = ui.s(28) },
+                .direction = .row,
+                .padding = .{ .left = ui.su(6) },
+                .align_y = .center,
+            });
+            ui.text(info, .{ .size = 13 * scale, .color = text_main });
+            ui.close();
+        }
 
         const card_bg = th.card_bg;
         const bar_track = alphaCol(overlay, if (is_light) 0.08 else 0.12);
 
-        // 2x2 stat cards grid
+        // RAM & Disk cards only
         _ = ui.open(.{
             .width = .{ .grow = .{} },
-            .direction = .column,
-            .gap = ui.su(6),
-            .align_y = .center,
-        });
-
-        // Row 1: RAM & CPU
-        _ = ui.open(.{
-            .width = .{ .grow = .{} },
-            .height = .{ .fixed = ui.s(48) },
+            .height = .{ .fixed = ui.s(92) },
             .direction = .row,
             .gap = ui.su(8),
             .align_y = .center,
         });
 
-        // 1. RAM Card
+        // RAM Card
         {
             const used_gib = @as(f64, @floatFromInt(self.mem.used_kb)) / 1048576.0;
             const total_gib = @as(f64, @floatFromInt(self.mem.total_kb)) / 1048576.0;
@@ -1277,10 +1302,10 @@ pub const MemoryMonitor = struct {
                 .width = .{ .grow = .{} },
                 .height = .{ .grow = .{} },
                 .direction = .column,
-                .padding = .{ .left = ui.su(12), .right = ui.su(12), .top = ui.su(7), .bottom = ui.su(7) },
+                .padding = .{ .left = ui.su(12), .right = ui.su(12), .top = ui.su(10), .bottom = ui.su(10) },
                 .gap = ui.su(6),
                 .bg = card_bg,
-                .radius = ui.f(10),
+                .radius = ui.f(12),
                 .align_y = .center,
             });
             _ = ui.open(.{
@@ -1288,95 +1313,50 @@ pub const MemoryMonitor = struct {
                 .direction = .row,
                 .align_y = .center,
             });
-            ui.text("RAM", .{ .size = 14 * scale, .color = text_muted });
-            ui.spacerSized(.{ .grow = .{} }, .{ .fixed = 0 });
-            ui.text(mem_val_str, .{ .size = 14 * scale, .color = text_main });
+            ui.text("Memory", .{ .size = 14 * scale, .color = text_muted });
             ui.close();
 
             _ = ui.open(.{
                 .width = .{ .grow = .{} },
-                .height = .{ .fixed = ui.s(4) },
+                .height = .{ .fixed = ui.s(32) },
+                .direction = .row,
+                .align_y = .center,
+            });
+            ui.text(mem_val_str, .{ .size = 24 * scale, .color = th.text_bright });
+            ui.close();
+
+            _ = ui.open(.{
+                .width = .{ .grow = .{} },
+                .height = .{ .fixed = ui.s(6) },
                 .bg = bar_track,
-                .radius = 2.0 * @as(f32, @floatFromInt(scale)),
+                .radius = 3.0 * @as(f32, @floatFromInt(scale)),
             });
             ui.rect(
                 .{ .percent = std.math.clamp(percent / 100.0, 0.0, 1.0) },
                 .{ .grow = .{} },
                 accent,
-                2.0 * @as(f32, @floatFromInt(scale)),
+                3.0 * @as(f32, @floatFromInt(scale)),
                 .{},
             );
             ui.close();
             ui.close();
         }
 
-        // 2. CPU Card
-        {
-            var cpu_buf: [16]u8 = undefined;
-            const cpu_str = std.fmt.bufPrint(&cpu_buf, "{d}%", .{self.cpu_percent}) catch "0%";
-            _ = ui.open(.{
-                .width = .{ .grow = .{} },
-                .height = .{ .grow = .{} },
-                .direction = .column,
-                .padding = .{ .left = ui.su(12), .right = ui.su(12), .top = ui.su(7), .bottom = ui.su(7) },
-                .gap = ui.su(6),
-                .bg = card_bg,
-                .radius = ui.f(10),
-                .align_y = .center,
-            });
-            _ = ui.open(.{
-                .width = .{ .grow = .{} },
-                .direction = .row,
-                .align_y = .center,
-            });
-            ui.text("CPU", .{ .size = 14 * scale, .color = text_muted });
-            ui.spacerSized(.{ .grow = .{} }, .{ .fixed = 0 });
-            ui.text(cpu_str, .{ .size = 14 * scale, .color = text_main });
-            ui.close();
-
-            _ = ui.open(.{
-                .width = .{ .grow = .{} },
-                .height = .{ .fixed = ui.s(4) },
-                .bg = bar_track,
-                .radius = 2.0 * @as(f32, @floatFromInt(scale)),
-            });
-            ui.rect(
-                .{ .percent = std.math.clamp(@as(f32, @floatFromInt(self.cpu_percent)) / 100.0, 0.0, 1.0) },
-                .{ .grow = .{} },
-                th.secondary,
-                2.0 * @as(f32, @floatFromInt(scale)),
-                .{},
-            );
-            ui.close();
-            ui.close();
-        }
-
-        ui.close(); // Row 1
-
-        // Row 2: Disk & Network
-        _ = ui.open(.{
-            .width = .{ .grow = .{} },
-            .height = .{ .fixed = ui.s(48) },
-            .direction = .row,
-            .gap = ui.su(8),
-            .align_y = .center,
-        });
-
-        // 3. Disk Card
+        // Disk Card
         {
             var disk_val_buf: [32]u8 = undefined;
             const disk_val_str = if (self.disk_total_gb > 0)
-                std.fmt.bufPrint(&disk_val_buf, "{d:.0} / {d:.0} GB", .{ self.disk_used_gb, self.disk_total_gb }) catch ""
+                std.fmt.bufPrint(&disk_val_buf, "{d:.1} / {d:.1} GB", .{ self.disk_used_gb, self.disk_total_gb }) catch ""
             else
                 "N/A";
             _ = ui.open(.{
                 .width = .{ .grow = .{} },
                 .height = .{ .grow = .{} },
                 .direction = .column,
-                .padding = .{ .left = ui.su(12), .right = ui.su(12), .top = ui.su(7), .bottom = ui.su(7) },
+                .padding = .{ .left = ui.su(12), .right = ui.su(12), .top = ui.su(10), .bottom = ui.su(10) },
                 .gap = ui.su(6),
                 .bg = card_bg,
-                .radius = ui.f(10),
+                .radius = ui.f(12),
                 .align_y = .center,
             });
             _ = ui.open(.{
@@ -1385,81 +1365,35 @@ pub const MemoryMonitor = struct {
                 .align_y = .center,
             });
             ui.text("Disk", .{ .size = 14 * scale, .color = text_muted });
-            ui.spacerSized(.{ .grow = .{} }, .{ .fixed = 0 });
-            ui.text(disk_val_str, .{ .size = 14 * scale, .color = text_main });
             ui.close();
 
             _ = ui.open(.{
                 .width = .{ .grow = .{} },
-                .height = .{ .fixed = ui.s(4) },
+                .height = .{ .fixed = ui.s(32) },
+                .direction = .row,
+                .align_y = .center,
+            });
+            ui.text(disk_val_str, .{ .size = 24 * scale, .color = th.text_bright });
+            ui.close();
+
+            _ = ui.open(.{
+                .width = .{ .grow = .{} },
+                .height = .{ .fixed = ui.s(6) },
                 .bg = bar_track,
-                .radius = 2.0 * @as(f32, @floatFromInt(scale)),
+                .radius = 3.0 * @as(f32, @floatFromInt(scale)),
             });
             ui.rect(
                 .{ .percent = std.math.clamp(@as(f32, @floatFromInt(self.disk_percent)) / 100.0, 0.0, 1.0) },
                 .{ .grow = .{} },
                 accent,
-                2.0 * @as(f32, @floatFromInt(scale)),
+                3.0 * @as(f32, @floatFromInt(scale)),
                 .{},
             );
             ui.close();
             ui.close();
         }
 
-        // 4. Network Card
-        {
-            var net_buf: [64]u8 = undefined;
-            var rx_buf: [24]u8 = undefined;
-            var tx_buf: [24]u8 = undefined;
-            const rx_s = formatRate(&rx_buf, self.rx_rate_bps);
-            const tx_s = formatRate(&tx_buf, self.tx_rate_bps);
-            const net_str = std.fmt.bufPrint(&net_buf, "↓{s}  ↑{s}", .{ rx_s, tx_s }) catch "";
-            const total_rate = self.rx_rate_bps + self.tx_rate_bps;
-            const net_pct = if (total_rate > 0)
-                std.math.clamp(@as(f32, @floatFromInt(total_rate)) / (20.0 * 1024.0 * 1024.0), 0.05, 1.0)
-            else
-                0.0;
-
-            _ = ui.open(.{
-                .width = .{ .grow = .{} },
-                .height = .{ .grow = .{} },
-                .direction = .column,
-                .padding = .{ .left = ui.su(12), .right = ui.su(12), .top = ui.su(7), .bottom = ui.su(7) },
-                .gap = ui.su(6),
-                .bg = card_bg,
-                .radius = ui.f(10),
-                .align_y = .center,
-            });
-            _ = ui.open(.{
-                .width = .{ .grow = .{} },
-                .direction = .row,
-                .align_y = .center,
-            });
-            ui.text("Network", .{ .size = 14 * scale, .color = text_muted });
-            ui.spacerSized(.{ .grow = .{} }, .{ .fixed = 0 });
-            ui.text(net_str, .{ .size = 13 * scale, .color = text_main });
-            ui.close();
-
-            _ = ui.open(.{
-                .width = .{ .grow = .{} },
-                .height = .{ .fixed = ui.s(4) },
-                .bg = bar_track,
-                .radius = 2.0 * @as(f32, @floatFromInt(scale)),
-            });
-            ui.rect(
-                .{ .percent = net_pct },
-                .{ .grow = .{} },
-                th.network_fg,
-                2.0 * @as(f32, @floatFromInt(scale)),
-                .{},
-            );
-            ui.close();
-            ui.close();
-        }
-
-        ui.close(); // Row 2
-        ui.close(); // 2x2 stat cards grid
-        ui.close(); // header
+        ui.close(); // RAM & Disk row
 
         // Process filter input field.
         _ = ui.open(.{
@@ -1479,47 +1413,12 @@ pub const MemoryMonitor = struct {
         ui.close();
         ui.close(); // filter
 
-        // Column headings at the same logical offsets used by pointer hit tests.
-        _ = ui.open(.{
-            .width = .{ .grow = .{} },
-            .height = .{ .fixed = ui.s(COLUMNS_H) },
-            .direction = .row,
-            .align_y = .center,
-        });
-        _ = ui.open(.{
-            .width = .{ .fixed = ui.s(294) },
-            .height = .{ .grow = .{} },
-            .direction = .row,
-            .padding = .{ .left = ui.su(6) },
-            .align_y = .center,
-        });
-        ui.text("Application", .{ .size = (self.cfg.typography.secondary + 2) * scale, .color = text_muted });
-        ui.spacerSized(.{ .grow = .{} }, .{ .fixed = 0 });
-        ui.text("PID", .{ .size = (self.cfg.typography.secondary + 2) * scale, .color = text_muted });
-        ui.close();
-        ui.text("Memory", .{
-            .size = (self.cfg.typography.secondary + 2) * scale,
-            .color = text_muted,
-            .width = ui.s(94),
-            .text_align = .right,
-        });
-        _ = ui.open(.{
-            .width = .{ .fixed = ui.s(80) },
-            .height = .{ .grow = .{} },
-            .padding = .{ .right = ui.su(6) },
-            .align_x = .right,
-            .align_y = .center,
-        });
-        ui.text("%", .{ .size = (self.cfg.typography.secondary + 2) * scale, .color = text_muted });
-        ui.close();
-        ui.close(); // columns
-
         // Process list.
         _ = ui.open(.{
             .width = .{ .grow = .{} },
             .height = .{ .grow = .{} },
             .direction = .column,
-            .gap = 0,
+            .gap = ui.su(1),
             .clip_vertical = true,
             .align_y = .top,
         });
@@ -1549,34 +1448,33 @@ pub const MemoryMonitor = struct {
                 const is_selected = self.selected != null and self.selected.? == fi;
                 const is_hovered = self.hover != null and self.hover.? == fi;
 
+                const row_first = i == 0;
+                const row_last = fi == self.visible_rows.items.len - 1;
+
                 const row_bg: ?Color = if (is_selected)
                     Color.init(42, th.accent.r, th.accent.g, th.accent.b)
                 else if (is_hovered)
                     th.card_hover_bg
                 else
-                    null;
+                    th.card_bg;
 
                 _ = ui.open(.{
                     .width = .{ .grow = .{} },
                     .height = .{ .fixed = ui.s(ROW_H) },
                     .direction = .row,
                     .bg = row_bg,
-                    .radius = ui.f(7),
-                    .border = if (is_selected) ui.su(1) else 0,
-                    .border_color = if (is_selected) Color.init(70, th.accent.r, th.accent.g, th.accent.b) else null,
+                    // Single-card look: only the first/last rows are rounded.
+                    .radius_top = if (row_first) ui.f(10) else 0,
+                    .radius_bottom = if (row_last) ui.f(10) else 0,
                     .align_y = .center,
                 });
 
-                if (is_selected) {
-                    ui.rect(.{ .fixed = ui.s(3) }, .{ .fixed = ui.s(20) }, accent, 1.5 * @as(f32, @floatFromInt(scale)), .{});
-                }
-
                 if (row.kind == .group) {
                     _ = ui.open(.{
-                        .width = .{ .fixed = ui.s(if (is_selected) 291 else 294) },
+                        .width = .{ .fixed = ui.s(294) },
                         .height = .{ .grow = .{} },
                         .direction = .row,
-                        .padding = .{ .left = ui.su(if (is_selected) 3 else 6) },
+                        .padding = .{ .left = ui.su(6) },
                         .gap = ui.su(6),
                         .align_y = .center,
                         .clip_horizontal = true,
@@ -1624,24 +1522,6 @@ pub const MemoryMonitor = struct {
                         .text_align = .right,
                     });
 
-                    var pct_row_buf: [24]u8 = undefined;
-                    const pct_row = if (self.mem.total_kb > 0)
-                        @as(f64, @floatFromInt(grp.total_rss_kb)) * 100.0 / @as(f64, @floatFromInt(self.mem.total_kb))
-                    else
-                        0.0;
-                    const pct_row_str = std.fmt.bufPrint(&pct_row_buf, "{d:.1}%", .{pct_row}) catch "";
-                    _ = ui.open(.{
-                        .width = .{ .fixed = ui.s(80) },
-                        .height = .{ .grow = .{} },
-                        .padding = .{ .right = ui.su(6) },
-                        .align_x = .right,
-                        .align_y = .center,
-                    });
-                    ui.text(pct_row_str, .{
-                        .size = (self.cfg.typography.secondary + 2) * scale,
-                        .color = accent,
-                    });
-                    ui.close();
                 } else {
                     const proc = grp.procs.items[row.sub_idx];
                     const is_confirming = self.confirm_kill_pid != null and self.confirm_kill_pid.? == proc.pid;
@@ -1651,7 +1531,7 @@ pub const MemoryMonitor = struct {
                             .width = .{ .grow = .{} },
                             .height = .{ .grow = .{} },
                             .direction = .row,
-                            .padding = .{ .left = ui.su(if (is_selected) 16 else 19) },
+                            .padding = .{ .left = ui.su(19) },
                             .gap = ui.su(6),
                             .align_y = .center,
                             .clip_horizontal = true,
@@ -1708,25 +1588,20 @@ pub const MemoryMonitor = struct {
                         ui.close(); // action buttons
                     } else {
                         _ = ui.open(.{
-                            .width = .{ .grow = .{} },
+                            .width = .{ .fixed = ui.s(294) },
                             .height = .{ .grow = .{} },
                             .direction = .row,
-                            .padding = .{ .left = ui.su(if (is_selected) 16 else 19) },
+                            .padding = .{ .left = ui.su(19) },
                             .gap = ui.su(6),
                             .align_y = .center,
                             .clip_horizontal = true,
-                        });
-
-                        ui.text("↳", .{
-                            .size = self.cfg.typography.secondary * scale,
-                            .color = if (is_selected) accent else alphaCol(text_muted, 0.70),
                         });
 
                         var cmd_fmt_buf: [256]u8 = undefined;
                         const clean_cmd = formatSubprocessCommand(&cmd_fmt_buf, proc.cmdline[0..proc.cmdline_len], proc.name[0..proc.name_len]);
 
                         var sub_buf: [256]u8 = undefined;
-                        const sub_max_w: f64 = (PANEL_W - 2 * PAD) - 142.0 - 28.0;
+                        const sub_max_w: f64 = (pidRight() - 18.0) - 19.0 - 14.0;
                         const sub_name = renderer.truncateText(
                             &self.row_measure,
                             clean_cmd,
@@ -1740,36 +1615,34 @@ pub const MemoryMonitor = struct {
                         });
                         ui.close();
 
-                        // Right section: Memory + Kill button
-                        _ = ui.open(.{
-                            .width = .{ .fixed = ui.s(142) },
-                            .height = .{ .grow = .{} },
-                            .direction = .row,
-                            .gap = ui.su(8),
-                            .align_x = .right,
-                            .align_y = .center,
-                        });
+                        // Memory value, aligned with the group rows' memory column.
                         var mem_row_buf: [32]u8 = undefined;
                         const mem_row_str = formatMemory(&mem_row_buf, proc.rss_kb);
                         ui.text(mem_row_str, .{
-                            .size = (self.cfg.typography.secondary + 2) * scale,
-                            .color = if (is_selected) th.text_bright else alphaCol(text_main, 0.88),
+                            .size = (self.cfg.typography.ui + 1) * scale,
+                            .color = if (is_selected) th.text_bright else text_main,
+                            .width = ui.s(94),
+                            .text_align = .right,
                         });
 
-                        // Kill button (x)
+                        // Kill button (x) - shown whenever the row is hovered/selected.
+                        ui.spacerSized(.{ .grow = .{} }, .{ .fixed = 0 });
                         const is_kill_hov = self.hover_kill_action == .kill and self.hover_kill_pid == proc.pid;
-                        _ = ui.open(.{
-                            .width = .{ .fixed = ui.s(28) },
-                            .height = .{ .fixed = ui.s(26) },
-                            .bg = if (is_kill_hov) alphaCol(th.error_color, 0.22) else null,
-                            .radius = ui.f(6),
-                            .align_x = .center,
-                            .align_y = .center,
-                        });
-                        ui.icon("x", 13 * scale, if (is_kill_hov) th.error_color else alphaCol(text_muted, 0.60), 0);
-                        ui.close();
-
-                        ui.close(); // right section
+                        if (is_hovered or is_selected) {
+                            _ = ui.open(.{
+                                .width = .{ .fixed = ui.s(28) },
+                                .height = .{ .fixed = ui.s(26) },
+                                .bg = if (is_kill_hov) alphaCol(th.error_color, 0.35) else alphaCol(th.error_color, 0.14),
+                                .radius = ui.f(6),
+                                .align_x = .center,
+                                .align_y = .center,
+                            });
+                            ui.icon("x", 13 * scale, th.error_color, 0);
+                            ui.close();
+                        } else {
+                            // Keep the layout stable when the button is hidden.
+                            ui.spacerSized(.{ .fixed = ui.s(28) }, .{ .fixed = 0 });
+                        }
                     }
                 }
 

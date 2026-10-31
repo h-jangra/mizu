@@ -28,5 +28,6 @@ pub fn render(ctx: *types.BarContext, ui: *ui_mod.Ui) !void {
     ui.icon("palette", icon_size, if (hovered) ctx.cfg.theme.accent else ctx.cfg.theme.theme_fg, 0);
     ui.close();
 
-    try ctx.linkClick(ui, id, 0, .{ .cycle_theme = true }, .cycle_theme);
+    const action: types.ClickAction = .{ .cycle_theme = true };
+    try ctx.linkClick(ui, id, 0, action, .cycle_theme);
 }

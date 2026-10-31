@@ -13,9 +13,9 @@ pub fn render(ctx: *types.BarContext, ui: *ui_mod.Ui) !void {
         else if (tag.client_count > 0)
             16
         else
-            10;
+            14;
 
-        const pill_h: u32 = 12;
+        const pill_h: u32 = 10;
 
         const id = "bar-workspace";
         const hovered = ui.hovered(id, tag.index);
@@ -27,9 +27,9 @@ pub fn render(ctx: *types.BarContext, ui: *ui_mod.Ui) !void {
         else if (hovered)
             ctx.cfg.theme.ws_hover_bg
         else if (tag.client_count > 0)
-            theme.Color.init(110, 255, 255, 255)
+            ctx.cfg.theme.surface
         else
-            theme.Color.init(45, 255, 255, 255);
+            ctx.cfg.theme.surface;
 
         const border_col = if (hovered)
             ctx.cfg.theme.accent
@@ -56,6 +56,8 @@ pub fn render(ctx: *types.BarContext, ui: *ui_mod.Ui) !void {
             .radius = scaled_h / 2.0,
             .border = if (border_col != null) ui.su(1) else 0,
             .border_color = border_col,
+            .align_x = .center,
+            .align_y = .center,
         });
         ui.close();
         ui.close();

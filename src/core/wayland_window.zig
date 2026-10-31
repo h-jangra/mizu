@@ -76,7 +76,6 @@ pub const WindowApp = struct {
     running: bool = true,
     needs_redraw: bool = true,
 
-    // Mouse state
     pointer_x: i32 = -1,
     pointer_y: i32 = -1,
     pointer_down: bool = false,
@@ -85,7 +84,6 @@ pub const WindowApp = struct {
     scroll_delta_y: f64 = 0.0,
     scroll_delta_x: f64 = 0.0,
 
-    // Keyboard state
     xkb_ctx: ?*c.struct_xkb_context = null,
     xkb_keymap: ?*c.struct_xkb_keymap = null,
     xkb_state: ?*c.struct_xkb_state = null,
@@ -97,7 +95,6 @@ pub const WindowApp = struct {
     repeat_utf8_buf: [32]u8 = @splat(0),
     repeat_utf8_len: usize = 0,
 
-    // Cursor
     cursor_theme: ?*c.wl_cursor_theme = null,
     cursor_default: ?*c.wl_cursor = null,
     cursor_pointer: ?*c.wl_cursor = null,

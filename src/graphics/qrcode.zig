@@ -117,6 +117,43 @@ const alignment_patterns = [_][]const u32{
     &[_]u32{ 6, 26, 46, 66 },
 };
 
+fn isNumeric(text: []const u8) bool {
+    for (text) |ch| {
+        if (ch < '0' or ch > '9') return false;
+    }
+    return true;
+}
+
+fn isAlphanumeric(text: []const u8) bool {
+    const charset = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ $%*+-./:";
+    for (text) |ch| {
+        var found = false;
+        for (charset) |c| {
+            if (c == ch) { found = true; break; }
+        }
+        if (!found) return false;
+    }
+    return true;
+}
+
+fn calcSegmentBitLength(mode_bits: u4, num_chars: usize) usize {
+    // Byte mode = 4 bits, count = 8/16 bits, data = 8 bits per char
+    if (mode_bits == 0b0100) return 4 + (if (num_chars < 256) 8 else 16) + num_chars * 8;
+    // Numeric: 4 + count + ceil(10/3*n)
+    if (mode_bits == 0b0001) {
+        const count_bits = if (num_chars < 256) 10 else 12; // simplified for v1-9
+        const data_bits = (num_chars * 10 + 2) / 3;
+        return 4 + count_bits + data_bits;
+    }
+    // Alphanumeric: 4 + count + ceil(11/2*n)
+    if (mode_bits == 0b0010) {
+        const count_bits = if (num_chars < 256) 9 else 11;
+        const data_bits = (num_chars * 11 + 1) / 2;
+        return 4 + count_bits + data_bits;
+    }
+    return 4 + (if (num_chars < 256) 8 else 16) + num_chars * 8;
+}
+
 fn appendBits(dest: []u8, cursor: *usize, val: u32, num_bits: u6) void {
     var i: i32 = @as(i32, @intCast(num_bits)) - 1;
     while (i >= 0) : (i -= 1) {
@@ -279,7 +316,7 @@ pub fn encodeText(text: []const u8) QrCode {
     }
 
     var bit_idx: usize = 0;
-    const total_bits = fc_idx * 8;
+    const total_bit_len = fc_idx * 8;
     var x_coord: i32 = @as(i32, @intCast(qr.size)) - 1;
     var upward = true;
     while (x_coord > 0) {
@@ -296,7 +333,7 @@ pub fn encodeText(text: []const u8) QrCode {
                 const cur_y = y_coord;
                 if (!is_func[cur_y * 80 + cur_x]) {
                     var bit = false;
-                    if (bit_idx < total_bits) {
+                    if (bit_idx < total_bit_len) {
                         const b_byte = final_codewords[bit_idx / 8];
                         const b_bit: u3 = @intCast(7 - (bit_idx % 8));
                         bit = ((b_byte >> b_bit) & 1) == 1;

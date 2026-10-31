@@ -308,8 +308,8 @@ pub const ToastOverlay = struct {
             .direction = .column,
             .padding = .all(12),
             .gap = 4,
-            .bg = self.cfg.theme.panel_bg,
-            .radius = @floatFromInt(radius),
+            .bg = self.cfg.theme.elevated,
+            .radius = ui.f(self.cfg.theme.radius_panel),
             .border = 1,
             .border_color = self.cfg.theme.panel_border,
         });
@@ -326,7 +326,7 @@ pub const ToastOverlay = struct {
             .width = .{ .fixed = 36 },
             .height = .{ .fixed = 36 },
             .bg = self.cfg.theme.surface,
-            .radius = 10,
+            .radius = ui.f(self.cfg.theme.radius_pill),
             .border = 1,
             .border_color = self.cfg.theme.border,
             .align_x = .center,
@@ -388,7 +388,7 @@ pub const ToastOverlay = struct {
             .width = .{ .grow = .{} },
             .height = .{ .fixed = 3 },
             .bg = self.cfg.theme.surface,
-            .radius = 2,
+            .radius = ui.f(2),
         });
         if (bar_pct > 0) {
             ui.rect(.{ .percent = bar_pct }, .{ .grow = .{} }, self.cfg.theme.accent, 2, .{});
