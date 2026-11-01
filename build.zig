@@ -15,6 +15,7 @@ fn addMizuIncludePaths(b: *std.Build, obj: anytype) void {
     obj.addIncludePath(.{ .cwd_relative = "/usr/include/security" });
     obj.addIncludePath(.{ .cwd_relative = "/usr/include/dbus-1.0" });
     obj.addIncludePath(.{ .cwd_relative = "/usr/lib64/dbus-1.0/include" });
+    obj.addIncludePath(.{ .cwd_relative = "/usr/include/webp" });
 }
 
 fn configureMizuModule(b: *std.Build, mod: *std.Build.Module, c_module: *std.Build.Module) void {
@@ -29,6 +30,7 @@ fn configureMizuModule(b: *std.Build, mod: *std.Build.Module, c_module: *std.Bui
     mod.linkSystemLibrary("pam", .{ .use_pkg_config = .no });
     mod.linkSystemLibrary("jpeg", .{ .use_pkg_config = .no });
     mod.linkSystemLibrary("dbus-1", .{ .use_pkg_config = .no });
+    mod.linkSystemLibrary("webp", .{ .use_pkg_config = .no });
 
     addMizuIncludePaths(b, mod);
 
@@ -70,6 +72,9 @@ fn configureMizuModule(b: *std.Build, mod: *std.Build.Module, c_module: *std.Bui
     mod.addCSourceFile(.{
         .file = b.path("src/core/nanosvg_rasterizer.c"),
         .flags = &.{"-O2"},
+    });
+    mod.addCSourceFile(.{
+        .file = b.path("src/c/webp_export.c"),
     });
 }
 

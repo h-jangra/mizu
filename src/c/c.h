@@ -46,5 +46,6 @@
 #include "nanosvg_rasterizer.h"
 #include "clay.h"
 #include "math.h"
+int export_webp(const char* path, const unsigned char* rgba, int w, int h);
 
 #endif

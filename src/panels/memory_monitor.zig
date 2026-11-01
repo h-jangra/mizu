@@ -76,6 +76,7 @@ pub const MemoryMonitor = struct {
     height: u32 = SURFACE_H,
 
     running: bool = true,
+    render_scale: u32 = 1,
     mem: proc_mem.MemInfo = .{},
     cpu_percent: u32 = 0,
     prev_idle: u64 = 0,
@@ -705,6 +706,8 @@ pub const MemoryMonitor = struct {
         }
 
         const fx: f64 = @as(f64, @floatFromInt(x));
+        const s_f = @as(f64, @floatFromInt(self.render_scale));
+        const cx1 = contentX1() * s_f;
         if (new_hover) |idx| {
             if (idx < self.visible_rows.items.len) {
                 const row = self.visible_rows.items[idx];
@@ -713,13 +716,13 @@ pub const MemoryMonitor = struct {
                     if (row.sub_idx < grp.procs.items.len) {
                         const proc = grp.procs.items[row.sub_idx];
                         if (self.confirm_kill_pid == proc.pid) {
-                            if (fx >= contentX1() - 26.0 and fx <= contentX1()) {
+                            if (fx >= cx1 - 26.0 * s_f and fx <= cx1) {
                                 if (self.hover_kill_action != .cancel or self.hover_kill_pid != proc.pid) {
                                     self.hover_kill_action = .cancel;
                                     self.hover_kill_pid = proc.pid;
                                     changed = true;
                                 }
-                            } else if (fx >= contentX1() - 56.0 and fx < contentX1() - 26.0) {
+                            } else if (fx >= cx1 - 56.0 * s_f and fx < cx1 - 26.0 * s_f) {
                                 if (self.hover_kill_action != .confirm or self.hover_kill_pid != proc.pid) {
                                     self.hover_kill_action = .confirm;
                                     self.hover_kill_pid = proc.pid;
@@ -733,7 +736,7 @@ pub const MemoryMonitor = struct {
                                 }
                             }
                         } else {
-                            if (fx >= contentX1() - 26.0 and fx <= contentX1()) {
+                            if (fx >= cx1 - 26.0 * s_f and fx <= cx1) {
                                 if (self.hover_kill_action != .kill or self.hover_kill_pid != proc.pid) {
                                     self.hover_kill_action = .kill;
                                     self.hover_kill_pid = proc.pid;
@@ -834,6 +837,8 @@ pub const MemoryMonitor = struct {
         }
 
         const fx: f64 = @as(f64, @floatFromInt(x));
+        const s_f = @as(f64, @floatFromInt(self.render_scale));
+        const cx1 = contentX1() * s_f;
         if (self.rowIndexAt(x, y)) |idx| {
             if (idx < self.visible_rows.items.len) {
                 const row = self.visible_rows.items[idx];
@@ -851,13 +856,13 @@ pub const MemoryMonitor = struct {
                         if (row.sub_idx < grp.procs.items.len) {
                             const proc = grp.procs.items[row.sub_idx];
                             if (self.confirm_kill_pid == proc.pid) {
-                                if (fx >= contentX1() - 26.0 and fx <= contentX1()) {
+                                if (fx >= cx1 - 26.0 * s_f and fx <= cx1) {
                                     // Clicked Cancel (x)
                                     self.confirm_kill_pid = null;
                                     self.hover_kill_action = .none;
                                     self.hover_kill_pid = null;
                                     return true;
-                                } else if (fx >= contentX1() - 56.0 and fx < contentX1() - 26.0) {
+                                } else if (fx >= cx1 - 56.0 * s_f and fx < cx1 - 26.0 * s_f) {
                                     // Clicked Confirm (check)
                                     _ = c.kill(@intCast(proc.pid), c.SIGTERM);
                                     self.confirm_kill_pid = null;
@@ -867,7 +872,7 @@ pub const MemoryMonitor = struct {
                                     return true;
                                 }
                             } else {
-                                if (fx >= contentX1() - 26.0 and fx <= contentX1()) {
+                                if (fx >= cx1 - 26.0 * s_f and fx <= cx1) {
                                     // Clicked Kill (x)
                                     self.confirm_kill_pid = proc.pid;
                                     self.hover_kill_action = .none;
@@ -927,6 +932,14 @@ pub const MemoryMonitor = struct {
 
     fn contentX1() f64 {
         return INSET + PANEL_W - PAD;
+    }
+
+    fn scaledX1(self: *MemoryMonitor) f64 {
+        return contentX1() * @as(f64, @floatFromInt(self.render_scale));
+    }
+
+    fn scaledX0(self: *MemoryMonitor) f64 {
+        return contentX0() * @as(f64, @floatFromInt(self.render_scale));
     }
 
     fn listTop() f64 {
@@ -1110,20 +1123,21 @@ pub const MemoryMonitor = struct {
     fn rowIndexAt(self: *MemoryMonitor, x: i32, y: i32) ?usize {
         const fx: f64 = @as(f64, @floatFromInt(x));
         const fy: f64 = @as(f64, @floatFromInt(y));
-        if (fy < listTop() or fy >= listBottom()) return null;
-        if (fx < contentX0() - 8.0 or fx > contentX1() + 8.0) return null;
+        const s_f = @as(f64, @floatFromInt(self.render_scale));
+        if (fy < listTop() * s_f or fy >= listBottom() * s_f) return null;
+        if (fx < contentX0() * s_f - 8.0 * s_f or fx > contentX1() * s_f + 8.0 * s_f) return null;
 
-        const row: usize = @as(usize, @intFromFloat(std.math.floor((fy - listTop()) / ROW_H)));
+        const row: usize = @as(usize, @intFromFloat(std.math.floor((fy - listTop() * s_f) / (ROW_H * s_f))));
         const idx = self.scroll + row;
         if (idx >= self.visible_rows.items.len) return null;
         return idx;
     }
 
     fn pointInPanel(self: *MemoryMonitor, x: i32, y: i32) bool {
-        _ = self;
+        const s_f = @as(f64, @floatFromInt(self.render_scale));
         const fx: f64 = @as(f64, @floatFromInt(x));
         const fy: f64 = @as(f64, @floatFromInt(y));
-        return fx >= panelX() and fx <= panelX() + PANEL_W and fy >= panelY() and fy <= panelY() + PANEL_H;
+        return fx >= panelX() * s_f and fx <= (panelX() + PANEL_W) * s_f and fy >= panelY() * s_f and fy <= (panelY() + PANEL_H) * s_f;
     }
 
     fn pointInFilter(self: *MemoryMonitor, x: i32, y: i32) bool {
@@ -1134,12 +1148,12 @@ pub const MemoryMonitor = struct {
     }
 
     fn pointInClear(self: *MemoryMonitor, x: i32, y: i32) bool {
-        _ = self;
+        const s_f = @as(f64, @floatFromInt(self.render_scale));
         const fx: f64 = @as(f64, @floatFromInt(x));
         const fy: f64 = @as(f64, @floatFromInt(y));
-        const cx = contentX1() - 20.0;
-        const cy = filterTop() + FILTER_H / 2.0;
-        return (fx - cx) * (fx - cx) + (fy - cy) * (fy - cy) <= 14.0 * 14.0;
+        const cx = contentX1() * s_f - 20.0 * s_f;
+        const cy = (filterTop() + FILTER_H / 2.0) * s_f;
+        return (fx - cx) * (fx - cx) + (fy - cy) * (fy - cy) <= 14.0 * 14.0 * s_f * s_f;
     }
 
     // Rendering
@@ -1186,6 +1200,7 @@ pub const MemoryMonitor = struct {
     }
 
     pub fn render(self: *MemoryMonitor, target: renderer.Renderer, scale: u32) void {
+        self.render_scale = scale;
         const th = self.cfg.theme;
         const is_light = th.panel_bg.isLight();
         const overlay = if (is_light) Color.rgb(0, 0, 0) else Color.rgb(255, 255, 255);

@@ -15,6 +15,8 @@ const quicksettings = @import("../../panels/quicksettings/panel.zig");
 const ImageBuffer = image_ops.ImageBuffer;
 const WindowApp = wayland_win.WindowApp;
 
+pub const TextAlign = enum { left, center, right };
+
 pub const Point = struct {
     x: i32,
     y: i32,
@@ -214,6 +216,7 @@ pub const Annotation = struct {
     text_buf: [128]u8 = @splat(0),
     text_len: usize = 0,
     font_size: u32 = 18,
+    text_align: TextAlign = .left,
 
     // For step badge
     step_number: u32 = 1,
@@ -516,7 +519,14 @@ pub const Annotation = struct {
             },
             .text => {
                 const slice = self.text_buf[0..self.text_len];
-                img.drawText(font, slice, self.rect.x, self.rect.y + @as(i32, @intCast(self.font_size)), self.font_size, self.color);
+                const w = font.measureTextWithSize(slice, self.font_size);
+                var x = self.rect.x;
+                switch (self.text_align) {
+                    .center => x = self.rect.x + @divTrunc(@as(i32, @intCast(self.rect.w)), 2) - @divTrunc(@as(i32, @intCast(w)), 2),
+                    .right => x = self.rect.x + @as(i32, @intCast(self.rect.w)) - @as(i32, @intCast(w)) - 4,
+                    else => x = self.rect.x + 2,
+                }
+                img.drawText(font, slice, x, self.rect.y + @as(i32, @intCast(self.font_size)), self.font_size, self.color);
             },
             .pen => {
                 if (self.points.items.len < 2) return;
@@ -666,6 +676,7 @@ pub const AnnotateApp = struct {
     current_color: Color = Color.hex(0xE06C75),
     stroke_width: u32 = 4,
     current_font_size: u32 = 18,
+    current_text_align: TextAlign = .left,
     fill_shape: bool = false,
 
     // Navigation (Zoom & Pan)
@@ -977,6 +988,7 @@ pub const AnnotateApp = struct {
         if (self.findAnnotationById(id)) |ann| {
             if (ann.kind == .text) {
                 self.current_font_size = ann.font_size;
+                self.current_text_align = ann.text_align;
             }
         }
         self.win.needs_redraw = true;
@@ -1309,6 +1321,25 @@ pub const AnnotateApp = struct {
 
         if (std.mem.endsWith(u8, save_path, ".jpg") or std.mem.endsWith(u8, save_path, ".jpeg")) {
             try flat.saveJpeg(save_path, 92);
+        } else if (std.mem.endsWith(u8, save_path, ".webp")) {
+            var rgba_buf = try self.allocator.alloc(u8, @as(usize, flat.width) * @as(usize, flat.height) * 4);
+            defer self.allocator.free(rgba_buf);
+            var idx: usize = 0;
+            while (idx < flat.pixels.len) : (idx += 1) {
+                const px = flat.pixels[idx];
+                rgba_buf[idx * 4 + 0] = @intCast((px >> 16) & 0xFF);
+                rgba_buf[idx * 4 + 1] = @intCast((px >> 8) & 0xFF);
+                rgba_buf[idx * 4 + 2] = @intCast(px & 0xFF);
+                rgba_buf[idx * 4 + 3] = @intCast((px >> 24) & 0xFF);
+            }
+            if (c.export_webp(save_path.ptr, rgba_buf.ptr, @intCast(flat.width), @intCast(flat.height)) != 0) {
+                self.setStatus("WebP save failed");
+                return;
+            }
+        } else if (std.mem.endsWith(u8, save_path, ".svg")) {
+            try self.exportSVG(save_path);
+            self.setStatus("Saved SVG");
+            return;
         } else {
             try flat.savePng(save_path);
         }
@@ -1342,6 +1373,104 @@ pub const AnnotateApp = struct {
         self.setStatus(feedback);
     }
 
+    pub fn exportWebP(self: *AnnotateApp) !void {
+        var flat = try self.flattenImage();
+        defer flat.deinit();
+        const home = if (c.getenv("HOME")) |h| std.mem.span(h) else "/tmp";
+        const ts = c.time(null);
+        var path_buf: [512]u8 = undefined;
+        const path = try std.fmt.bufPrint(&path_buf, "{s}/Pictures/mizu_export_{d}.webp", .{ home, ts });
+        var rgba_buf = try self.allocator.alloc(u8, @as(usize, flat.width) * @as(usize, flat.height) * 4);
+        defer self.allocator.free(rgba_buf);
+        var idx: usize = 0;
+        while (idx < flat.pixels.len) : (idx += 1) {
+            const px = flat.pixels[idx];
+            rgba_buf[idx * 4 + 0] = @intCast((px >> 16) & 0xFF); // R
+            rgba_buf[idx * 4 + 1] = @intCast((px >> 8) & 0xFF);  // G
+            rgba_buf[idx * 4 + 2] = @intCast(px & 0xFF);        // B
+            rgba_buf[idx * 4 + 3] = @intCast((px >> 24) & 0xFF); // A
+        }
+        if (c.export_webp(path.ptr, rgba_buf.ptr, @intCast(flat.width), @intCast(flat.height)) == 0) {
+            var fb: [128]u8 = undefined;
+            self.setStatus(std.fmt.bufPrint(&fb, "Exported WebP to {s}", .{path}) catch "WebP exported");
+        } else {
+            self.setStatus("WebP export failed");
+        }
+    }
+
+    pub fn exportSVG(self: *AnnotateApp, path_override: ?[]const u8) !void {
+        const home = if (c.getenv("HOME")) |h| std.mem.span(h) else "/tmp";
+        const ts = c.time(null);
+        var path_buf: [512]u8 = undefined;
+        const path = if (path_override) |po| po else try std.fmt.bufPrint(&path_buf, "{s}/Pictures/mizu_export_{d}.svg", .{ home, ts });
+        var buf: [65536]u8 = undefined;
+        var pos: usize = 0;
+        const w = self.base_image.img.width;
+        const h = self.base_image.img.height;
+        const s0 = std.fmt.bufPrint(buf[pos..], "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{d}\" height=\"{d}\" viewBox=\"0 0 {d} {d}\" version=\"1.1\">\n", .{ w, h, w, h }) catch return error.BufOverflow;
+        pos += s0.len;
+        var hex_buf: [8]u8 = undefined;
+        for (self.annotations.items) |*ann| {
+            if (!ann.visible) continue;
+            const hex_str = ann.color.formatHexRgb(&hex_buf);
+            switch (ann.kind) {
+                .arrow => {
+        const _part_1417 = std.fmt.bufPrint(buf[pos..], "  <line x1=\"{d}\" y1=\"{d}\" x2=\"{d}\" y2=\"{d}\" stroke=\"{s}\" stroke-width=\"{d}\" stroke-linecap=\"round\"/>\n", .{ ann.start_x, ann.start_y, ann.end_x, ann.end_y, hex_str, ann.stroke_width }) catch return error.BufOverflow;
+        pos += _part_1417.len;
+                },
+                .line => {
+        const _part_1420 = std.fmt.bufPrint(buf[pos..], "  <line x1=\"{d}\" y1=\"{d}\" x2=\"{d}\" y2=\"{d}\" stroke=\"{s}\" stroke-width=\"{d}\" stroke-linecap=\"round\"/>\n", .{ ann.start_x, ann.start_y, ann.end_x, ann.end_y, hex_str, ann.stroke_width }) catch return error.BufOverflow;
+        pos += _part_1420.len;
+                },
+                .rect => {
+                    const b = ann.getBounds();
+                    const fill_attr = if (ann.filled) try std.fmt.bufPrint(&[_]u8{}, "fill=\"{s}\"", .{hex_str}) else "fill=\"none\"";
+        const _part_1425 = std.fmt.bufPrint(buf[pos..], "  <rect x=\"{d}\" y=\"{d}\" width=\"{d}\" height=\"{d}\" stroke=\"{s}\" stroke-width=\"{d}\" {s}/>\n", .{ b.x, b.y, b.w, b.h, hex_str, ann.stroke_width, fill_attr }) catch return error.BufOverflow;
+        pos += _part_1425.len;
+                },
+                .circle => {
+                    const b = ann.getBounds();
+                    const fill_attr = if (ann.filled) try std.fmt.bufPrint(&[_]u8{}, "fill=\"{s}\"", .{hex_str}) else "fill=\"none\"";
+        const _part_1430 = std.fmt.bufPrint(buf[pos..], "  <ellipse cx=\"{d}\" cy=\"{d}\" rx=\"{d}\" ry=\"{d}\" stroke=\"{s}\" stroke-width=\"{d}\" {s}/>\n", .{ b.x + @divTrunc(@as(i32, @intCast(b.w)), 2), b.y + @divTrunc(@as(i32, @intCast(b.h)), 2), @divTrunc(@as(i32, @intCast(b.w)), 2), @divTrunc(@as(i32, @intCast(b.h)), 2), hex_str, ann.stroke_width, fill_attr }) catch return error.BufOverflow;
+        pos += _part_1430.len;
+                },
+                .text => {
+                    const slice = ann.text_buf[0..ann.text_len];
+                    const align_str = switch (ann.text_align) { .center => "middle", .right => "end", else => "start" };
+        const _part_1435 = std.fmt.bufPrint(buf[pos..], "  <text x=\"{d}\" y=\"{d}\" font-size=\"{d}\" fill=\"{s}\" text-anchor=\"{s}\" font-family=\"sans-serif\">{s}</text>\n", .{ ann.rect.x + 2, ann.rect.y + @as(i32, @intCast(ann.font_size)), ann.font_size, hex_str, align_str, slice }) catch return error.BufOverflow;
+        pos += _part_1435.len;
+                },
+                .pen => {
+                    if (ann.points.items.len < 2) continue;
+        const _part_1439 = std.fmt.bufPrint(buf[pos..], "  <polyline points=\"", .{}) catch return error.BufOverflow;
+        pos += _part_1439.len;
+                    for (ann.points.items) |pt| {
+        const _part_1441 = std.fmt.bufPrint(buf[pos..], "{d},{d} ", .{ pt.x, pt.y }) catch return error.BufOverflow;
+        pos += _part_1441.len;
+                    }
+        const _part_1443 = std.fmt.bufPrint(buf[pos..], "\" stroke=\"{s}\" stroke-width=\"{d}\" fill=\"none\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/>\n", .{ hex_str, ann.stroke_width }) catch return error.BufOverflow;
+        pos += _part_1443.len;
+                },
+                .image => {
+                    if (ann.image_data) |img| {
+                        _ = img;
+        const _part_1448 = std.fmt.bufPrint(buf[pos..], "  <image x=\"{d}\" y=\"{d}\" width=\"{d}\" height=\"{d}\" href=\"data:image/png;base64,\"/>\n", .{ ann.rect.x, ann.rect.y, ann.rect.w, ann.rect.h }) catch return error.BufOverflow;
+        pos += _part_1448.len;
+                    }
+                },
+                else => {},
+            }
+        }
+        const _part_1454 = std.fmt.bufPrint(buf[pos..], "</svg>\n", .{}) catch return error.BufOverflow;
+        pos += _part_1454.len;
+        const f = c.fopen(path.ptr, "wb");
+        if (f == null) return error.FileWriteFailed;
+        defer _ = c.fclose(f);
+        _ = c.fwrite(buf[0..pos].ptr, 1, pos, f);
+        var fb: [128]u8 = undefined;
+        self.setStatus(std.fmt.bufPrint(&fb, "Exported SVG to {s}", .{path}) catch "SVG exported");
+    }
+
     pub fn copyClipboard(self: *AnnotateApp) !void {
         var flat = try self.flattenImage();
         defer flat.deinit();
@@ -1350,6 +1479,68 @@ pub const AnnotateApp = struct {
     }
 
     pub fn pasteClipboard(self: *AnnotateApp) !void {
+        // Try text clipboard first
+        const txt_cmd = "export PATH=\"$PATH:/usr/sbin:/usr/local/bin:/usr/bin:$HOME/.local/bin\"; wl-paste --type text/plain 2>/dev/null || wl-paste 2>/dev/null";
+        if (c.popen(txt_cmd, "r")) |pipe_text| {
+            defer _ = c.pclose(pipe_text);
+            var text_buf: [1024]u8 = undefined;
+            var total_len: usize = 0;
+            while (true) {
+                const n = c.fread(text_buf[total_len..].ptr, 1, text_buf.len - total_len, pipe_text);
+                if (n == 0) break;
+                total_len += @intCast(n);
+            }
+            if (total_len > 0) {
+                const trimmed = std.mem.trim(u8, text_buf[0..total_len], " \t\r\n");
+                if (trimmed.len > 0) {
+                    self.pushUndoState();
+                    const base_w = self.base_image.img.width;
+                    const base_h = self.base_image.img.height;
+                    var place_x: i32 = 0;
+                    var place_y: i32 = 0;
+                    const cur_x = self.win.pointer_x;
+                    const cur_y = self.win.pointer_y;
+                    const c_rect = self.canvasRect();
+                    if (cur_x >= c_rect.x and cur_x < c_rect.x + @as(i32, @intCast(c_rect.w)) and
+                        cur_y >= c_rect.y and cur_y < c_rect.y + @as(i32, @intCast(c_rect.h)))
+                    {
+                        const img_cx = self.screenToImageX(cur_x);
+                        const img_cy = self.screenToImageY(cur_y);
+                        place_x = img_cx - 60;
+                        place_y = img_cy - @as(i32, @intCast(self.current_font_size));
+                    } else {
+                        place_x = @divTrunc(@as(i32, @intCast(base_w)), 2) - 60;
+                        place_y = @divTrunc(@as(i32, @intCast(base_h)), 2);
+                    }
+                    const new_id = self.next_annotation_id;
+                    self.next_annotation_id += 1;
+                    var copy_buf: [128]u8 = @splat(0);
+                    @memcpy(copy_buf[0..@min(trimmed.len, 127)], trimmed);
+                    const new_ann = Annotation{
+                        .id = new_id,
+                        .kind = .text,
+                        .rect = Rect{ .x = place_x, .y = place_y, .w = 120, .h = @as(u32, @intCast(self.current_font_size + 8)) },
+                        .text_buf = copy_buf,
+                        .text_len = @min(trimmed.len, 127),
+                        .font_size = self.current_font_size,
+                        .color = self.current_color,
+                        .text_align = .left,
+                        .visible = true,
+                        .locked = false,
+                    };
+                    try self.annotations.append(self.allocator, new_ann);
+                    self.deselectAll();
+                    try self.selected_ids.append(self.allocator, new_id);
+                    self.selectOnly(new_id);
+                    self.editing_text_id = new_id;
+                    self.setStatus("Pasted text");
+                    self.win.needs_redraw = true;
+                    return;
+                }
+            }
+        }
+
+        // Fall back to image paste
         var pasted = (try ImageBuffer.loadFromClipboard(self.allocator)) orelse {
             self.setStatus("Clipboard has no image");
             return;
@@ -1755,6 +1946,12 @@ pub const AnnotateApp = struct {
                                 self.toggleSelect(cid);
                             } else if (!self.isSelected(cid)) {
                                 self.selectOnly(cid);
+                            } else if (self.findAnnotationById(cid)) |ann| {
+                                if (ann.kind == .text and self.editing_text_id == null) {
+                                    self.editing_text_id = cid;
+                                    self.win.needs_redraw = true;
+                                    return;
+                                }
                             }
                             // Start moving
                             self.pushUndoState();
@@ -2348,6 +2545,23 @@ pub const AnnotateApp = struct {
                 }
                 bx += 28;
 
+                // Text alignment: Left / Center / Right
+                const align_btn_w: i32 = 26;
+                const align_items = [_][]const u8{"L", "C", "R"};
+                for (align_items, 0..) |_, idx| {
+                    if (x >= bx and x < bx + align_btn_w) {
+                        self.current_text_align = @as(TextAlign, switch (idx) { 0 => .left, 1 => .center, else => .right });
+                        for (self.selected_ids.items) |sid| {
+                            if (self.findAnnotationById(sid)) |a| {
+                                if (a.kind == .text) a.text_align = @as(TextAlign, switch (idx) { 0 => .left, 1 => .center, else => .right });
+                            }
+                        }
+                        self.win.needs_redraw = true;
+                        return;
+                    }
+                    bx += align_btn_w + 4;
+                }
+
                 bx += 14; // Separator
 
                 // Palette swatches
@@ -2826,7 +3040,14 @@ pub const AnnotateApp = struct {
                 const sy = self.imageToScreenY(ann.rect.y);
                 const slice = ann.text_buf[0..ann.text_len];
                 const sz: u32 = @intFromFloat(@as(f32, @floatFromInt(ann.font_size)) * self.zoom);
-                r.drawTextWithSize(self.font, slice, sx, sy + @as(i32, @intCast(sz)), sz, ann.color);
+                const text_w = r.measureTextWithSize(self.font, slice, sz);
+                var draw_x = sx;
+                switch (ann.text_align) {
+                    .center => draw_x = @as(i32, @intFromFloat(@as(f32, @floatFromInt(sx)) + @as(f32, @floatFromInt(ann.rect.w)) / 2.0 - @as(f32, @floatFromInt(text_w)) / 2.0)),
+                    .right => draw_x = sx + @as(i32, @intCast(ann.rect.w)) - @as(i32, @intFromFloat(@as(f32, @floatFromInt(text_w)))) - 4,
+                    else => draw_x = sx + 2,
+                }
+                r.drawTextWithSize(self.font, slice, draw_x, sy + @as(i32, @intCast(sz)), sz, ann.color);
             },
             .pen => {
                 if (ann.points.items.len < 2) return;
@@ -3084,6 +3305,17 @@ pub const AnnotateApp = struct {
             r.drawRoundedBorder(bx, btn_y, 26, @intCast(btn_h), 6, 1, th.glass_border);
             r.drawIconCentered(self.font, "󰧴", bx + 13, btn_y + 21, 14, th.text_main);
             bx += 28;
+
+            // Text alignment: Left / Center / Right
+            const align_btn_w: i32 = 26;
+            const align_btns = [_][]const u8{"L", "C", "R"};
+            for (align_btns, 0..) |_, idx| {
+                const align_val: TextAlign = switch (idx) { 0 => .left, 1 => .center, else => .right };
+                r.fillRoundedRect(bx, btn_y, @intCast(align_btn_w), @intCast(btn_h), 6, if ((self.current_text_align == align_val and self.selected_ids.items.len > 0)) th.accent else th.btn_raised_bg);
+                r.drawRoundedBorder(bx, btn_y, @intCast(align_btn_w), @intCast(btn_h), 6, 1, if ((self.current_text_align == align_val and self.selected_ids.items.len > 0)) th.accent else th.glass_border);
+                r.drawIconCentered(self.font, "󰍺", bx + @divTrunc(align_btn_w, 2), btn_y + 21, 14, if ((self.current_text_align == align_val and self.selected_ids.items.len > 0)) th.accent_fg else th.text_main);
+                bx += align_btn_w + 4;
+            }
 
             // Separator
             bx += 6;

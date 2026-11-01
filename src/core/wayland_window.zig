@@ -387,6 +387,7 @@ pub const WindowApp = struct {
 
         if (self.viewport) |vp| {
             c.wp_viewport_set_destination(vp, @intCast(self.width), @intCast(self.height));
+            c.wl_surface_set_buffer_scale(self.surface.?, 1);
         } else if (self.scale_factor > 1.0) {
             // Fractional scaling without viewport: use fractional factor via the compositor's
             // preferred mechanism. Most compositors that support fractional scaling will

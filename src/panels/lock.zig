@@ -103,13 +103,22 @@ pub const LockApp = struct {
                 app.xkb_state = c.xkb_state_new(km);
             }
         }
-        // Minimal glyph preload — only chars we actually draw (clock digits + mask + ghost).
+        // Minimal glyph preload — clock digits, colon, date letters, mask/ghost.
         if (app.font) |*f| {
-            const preload = "0123456789:AMPHpm 󰊠󰮯";
+            const preload = "0123456789:ABabcdefghijklmnopqrstuvwxyzAMPM ,";
+            // Preload at large clock size and medium date size
             if (std.unicode.Utf8View.init(preload)) |view| {
                 var it = view.iterator();
                 while (it.nextCodepoint()) |cp| {
-                    _ = f.getOrLoadGlyph(cp, 16);
+                    _ = f.getOrLoadGlyph(cp, 160);
+                    _ = f.getOrLoadGlyph(cp, 20);
+                }
+            } else |_| {}
+            // Preload symbol glyphs
+            const symbols = "󰊠󰮯";
+            if (std.unicode.Utf8View.init(symbols)) |view| {
+                var it = view.iterator();
+                while (it.nextCodepoint()) |cp| {
                     _ = f.getOrLoadGlyph(cp, 20);
                 }
             } else |_| {}
@@ -408,23 +417,57 @@ pub const LockApp = struct {
         _ = self;
         if (img.width == width and img.height == height) {
             @memcpy(target.pixels[0 .. width * height], img.pixels[0 .. width * height]);
-        } else {
-            const scale_x = @as(f32, @floatFromInt(width)) / @as(f32, @floatFromInt(img.width));
-            const scale_y = @as(f32, @floatFromInt(height)) / @as(f32, @floatFromInt(img.height));
-            const scale_f = @max(scale_x, scale_y);
-            const src_w = @as(u32, @intFromFloat(@as(f32, @floatFromInt(width)) / scale_f));
-            const src_h = @as(u32, @intFromFloat(@as(f32, @floatFromInt(height)) / scale_f));
-            const src_x = if (img.width > src_w) (img.width - src_w) / 2 else 0;
-            const src_y = if (img.height > src_h) (img.height - src_h) / 2 else 0;
-            var dy: u32 = 0;
-            while (dy < height) : (dy += 1) {
-                const sy = @min(src_y + @as(u32, @intFromFloat(@as(f32, @floatFromInt(dy)) / scale_f)), img.height - 1);
-                var dx: u32 = 0;
-                while (dx < width) : (dx += 1) {
-                    const sx = @min(src_x + @as(u32, @intFromFloat(@as(f32, @floatFromInt(dx)) / scale_f)), img.width - 1);
+            return;
+        }
+        const scale_x = @as(f32, @floatFromInt(width)) / @as(f32, @floatFromInt(img.width));
+        const scale_y = @as(f32, @floatFromInt(height)) / @as(f32, @floatFromInt(img.height));
+        const scale_f = @max(scale_x, scale_y);
+        const src_w = @as(u32, @intFromFloat(@as(f32, @floatFromInt(width)) / scale_f));
+        const src_h = @as(u32, @intFromFloat(@as(f32, @floatFromInt(height)) / scale_f));
+        const src_x = if (img.width > src_w) (img.width - src_w) / 2 else 0;
+        const src_y = if (img.height > src_h) (img.height - src_h) / 2 else 0;
+
+        for (0..height) |dy| {
+            const src_y_f = (@as(f32, @floatFromInt(src_y)) + (@as(f32, @floatFromInt(dy)) / scale_f));
+            const y0 = @as(u32, @intFromFloat(@max(0.0, @floor(src_y_f - 0.5))));
+            const y1 = @as(u32, @min(@as(u32, @intFromFloat(@ceil(src_y_f + 0.5))), img.height - 1));
+
+            for (0..width) |dx| {
+                const src_x_f = (@as(f32, @floatFromInt(src_x)) + (@as(f32, @floatFromInt(dx)) / scale_f));
+                const x0 = @as(u32, @intFromFloat(@max(0.0, @floor(src_x_f - 0.5))));
+                const x1 = @as(u32, @min(@as(u32, @intFromFloat(@ceil(src_x_f + 0.5))), img.width - 1));
+
+                var sum_r: f32 = 0;
+                var sum_g: f32 = 0;
+                var sum_b: f32 = 0;
+                var sum_a: f32 = 0;
+                var weight: f32 = 0;
+
+                for (y0..y1 + 1) |sy| {
+                    const wy = @max(0.0, 1.0 - @abs(@as(f32, @floatFromInt(sy)) - src_y_f));
+                    for (x0..x1 + 1) |sx| {
+                        const wx = @max(0.0, 1.0 - @abs(@as(f32, @floatFromInt(sx)) - src_x_f));
+                        const w = wx * wy;
+                        const p = img.pixels[sy * img.width + sx];
+                        const a = @as(f32, @floatFromInt(@as(u8, @truncate((p >> 24) & 0xFF))));
+                        const r = @as(f32, @floatFromInt(@as(u8, @truncate((p >> 16) & 0xFF))));
+                        const g = @as(f32, @floatFromInt(@as(u8, @truncate((p >> 8) & 0xFF))));
+                        const b = @as(f32, @floatFromInt(@as(u8, @truncate(p & 0xFF))));
+                        sum_a += a * w;
+                        sum_r += r * w;
+                        sum_g += g * w;
+                        sum_b += b * w;
+                        weight += w;
+                    }
+                }
+
+                if (weight > 0) {
                     const idx = dy * width + dx;
-                    const src_idx = sy * img.width + sx;
-                    target.pixels[idx] = img.pixels[src_idx];
+                    const out_a = @as(u8, @intFromFloat(@max(0.0, @min(255.0, sum_a / weight))));
+                    const out_r = @as(u8, @intFromFloat(@max(0.0, @min(255.0, sum_r / weight))));
+                    const out_g = @as(u8, @intFromFloat(@max(0.0, @min(255.0, sum_g / weight))));
+                    const out_b = @as(u8, @intFromFloat(@max(0.0, @min(255.0, sum_b / weight))));
+                    target.pixels[idx] = (@as(u32, out_a) << 24) | (@as(u32, out_r) << 16) | (@as(u32, out_g) << 8) | @as(u32, out_b);
                 }
             }
         }
@@ -442,55 +485,52 @@ pub const LockApp = struct {
         }
     }
 
-    // Minimal direct-render HUD: no Clay, no layout engine, just direct pixel drawing.
+    // Minimal direct-render HUD: large clock, subtle date, no decorations.
     fn renderHudDirect(self: *LockApp, target: renderer.Renderer, w: u32, h: u32, scale: u32) void {
         const font = if (self.font) |*f| f else return;
-        const sc = if (scale == 0) 1 else scale;
+        _ = scale;
 
-        // Clock string
+        // 12-hour clock format, no AM/PM
         c.tzset();
         const now = c.time(null);
         var tm: c.struct_tm = undefined;
         _ = c.localtime_r(&now, &tm);
-        const is_12h = std.mem.indexOf(u8, self.cfg.clock_format, "%I") != null or std.mem.indexOf(u8, self.cfg.clock_format, "%l") != null;
-        const has_ampm = std.mem.indexOf(u8, self.cfg.clock_format, "%p") != null or std.mem.indexOf(u8, self.cfg.clock_format, "%P") != null;
-        const fmt: [*:0]const u8 = if (is_12h) (if (has_ampm) "%I:%M %p" else "%I:%M") else "%H:%M";
+        const fmt: [*:0]const u8 = "%I:%M";
         var time_buf: [64]u8 = undefined;
         const t_len = c.strftime(&time_buf, time_buf.len, fmt, &tm);
         const time_str = if (t_len > 0) time_buf[0..t_len] else "00:00";
 
-        const clock_size = 72 * sc;
-        const time_x: i32 = 64 * @as(i32, @intCast(sc));
-        const time_y: i32 = @as(i32, @intCast(h)) - 48 * @as(i32, @intCast(sc)) - @as(i32, @intCast(clock_size / 2));
+        // Medium clock in left corner
+        const clock_size: u32 = @min(120, @max(64, h / 8));
+        const time_x: i32 = @as(i32, @intCast(32));
+        const time_y: i32 = @as(i32, @intCast(h)) - @as(i32, @intCast(clock_size)) - @as(i32, @intCast(32));
 
-        // Draw clock text using FreeType glyph rendering directly.
+        // Draw clock with refined spacing
         self.drawTextDirect(font, target, time_str, time_x, time_y, clock_size, Color.rgb(255, 255, 255));
 
-        // Only show input chars when typing — no box, no border, just font chars.
+        // Only time — no date, minimal left-corner layout
+
+        // Only show auth feedback when needed — minimal, no borders
         if (self.auth_state == .authenticating) {
             const msg = "Verifying...";
-            const msg_size = 16 * sc;
-            const msg_x: i32 = @as(i32, @intCast((w - @as(u32, @intCast(msg.len)) * msg_size / 2) / 2));
-            const msg_y: i32 = @as(i32, @intCast(h)) - 60 * @as(i32, @intCast(sc));
+            const msg_size = @min(16, @max(12, h / 40));
+            const msg_w = font.measureTextWithSize(msg, msg_size);
+            const msg_x: i32 = @divTrunc(@as(i32, @intCast(w)), 2) - @divTrunc(@as(i32, @intCast(msg_w)), 2);
+            const msg_y: i32 = @as(i32, @intCast(h)) - 60;
             self.drawTextDirect(font, target, msg, msg_x, msg_y, msg_size, Color.rgb(255, 255, 255));
         } else if (self.password_len > 0) {
-            // Each char drawn with the font. All masked as 󰊠 except last shown as 󰮯.
-            const char_size = 20 * sc;
+            const char_size = @min(22, @max(14, h / 45));
             const char_size_i = @as(i32, @intCast(char_size));
-            const char_gap = @as(i32, @intCast(4 * sc));
+            const char_gap = @as(i32, @intCast(4));
             const total_chars = @min(self.password_len, 8);
             const start_idx = self.password_len - total_chars;
-            // Last char visible; rest masked.
             const mask_str = "󰊠";
             const last_str = "󰮯";
-
-            // Measure approximate width to center (max 8 chars so it never overflows).
             const approx_char_w = char_size_i;
             const tc = @as(i32, @intCast(total_chars));
             const total_w_approx = tc * approx_char_w + (tc - 1) * char_gap;
             var char_x = @divTrunc(@as(i32, @intCast(w)), 2) - @divTrunc(total_w_approx, 2);
-            const char_y = @as(i32, @intCast(h)) - 80 * @as(i32, @intCast(sc));
-
+            const char_y = @as(i32, @intCast(h)) - 80;
             var idx: usize = 0;
             while (idx < total_chars) : (idx += 1) {
                 const i = start_idx + idx;
@@ -501,17 +541,19 @@ pub const LockApp = struct {
             }
         }
 
-        // Minimal status text — no rectangle, just font.
-        const status_y = @as(i32, @intCast(h)) - 36 * @as(i32, @intCast(sc));
+        // Minimal status — only when relevant, very subtle
+        const status_y = @as(i32, @intCast(h)) - 36;
         if (self.auth_state == .failed) {
             const msg = "Incorrect password";
-            const msg_size = 13 * sc;
-            const msg_x: i32 = @divTrunc(@as(i32, @intCast(w)), 2) - @as(i32, @intCast(msg.len)) * @as(i32, @intCast(@divTrunc(msg_size, 2)));
+            const msg_size = @min(14, @max(11, h / 50));
+            const msg_w = font.measureTextWithSize(msg, msg_size);
+            const msg_x = @divTrunc(@as(i32, @intCast(w)), 2) - @divTrunc(@as(i32, @intCast(msg_w)), 2);
             self.drawTextDirect(font, target, msg, msg_x, status_y, msg_size, Color.init(230, 235, 87, 87));
         } else if (self.caps_lock_active) {
             const msg = "Caps Lock is ON";
-            const msg_size = 13 * sc;
-            const msg_x: i32 = @divTrunc(@as(i32, @intCast(w)), 2) - @as(i32, @intCast(msg.len)) * @as(i32, @intCast(@divTrunc(msg_size, 2)));
+            const msg_size = @min(14, @max(11, h / 50));
+            const msg_w = font.measureTextWithSize(msg, msg_size);
+            const msg_x = @divTrunc(@as(i32, @intCast(w)), 2) - @divTrunc(@as(i32, @intCast(msg_w)), 2);
             self.drawTextDirect(font, target, msg, msg_x, status_y, msg_size, Color.init(230, 245, 180, 60));
         }
     }
@@ -535,10 +577,22 @@ pub const LockApp = struct {
                             if (px < 0 or px >= @as(i32, @intCast(target.width))) continue;
                             const alpha = cg.bitmap[gy_row * cg.width + gx_col];
                             if (alpha == 0) continue;
-                            const blend_a = @as(u8, @intCast((@as(u32, alpha) * @as(u32, color.a)) / 255));
-                            const blend_col = Color.init(blend_a, color.r, color.g, color.b);
                             const idx = @as(u32, @intCast(py)) * target.stride / 4 + @as(u32, @intCast(px));
-                            target.pixels[idx] = blend_col.toArgb();
+                            const dst_pixel = target.pixels[idx];
+                            const src_a = @as(u8, @intCast((@as(u32, alpha) * @as(u32, color.a)) / 255));
+                            const src_r = color.r;
+                            const src_g = color.g;
+                            const src_b = color.b;
+                            const dst_a = @as(u8, @truncate((dst_pixel >> 24) & 0xFF));
+                            const dst_r = @as(u8, @truncate((dst_pixel >> 16) & 0xFF));
+                            const dst_g = @as(u8, @truncate((dst_pixel >> 8) & 0xFF));
+                            const dst_b = @as(u8, @truncate(dst_pixel & 0xFF));
+                            const inv_sa = 255 - src_a;
+                            const out_a = src_a + @as(u8, @intCast((@as(u32, dst_a) * @as(u32, inv_sa)) / 255));
+                            const out_r = @as(u8, @intCast((@as(u32, src_r) * @as(u32, src_a) + @as(u32, dst_r) * @as(u32, inv_sa)) / 255));
+                            const out_g = @as(u8, @intCast((@as(u32, src_g) * @as(u32, src_a) + @as(u32, dst_g) * @as(u32, inv_sa)) / 255));
+                            const out_b = @as(u8, @intCast((@as(u32, src_b) * @as(u32, src_a) + @as(u32, dst_b) * @as(u32, inv_sa)) / 255));
+                            target.pixels[idx] = (@as(u32, out_a) << 24) | (@as(u32, out_r) << 16) | (@as(u32, out_g) << 8) | @as(u32, out_b);
                         }
                     }
                 }
