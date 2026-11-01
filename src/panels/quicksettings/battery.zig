@@ -27,10 +27,9 @@ pub fn renderHeader(panel: anytype, ui: *ui_mod.Ui, scale: u32) void {
         .width = .{ .grow = .{} },
         .height = .{ .fixed = ui.s(QsLayout.header_h) },
         .direction = .row,
-        .padding = .{ .left = ui.su(20), .right = ui.su(20) },
-        .gap = ui.su(12),
-        .bg = panel.cfg.theme.surface,
-        .radius = ui.f(QsLayout.radius),
+        .padding = .{ .left = ui.su(12), .right = ui.su(12), .top = ui.su(6), .bottom = ui.su(6) },
+        .gap = ui.su(8),
+        .bg = null,
         .align_y = .center,
     });
 
@@ -94,14 +93,14 @@ pub fn renderHeader(panel: anytype, ui: *ui_mod.Ui, scale: u32) void {
         _ = ui.open(.{
             .id = "qs-header-btn",
             .index = btn.idx,
-            .width = .{ .fixed = ui.s(44) },
-            .height = .{ .fixed = ui.s(44) },
+            .width = .{ .fixed = ui.s(36) },
+            .height = .{ .fixed = ui.s(36) },
             .bg = if (btn.hov) panel.cfg.theme.card_hover_bg else panel.cfg.theme.card_bg,
-            .radius = ui.f(22),
+            .radius = ui.f(18),
             .align_x = .center,
             .align_y = .center,
         });
-        ui.icon(btn.icon, 20 * scale, if (btn.hov) panel.cfg.theme.accent else panel.cfg.theme.text_bright, 0);
+        ui.icon(btn.icon, 16 * scale, if (btn.hov) panel.cfg.theme.accent else panel.cfg.theme.text_bright, 0);
         ui.close();
     }
     ui.close(); // header row
