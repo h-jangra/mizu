@@ -162,7 +162,7 @@ pub const Bar = struct {
                 if (area.scroll) |s| {
                     switch (s) {
                         .volume => {
-                            self.sys_status.stepVolume(if (scroll_delta < 0) 1 else -1);
+                            self.sys_status.stepVolume(if (scroll_delta < 0) 5 else -5);
                             return true;
                         },
                         .backlight => {

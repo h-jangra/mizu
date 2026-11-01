@@ -1445,7 +1445,6 @@ pub fn generateThemeCss(th: *const Theme, buf: []u8) []const u8 {
         \\
     , .{
         th.kind.name(),
-        th.kind.name(),
         base_hex,
         surf_hex,
         elev_hex,

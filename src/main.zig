@@ -5,7 +5,7 @@ const theme = @import("core/theme.zig");
 const mango_ipc = @import("services/mango_ipc.zig");
 const bar_module = @import("bar/bar.zig");
 const launcher_module = @import("panels/launcher.zig");
-const quicksettings_module = @import("panels/quicksettings.zig");
+const quicksettings_module = @import("panels/quicksettings/panel.zig");
 const memory_monitor_module = @import("panels/memory_monitor.zig");
 const calendar_module = @import("panels/calendar.zig");
 const clipboard_module = @import("panels/clipboard.zig");
@@ -28,7 +28,7 @@ test {
     _ = @import("panels/launcher.zig");
     _ = @import("panels/launcher_calculator.zig");
     _ = @import("panels/launcher_file_search.zig");
-    _ = @import("panels/quicksettings.zig");
+    _ = @import("panels/quicksettings/panel.zig");
     _ = @import("panels/memory_monitor.zig");
     _ = @import("panels/osd.zig");
     _ = @import("bar/bar.zig");
@@ -1253,9 +1253,9 @@ fn runQuickSettings(allocator: std.mem.Allocator, cfg: config.Config) !void {
             .{ .fd = if (sig_fd >= 0) sig_fd else -1, .events = c.POLLIN, .revents = 0 },
         };
 
-        const is_animating = qs.is_scanning or qs.wifi_input_idx != null or qs.wifi_worker_running or
-            qs.wifi_scan_worker.running.load(.acquire) or qs.bt_scan_worker.running.load(.acquire) or
-            qs.audio_scan_worker.running.load(.acquire) or qs.bt_connect_worker.running.load(.acquire);
+        const is_animating = qs.is_scanning or qs.wifi.input_idx != null or qs.wifi.worker_running or
+            qs.wifi.scan_worker.running.load(.acquire) or qs.bluetooth.scan_worker.running.load(.acquire) or
+            qs.audio_scan_worker.running.load(.acquire) or qs.bluetooth.connect_worker.running.load(.acquire);
         const timeout: c_int = if (is_animating) 33 else 1000;
         const poll_res = c.poll(&poll_fds, 5, timeout);
         if (poll_res < 0) {

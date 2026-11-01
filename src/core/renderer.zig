@@ -1548,43 +1548,43 @@ pub const Renderer = struct {
         fill_color: Color,
         thumb_color: Color,
         thumb_shadow_color: Color,
-        is_hovered: bool,
     ) void {
-        _ = is_hovered;
-        const track_h: u32 = 6;
-        const track_y: i32 = y + @as(i32, @intCast((h - track_h) / 2));
-        const tr_rad: u32 = track_h / 2;
+        if (w == 0 or h == 0) return;
 
-        // Clean track groove
-        self.fillRoundedRect(x, track_y, w, track_h, tr_rad, track_color);
+        const radius: u32 = @max(2, h / 4);
+        self.fillRoundedRect(x, y, w, h, radius, track_color);
 
-        // Filled progress portion
         const clamped_pct = @min(100, percent);
-        const fill_w: u32 = @intCast((@as(u64, w) * clamped_pct) / 100);
-        if (fill_w >= track_h) {
-            self.fillRoundedRect(x, track_y, fill_w, track_h, tr_rad, fill_color);
-        } else if (fill_w > 0) {
-            self.fillRoundedRect(x, track_y, fill_w, track_h, fill_w / 2, fill_color);
+        const value_x: u32 = @intCast((@as(u64, w) * clamped_pct) / 100);
+        const thumb_w: u32 = @max(3, h / 14);
+        const gap: u32 = @max(1, h / 16);
+        const thumb_x: u32 = @min(value_x -| (thumb_w / 2), w -| thumb_w);
+
+        const fill_w: u32 = thumb_x -| gap;
+        if (fill_w > 0) {
+            self.fillRoundedRect(x, y, fill_w, h, radius, fill_color);
         }
 
-        // Tactile circular thumb handle
-        const thumb_r: f64 = 7.5;
-        var thumb_cx: f64 = @as(f64, @floatFromInt(x)) + (@as(f64, @floatFromInt(w)) * @as(f64, @floatFromInt(clamped_pct))) / 100.0;
-        const min_cx: f64 = @as(f64, @floatFromInt(x)) + thumb_r;
-        const max_cx: f64 = @as(f64, @floatFromInt(x + @as(i32, @intCast(w)))) - thumb_r;
-        if (min_cx <= max_cx) {
-            thumb_cx = std.math.clamp(thumb_cx, min_cx, max_cx);
-        } else {
-            thumb_cx = @as(f64, @floatFromInt(x)) + @as(f64, @floatFromInt(w)) / 2.0;
+        // Dark groove keeps the vertical thumb visually separated from the fill.
+        if (thumb_x >= gap and thumb_x + thumb_w + gap <= w) {
+            self.fillRoundedRect(
+                x + @as(i32, @intCast(thumb_x - gap)),
+                y,
+                thumb_w + gap * 2,
+                h,
+                radius,
+                thumb_shadow_color,
+            );
         }
-        const thumb_cy: f64 = @as(f64, @floatFromInt(y + @as(i32, @intCast(h / 2))));
 
-        // Diffuse dark shadow under thumb
-        self.fillCircle(thumb_cx, thumb_cy + 1.2, thumb_r + 1.0, thumb_shadow_color);
-        // Pure white knob body
-        self.fillCircle(thumb_cx, thumb_cy, thumb_r, thumb_color);
-        // Subtle 1px border around knob
-        self.drawCircleBorder(thumb_cx, thumb_cy, thumb_r, 0.75, Color.init(40, 0, 0, 0));
+        self.fillRoundedRect(
+            x + @as(i32, @intCast(thumb_x)),
+            y,
+            thumb_w,
+            h,
+            @max(1, thumb_w / 2),
+            thumb_color,
+        );
     }
 
     /// Pill toggle switch with circular thumb.
@@ -2176,5 +2176,3 @@ test "Rect intersect no overlap" {
     try std.testing.expectEqual(@as(u32, 0), inter.w);
     try std.testing.expectEqual(@as(u32, 0), inter.h);
 }
-
-

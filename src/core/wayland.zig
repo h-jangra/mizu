@@ -5,7 +5,7 @@ const renderer = @import("renderer.zig");
 const config = @import("config.zig");
 const bar_module = @import("../bar/bar.zig");
 const launcher_module = @import("../panels/launcher.zig");
-const quicksettings_module = @import("../panels/quicksettings.zig");
+const quicksettings_module = @import("../panels/quicksettings/panel.zig");
 const memory_monitor_module = @import("../panels/memory_monitor.zig");
 const osd_module = @import("../panels/osd.zig");
 const calendar_module = @import("../panels/calendar.zig");
@@ -1229,7 +1229,7 @@ pub const WaylandApp = struct {
             }
             if (!mm.running) self.running = false;
         } else if (self.quicksettings) |qs| {
-            if (qs.wifi_input_idx != null) {
+            if (qs.wifi.input_idx != null) {
                 if (qs.handleKeyFull(sym, utf8_slice, is_ctrl, is_shift)) {
                     self.needs_redraw = true;
                     return;
@@ -1241,7 +1241,7 @@ pub const WaylandApp = struct {
                 if (qs.view_mode != .main) {
                     qs.view_mode = .main;
                     qs.scroll_offset = 0;
-                    qs.wifi_input_idx = null;
+                    qs.wifi.input_idx = null;
                     self.needs_redraw = true;
                 } else {
                     qs.running = false;
@@ -1399,7 +1399,7 @@ pub const WaylandApp = struct {
             }
         } else if (self.quicksettings) |qs| {
             if (qs.handlePointerMotion(px, py)) self.needs_redraw = true;
-            if (qs.wifi_input_idx != null and py >= 40 and py <= 120 and px >= 36) {
+            if (qs.wifi.input_idx != null and py >= 40 and py <= 120 and px >= 36) {
                 shape = .text;
             } else if (qs.isPointer(px, py)) {
                 shape = .pointer;

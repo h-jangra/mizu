@@ -10,7 +10,7 @@ const image_ops = @import("../../graphics/image_ops.zig");
 const Color = theme.Color;
 const Rect = renderer.Rect;
 const Font = renderer.Font;
-const quicksettings = @import("../../panels/quicksettings.zig");
+const quicksettings = @import("../../panels/quicksettings/panel.zig");
 const ImageBuffer = image_ops.ImageBuffer;
 const WindowApp = wayland_win.WindowApp;
 

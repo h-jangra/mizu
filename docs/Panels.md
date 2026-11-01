@@ -1,7 +1,8 @@
 # Mizu Panels
 
 Panels are standalone overlays (lock screen, quick settings, calendar, etc.)
-that appear above the bar. Each panel is a single source file in `src/panels/`.
+that appear above the bar. Most panels are a single source file in `src/panels/`;
+larger panels may be split into a subdirectory.
 
 ## Panel Lifecycle
 
@@ -23,7 +24,7 @@ the panel's render/input methods.
 |-------|------|---------|-------------|
 | lock | `lock.zig` | `mizu lock` | Native Wayland session lock |
 | launcher | `launcher.zig` | `mizu launcher` | Application launcher |
-| quicksettings | `quicksettings.zig` | `mizu quicksettings` | Quick settings control panel |
+| quicksettings | `quicksettings/panel.zig` | `mizu quicksettings` | Quick settings control panel |
 | calendar | `calendar.zig` | `mizu calendar` | Interactive calendar |
 | clipboard | `clipboard.zig` | `mizu clipboard` | Clipboard history manager |
 | powermenu | `powermenu.zig` | `mizu power` | Session & power overlay |
