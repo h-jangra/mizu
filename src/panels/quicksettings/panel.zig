@@ -1290,8 +1290,8 @@ pub const QuickSettings = struct {
             .width = .{ .grow = .{} },
             .height = .{ .fixed = ui.s(QsLayout.card_h) },
             .direction = .row,
-            .padding = .{ .left = ui.su(10), .right = ui.su(12), .top = ui.su(8), .bottom = ui.su(8) },
-            .gap = ui.su(10),
+            .padding = .{ .left = ui.su(4), .right = ui.su(4), .top = ui.su(1), .bottom = ui.su(1) },
+            .gap = ui.su(8),
             .bg = bg,
             .radius = ui.f(QsLayout.radius),
             .align_y = .center,
@@ -1302,6 +1302,8 @@ pub const QuickSettings = struct {
         const icon_color = self.cfg.theme.accent_fg;
 
         _ = ui.open(.{
+            .id = "qs-card-main-icon",
+            .index = idx,
             .width = .{ .fixed = ui.s(52) },
             .height = .{ .fixed = ui.s(52) },
             .bg = icon_bg,
@@ -1314,6 +1316,8 @@ pub const QuickSettings = struct {
 
         // Two-line text layout
         _ = ui.open(.{
+            .id = "qs-card-main-text",
+            .index = idx,
             .width = .{ .grow = .{} },
             .height = .{ .grow = .{} },
             .direction = .column,
@@ -1974,8 +1978,13 @@ pub const QuickSettings = struct {
         if (self.view_mode == .main) {
             // Row 1 & 2 cards
             inline for (0..4) |i| {
-                if (ui.rectOf("qs-card-main", i)) |rect| {
+                // Icon area -> toggle action
+                if (ui.rectOf("qs-card-main-icon", @intCast(i))) |rect| {
                     try self.appendRect(rect, scale, mainActionForCardIndex(i));
+                }
+                // Text/right area -> submenu/open action
+                if (ui.rectOf("qs-card-main-text", @intCast(i))) |rect| {
+                    try self.appendRect(rect, scale, mainChevronForCardIndex(i));
                 }
             }
 
@@ -1995,6 +2004,10 @@ pub const QuickSettings = struct {
                     try self.appendRect(rect, scale, act[i]);
                 }
             }
+
+            // Header lock / session buttons
+            if (ui.rectOf("qs-header-btn", 0)) |rect| try self.appendRect(rect, scale, .lock);
+            if (ui.rectOf("qs-header-btn", 1)) |rect| try self.appendRect(rect, scale, .open_session_power_menu);
 
             // Power button
             if (ui.rectOf("qs-power-btn", 0)) |rect| try self.appendRect(rect, scale, .open_session_power_menu);

@@ -16,7 +16,7 @@ pub fn profileSubtitle(profile: anytype) []const u8 {
 pub fn profileIcon(profile: anytype) []const u8 {
     return switch (profile) {
         .power_saver => "saver",
-        .balanced => "powermode",
+        .balanced => "balanced",
         .performance => "performance",
     };
 }
@@ -59,7 +59,7 @@ pub fn renderMenu(panel: anytype, ui: *ui_mod.Ui, scale: u32, sub_sz: u32) void 
         icon_name: []const u8,
     }{
         .{ .profile = .power_saver, .title = "Power Saver", .icon_name = "saver" },
-        .{ .profile = .balanced, .title = "Balanced", .icon_name = "powermode" },
+        .{ .profile = .balanced, .title = "Balanced", .icon_name = "balanced" },
         .{ .profile = .performance, .title = "Performance", .icon_name = "performance" },
     };
     for (profiles, 0..) |p, idx| {
