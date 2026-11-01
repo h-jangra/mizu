@@ -83,6 +83,7 @@ pub const ImageViewerApp = struct {
             .min_width = @as(u32, @intFromFloat(360.0 * s)),
             .min_height = @as(u32, @intFromFloat(260.0 * s)),
         });
+        win.scale_factor = s;
         errdefer win.deinit();
 
         const font = try allocator.create(Font);
@@ -133,6 +134,7 @@ pub const ImageViewerApp = struct {
         old_font.deinit();
         self.allocator.destroy(old_font);
 
+        self.win.scale_factor = s;
         self.win.needs_redraw = true;
     }
 
@@ -440,20 +442,12 @@ pub const ImageViewerApp = struct {
         const bg = Color.hex(0x121418);
         r.clear(bg);
 
+        // Minimal: no HUD, no toast, no empty-details text
         if (self.image) |*img| {
             const dest_w = @as(f64, @floatFromInt(img.width)) * @as(f64, @floatCast(self.zoom));
             const dest_h = @as(f64, @floatFromInt(img.height)) * @as(f64, @floatCast(self.zoom));
             const dest_x = @as(f64, @floatCast(self.pan_x));
             const dest_y = @as(f64, @floatCast(self.pan_y));
-
-            // Shadow if image is bounded inside canvas
-            if (dest_w < @as(f64, @floatFromInt(self.win.width)) or dest_h < @as(f64, @floatFromInt(self.win.height))) {
-                const ix: i32 = @intFromFloat(dest_x);
-                const iy: i32 = @intFromFloat(dest_y);
-                const iw: u32 = @intFromFloat(@max(1.0, dest_w));
-                const ih: u32 = @intFromFloat(@max(1.0, dest_h));
-                r.drawSoftShadow(ix, iy, iw, ih, 4, 16, 4, Color.init(110, 0, 0, 0));
-            }
 
             const img_wrapper = renderer.Image{
                 .width = img.width,
@@ -462,30 +456,6 @@ pub const ImageViewerApp = struct {
                 .allocator = self.allocator,
             };
             r.drawImage(&img_wrapper, dest_x, dest_y, dest_w, dest_h);
-        } else {
-            // Minimal empty state
-            const th = self.cfg.theme;
-            const cx = @divTrunc(@as(i32, @intCast(self.win.width)), 2);
-            const cy = @divTrunc(@as(i32, @intCast(self.win.height)), 2);
-            const msg1 = "󰋼 No image opened";
-            const msg2 = "Pipe image via stdin: grim - | mizu view";
-            const msg3 = "Or open a file: mizu view <path>";
-            const w1 = r.measureTextWithSize(self.font, msg1, @as(u32, @intFromFloat(15.0 * self.ui_scale)));
-            const w2 = r.measureTextWithSize(self.font, msg2, @as(u32, @intFromFloat(12.0 * self.ui_scale)));
-            const w3 = r.measureTextWithSize(self.font, msg3, @as(u32, @intFromFloat(12.0 * self.ui_scale)));
-            r.drawTextWithSize(self.font, msg1, cx - @divTrunc(@as(i32, @intCast(w1)), 2), cy - @as(i32, @intFromFloat(24.0 * self.ui_scale)), @as(u32, @intFromFloat(15.0 * self.ui_scale)), th.text_main);
-            r.drawTextWithSize(self.font, msg2, cx - @divTrunc(@as(i32, @intCast(w2)), 2), cy + @as(i32, @intFromFloat(8.0 * self.ui_scale)), @as(u32, @intFromFloat(12.0 * self.ui_scale)), th.text_muted);
-            r.drawTextWithSize(self.font, msg3, cx - @divTrunc(@as(i32, @intCast(w3)), 2), cy + @as(i32, @intFromFloat(30.0 * self.ui_scale)), @as(u32, @intFromFloat(12.0 * self.ui_scale)), th.text_muted);
-        }
-
-        // Floating HUD overlay
-        if (self.hud_visible and self.image != null) {
-            self.renderHud(r);
-        }
-
-        // Action Status Toast
-        if (self.status_ticks > 0 and self.status_len > 0) {
-            self.renderStatusToast(r);
         }
     }
 

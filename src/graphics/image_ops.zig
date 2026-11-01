@@ -823,11 +823,11 @@ pub const ImageBuffer = struct {
         // Smart vector scale: small icons upscale to ~1200px so they are sharp;
         // huge SVGs clamp to 2048px to keep RAM minimal (< 20MB)
         const max_dim = @max(orig_w, orig_h);
-        var scale: f32 = 1.0;
-        if (max_dim < 1000.0 and max_dim > 0.0) {
-            scale = 1200.0 / max_dim;
-        } else if (max_dim > 2048.0) {
-            scale = 2048.0 / max_dim;
+        var scale: f32 = 4.0; // render at 4x for sharp SVG quality
+        if (max_dim > 2048.0) {
+            scale = 4.0 * (2048.0 / max_dim);
+        } else if (max_dim < 100.0 and max_dim > 0.0) {
+            scale = 4.0 * (1200.0 / max_dim);
         }
 
         const w: u32 = @intFromFloat(@max(1.0, orig_w * scale));
@@ -862,11 +862,11 @@ pub const ImageBuffer = struct {
         // Smart vector scale: small icons upscale to ~1200px so they are sharp;
         // huge SVGs clamp to 2048px to keep RAM minimal (< 20MB)
         const max_dim = @max(orig_w, orig_h);
-        var scale: f32 = 1.0;
-        if (max_dim < 1000.0 and max_dim > 0.0) {
-            scale = 1200.0 / max_dim;
-        } else if (max_dim > 2048.0) {
-            scale = 2048.0 / max_dim;
+        var scale: f32 = 4.0; // render at 4x for sharp SVG quality
+        if (max_dim > 2048.0) {
+            scale = 4.0 * (2048.0 / max_dim);
+        } else if (max_dim < 100.0 and max_dim > 0.0) {
+            scale = 4.0 * (1200.0 / max_dim);
         }
 
         const w: u32 = @intFromFloat(@max(1.0, orig_w * scale));

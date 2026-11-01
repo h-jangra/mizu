@@ -25,7 +25,7 @@ const FILTER_TOP: f64 = 122.0;
 const FILTER_H: f64 = 36.0;
 const LIST_TOP: f64 = 170.0;
 const LIST_BOTTOM_PAD: f64 = 12.0;
-const ROW_H: f64 = 40.0;
+const ROW_H: f64 = 48.0;
 
 const REFRESH_MS: i64 = 1000;
 const POINTER_BUTTON_LEFT: u32 = 272;
@@ -241,13 +241,15 @@ pub const MemoryMonitor = struct {
         if (name.len == 0) return false;
         if (self.findAppName(name, "") != null) return true;
         const well_known = [_][]const u8{
-            "firefox", "chrome", "google-chrome", "google-chrome-stable", "chromium",
-            "brave", "brave-browser", "opera", "vivaldi", "edge", "microsoft-edge",
-            "code", "vscode", "discord", "spotify", "slack", "obsidian", "steam",
-            "foot", "footclient", "alacritty", "kitty", "ghostty", "wezterm", "gnome-terminal",
-            "konsole", "xterm", "thunar", "nautilus", "dolphin", "pcmanfm",
-            "mpv", "vlc", "gimp", "inkscape", "blender", "audacity", "obs",
-            "mizu", "neovim", "nvim",
+            "firefox",        "chrome",        "google-chrome", "google-chrome-stable", "chromium",
+            "brave",          "brave-browser", "opera",         "vivaldi",              "edge",
+            "microsoft-edge", "code",          "vscode",        "discord",              "spotify",
+            "slack",          "obsidian",      "steam",         "foot",                 "footclient",
+            "alacritty",      "kitty",         "ghostty",       "wezterm",              "gnome-terminal",
+            "konsole",        "xterm",         "thunar",        "nautilus",             "dolphin",
+            "pcmanfm",        "mpv",           "vlc",           "gimp",                 "inkscape",
+            "blender",        "audacity",      "obs",           "mizu",                 "neovim",
+            "nvim",
         };
         for (well_known) |k| {
             if (std.ascii.eqlIgnoreCase(name, k)) return true;
@@ -259,10 +261,11 @@ pub const MemoryMonitor = struct {
         const e = proc.exe[0..proc.exe_len];
         const n = proc.name[0..proc.name_len];
         const known = [_][]const u8{
-            "mango", "sway", "hyprland", "wayfire", "river",
-            "gnome-shell", "mutter", "kwin", "kwin_wayland",
-            "weston", "labwc", "dwl", "xmonad", "i3", "bspwm",
-            "runit", "systemd", "init", "ly", "gdm", "sddm", "lightdm",
+            "mango",       "sway",    "hyprland", "wayfire",      "river",
+            "gnome-shell", "mutter",  "kwin",     "kwin_wayland", "weston",
+            "labwc",       "dwl",     "xmonad",   "i3",           "bspwm",
+            "runit",       "systemd", "init",     "ly",           "gdm",
+            "sddm",        "lightdm",
         };
         for (known) |k| {
             if (std.mem.eql(u8, e, k) or std.mem.eql(u8, n, k)) return true;
@@ -274,10 +277,11 @@ pub const MemoryMonitor = struct {
         const e = proc.exe[0..proc.exe_len];
         const n = proc.name[0..proc.name_len];
         const known = [_][]const u8{
-            "foot", "footclient", "alacritty", "kitty", "wezterm-gui",
-            "wezterm", "ghostty", "gnome-terminal", "gnome-terminal-server",
-            "konsole", "xterm", "urxvt", "st", "terminator", "tilix",
-            "bash", "zsh", "fish", "sh", "dash", "tmux",
+            "foot",    "footclient", "alacritty",      "kitty",                 "wezterm-gui",
+            "wezterm", "ghostty",    "gnome-terminal", "gnome-terminal-server", "konsole",
+            "xterm",   "urxvt",      "st",             "terminator",            "tilix",
+            "bash",    "zsh",        "fish",           "sh",                    "dash",
+            "tmux",
         };
         for (known) |k| {
             if (std.mem.eql(u8, e, k) or std.mem.eql(u8, n, k)) return true;
@@ -709,13 +713,13 @@ pub const MemoryMonitor = struct {
                     if (row.sub_idx < grp.procs.items.len) {
                         const proc = grp.procs.items[row.sub_idx];
                         if (self.confirm_kill_pid == proc.pid) {
-                            if (fx >= contentX1() - 32.0 and fx <= contentX1()) {
+                            if (fx >= contentX1() - 26.0 and fx <= contentX1()) {
                                 if (self.hover_kill_action != .cancel or self.hover_kill_pid != proc.pid) {
                                     self.hover_kill_action = .cancel;
                                     self.hover_kill_pid = proc.pid;
                                     changed = true;
                                 }
-                            } else if (fx >= contentX1() - 66.0 and fx < contentX1() - 32.0) {
+                            } else if (fx >= contentX1() - 56.0 and fx < contentX1() - 26.0) {
                                 if (self.hover_kill_action != .confirm or self.hover_kill_pid != proc.pid) {
                                     self.hover_kill_action = .confirm;
                                     self.hover_kill_pid = proc.pid;
@@ -729,7 +733,7 @@ pub const MemoryMonitor = struct {
                                 }
                             }
                         } else {
-                            if (fx >= contentX1() - 32.0 and fx <= contentX1()) {
+                            if (fx >= contentX1() - 26.0 and fx <= contentX1()) {
                                 if (self.hover_kill_action != .kill or self.hover_kill_pid != proc.pid) {
                                     self.hover_kill_action = .kill;
                                     self.hover_kill_pid = proc.pid;
@@ -847,13 +851,13 @@ pub const MemoryMonitor = struct {
                         if (row.sub_idx < grp.procs.items.len) {
                             const proc = grp.procs.items[row.sub_idx];
                             if (self.confirm_kill_pid == proc.pid) {
-                                if (fx >= contentX1() - 32.0 and fx <= contentX1()) {
+                                if (fx >= contentX1() - 26.0 and fx <= contentX1()) {
                                     // Clicked Cancel (x)
                                     self.confirm_kill_pid = null;
                                     self.hover_kill_action = .none;
                                     self.hover_kill_pid = null;
                                     return true;
-                                } else if (fx >= contentX1() - 66.0 and fx < contentX1() - 32.0) {
+                                } else if (fx >= contentX1() - 56.0 and fx < contentX1() - 26.0) {
                                     // Clicked Confirm (check)
                                     _ = c.kill(@intCast(proc.pid), c.SIGTERM);
                                     self.confirm_kill_pid = null;
@@ -863,7 +867,7 @@ pub const MemoryMonitor = struct {
                                     return true;
                                 }
                             } else {
-                                if (fx >= contentX1() - 32.0 and fx <= contentX1()) {
+                                if (fx >= contentX1() - 26.0 and fx <= contentX1()) {
                                     // Clicked Kill (x)
                                     self.confirm_kill_pid = proc.pid;
                                     self.hover_kill_action = .none;
@@ -1469,27 +1473,32 @@ pub const MemoryMonitor = struct {
                     .align_y = .center,
                 });
 
+                // Icon column
+                _ = ui.open(.{
+                    .width = .{ .fixed = ui.s(36) },
+                    .height = .{ .grow = .{} },
+                    .direction = .column,
+                    .align_x = .center,
+                    .align_y = .center,
+                });
                 if (row.kind == .group) {
-                    _ = ui.open(.{
-                        .width = .{ .fixed = ui.s(294) },
-                        .height = .{ .grow = .{} },
-                        .direction = .row,
-                        .padding = .{ .left = ui.su(6) },
-                        .gap = ui.su(6),
-                        .align_y = .center,
-                        .clip_horizontal = true,
-                    });
+                    ui.icon("process", 20 * scale, if (grp.expanded or is_selected) accent else text_muted, 0);
+                } else {
+                    ui.icon("command", 16 * scale, if (is_selected) accent else text_muted, 0);
+                }
+                ui.close(); // icon
 
-                    if (grp.procs.items.len > 1) {
-                        const chevron = if (grp.expanded) "▾" else "▸";
-                        ui.text(chevron, .{
-                            .size = (self.cfg.typography.secondary + 2) * scale,
-                            .color = if (grp.expanded or is_selected) accent else text_muted,
-                        });
-                    } else {
-                        ui.spacerSized(.{ .fixed = ui.s(10) }, .{ .fixed = 0 });
-                    }
+                // Info column (name + command/path)
+                _ = ui.open(.{
+                    .width = .{ .fixed = ui.s(160) },
+                    .height = .{ .grow = .{} },
+                    .direction = .column,
+                    .padding = .{ .left = ui.su(if (row.kind == .subprocess) 14 else 6), .top = ui.su(2), .bottom = ui.su(2) },
+                    .gap = ui.su(1),
+                    .align_y = .center,
+                });
 
+                if (row.kind == .group) {
                     const grp_name = grp.name[0..grp.name_len];
                     var label_buf: [160]u8 = undefined;
                     const full_label = if (grp.procs.items.len > 1)
@@ -1497,69 +1506,107 @@ pub const MemoryMonitor = struct {
                     else
                         grp_name;
 
-                    var name_buf: [160]u8 = undefined;
-                    const max_w = nameMaxWidth() - 14.0;
-                    const name = renderer.truncateText(&self.row_measure, full_label, @intFromFloat(max_w * @as(f64, @floatFromInt(scale))), (self.cfg.typography.ui + 1) * scale, &name_buf);
-                    ui.text(name, .{
+                    ui.text(full_label, .{
                         .size = (self.cfg.typography.ui + 1) * scale,
-                        .color = th.text_bright,
-                    });
-                    ui.spacerSized(.{ .grow = .{} }, .{ .fixed = 0 });
-                    var pid_buf: [16]u8 = undefined;
-                    const pid_str = std.fmt.bufPrint(&pid_buf, "{d}", .{grp.main_pid}) catch "";
-                    ui.text(pid_str, .{
-                        .size = (self.cfg.typography.secondary + 2) * scale,
-                        .color = text_muted,
-                    });
-                    ui.close();
-
-                    var mem_row_buf: [32]u8 = undefined;
-                    const mem_row_str = formatMemory(&mem_row_buf, grp.total_rss_kb);
-                    ui.text(mem_row_str, .{
-                        .size = (self.cfg.typography.ui + 1) * scale,
-                        .color = if (is_selected) th.text_bright else text_main,
-                        .width = ui.s(94),
-                        .text_align = .right,
+                        .color = if (is_selected) th.text_bright else th.text_main,
                     });
 
+                    // Show root command as second line for group
+                    const root_pid = grp.main_pid;
+                    var root_cmd: [128]u8 = undefined;
+                    var root_cmd_slice: []const u8 = "";
+                    for (grp.procs.items) |p| {
+                        if (p.pid == root_pid) {
+                            const cmd = p.cmdline[0..p.cmdline_len];
+                            if (cmd.len > 0) {
+                                root_cmd_slice = formatSubprocessCommand(&root_cmd, cmd, p.name[0..p.name_len]);
+                            }
+                            break;
+                        }
+                    }
+                    if (root_cmd_slice.len > 0) {
+                        var sub_buf: [128]u8 = undefined;
+                        const sub_name = renderer.truncateText(&self.row_measure, root_cmd_slice, @intFromFloat(160.0 * @as(f64, @floatFromInt(scale))), (self.cfg.typography.secondary) * scale, &sub_buf);
+                        ui.text(sub_name, .{
+                            .size = (self.cfg.typography.secondary) * scale,
+                            .color = alphaCol(text_muted, 0.85),
+                        });
+                    }
                 } else {
                     const proc = grp.procs.items[row.sub_idx];
+                    const proc_name = proc.name[0..proc.name_len];
+                    ui.text(proc_name, .{
+                        .size = (self.cfg.typography.ui + 1) * scale,
+                        .color = if (is_selected) th.text_bright else th.text_main,
+                    });
+
+                    var cmd_fmt_buf: [256]u8 = undefined;
+                    const clean_cmd = formatSubprocessCommand(&cmd_fmt_buf, proc.cmdline[0..proc.cmdline_len], proc_name);
+                    var sub_buf: [128]u8 = undefined;
+                    const sub_name = renderer.truncateText(&self.row_measure, clean_cmd, @intFromFloat(160.0 * @as(f64, @floatFromInt(scale))), (self.cfg.typography.secondary) * scale, &sub_buf);
+                    ui.text(sub_name, .{
+                        .size = (self.cfg.typography.secondary) * scale,
+                        .color = alphaCol(text_muted, 0.85),
+                    });
+                }
+                ui.close(); // info
+
+                // CPU column
+                const cpu_str = ""; // Per-process CPU % requires /proc/pid/stat parsing (not available here)
+                ui.text(cpu_str, .{
+                    .size = (self.cfg.typography.ui) * scale,
+                    .color = if (is_selected) th.text_bright else text_muted,
+                    .width = ui.s(36),
+                    .text_align = .right,
+                });
+
+                // Memory column
+                var mem_row_buf: [32]u8 = undefined;
+                const mem_row_str = if (row.kind == .group) formatMemory(&mem_row_buf, grp.total_rss_kb) else formatMemory(&mem_row_buf, grp.procs.items[row.sub_idx].rss_kb);
+                ui.text(mem_row_str, .{
+                    .size = (self.cfg.typography.ui) * scale,
+                    .color = if (is_selected) th.text_bright else text_main,
+                    .width = ui.s(78),
+                    .text_align = .right,
+                });
+
+                // % column (memory percent)
+                var pct_buf: [16]u8 = undefined;
+                const pct_str = if (self.mem.total_kb > 0) blk: {
+                    const kb = if (row.kind == .group) grp.total_rss_kb else grp.procs.items[row.sub_idx].rss_kb;
+                    const pct = @as(f64, @floatFromInt(kb)) * 100.0 / @as(f64, @floatFromInt(self.mem.total_kb));
+                    break :blk std.fmt.bufPrint(&pct_buf, "{d:.0}%", .{@as(u32, @intFromFloat(@round(pct)))}) catch "0%";
+                } else "0%";
+                ui.text(pct_str, .{
+                    .size = (self.cfg.typography.ui) * scale,
+                    .color = text_muted,
+                    .width = ui.s(36),
+                    .text_align = .right,
+                });
+
+                ui.spacerSized(.{ .fixed = ui.s(10) }, .{ .fixed = 0 });
+
+                // Kill button column
+                if (row.kind == .subprocess) {
+                    const proc = grp.procs.items[row.sub_idx];
                     const is_confirming = self.confirm_kill_pid != null and self.confirm_kill_pid.? == proc.pid;
+                    const is_kill_hov = self.hover_kill_action == .kill and self.hover_kill_pid == proc.pid;
 
                     if (is_confirming) {
+                        // Confirm / Cancel buttons
                         _ = ui.open(.{
-                            .width = .{ .grow = .{} },
-                            .height = .{ .grow = .{} },
-                            .direction = .row,
-                            .padding = .{ .left = ui.su(19) },
-                            .gap = ui.su(6),
-                            .align_y = .center,
-                            .clip_horizontal = true,
-                        });
-
-                        var kill_label_buf: [128]u8 = undefined;
-                        const kill_label = std.fmt.bufPrint(&kill_label_buf, "Kill PID {d} ({s})?", .{ proc.pid, proc.name[0..proc.name_len] }) catch "Kill process?";
-                        ui.text(kill_label, .{
-                            .size = (self.cfg.typography.secondary + 1) * scale,
-                            .color = th.error_color,
-                        });
-                        ui.close();
-
-                        // Action buttons: [✓ Confirm] [✗ Cancel]
-                        _ = ui.open(.{
-                            .width = .{ .fixed = ui.s(66) },
+                            .width = .{ .fixed = ui.s(56) },
                             .height = .{ .grow = .{} },
                             .direction = .row,
                             .gap = ui.su(4),
                             .align_x = .right,
                             .align_y = .center,
                         });
-
-                        // 1. Confirm button (check)
+                        // Confirm button
                         const is_chk_hov = self.hover_kill_action == .confirm and self.hover_kill_pid == proc.pid;
                         _ = ui.open(.{
-                            .width = .{ .fixed = ui.s(30) },
-                            .height = .{ .fixed = ui.s(26) },
+                            .width = .{ .fixed = ui.s(26) },
+                            .height = .{ .fixed = ui.s(24) },
                             .bg = if (is_chk_hov) alphaCol(th.success_color, 0.30) else alphaCol(th.success_color, 0.14),
                             .radius = ui.f(6),
                             .border = ui.su(1),
@@ -1567,14 +1614,13 @@ pub const MemoryMonitor = struct {
                             .align_x = .center,
                             .align_y = .center,
                         });
-                        ui.icon("check", 13 * scale, th.success_color, 0);
+                        ui.icon("check", 12 * scale, th.success_color, 0);
                         ui.close();
-
-                        // 2. Cancel button (x)
+                        // Cancel button
                         const is_cnc_hov = self.hover_kill_action == .cancel and self.hover_kill_pid == proc.pid;
                         _ = ui.open(.{
-                            .width = .{ .fixed = ui.s(30) },
-                            .height = .{ .fixed = ui.s(26) },
+                            .width = .{ .fixed = ui.s(26) },
+                            .height = .{ .fixed = ui.s(24) },
                             .bg = if (is_cnc_hov) alphaCol(th.error_color, 0.30) else alphaCol(text_muted, 0.14),
                             .radius = ui.f(6),
                             .border = ui.su(1),
@@ -1582,68 +1628,29 @@ pub const MemoryMonitor = struct {
                             .align_x = .center,
                             .align_y = .center,
                         });
-                        ui.icon("x", 13 * scale, if (is_cnc_hov) th.error_color else text_muted, 0);
+                        ui.icon("x", 12 * scale, if (is_cnc_hov) th.error_color else text_muted, 0);
                         ui.close();
-
-                        ui.close(); // action buttons
+                        ui.close(); // buttons
                     } else {
-                        _ = ui.open(.{
-                            .width = .{ .fixed = ui.s(294) },
-                            .height = .{ .grow = .{} },
-                            .direction = .row,
-                            .padding = .{ .left = ui.su(19) },
-                            .gap = ui.su(6),
-                            .align_y = .center,
-                            .clip_horizontal = true,
-                        });
-
-                        var cmd_fmt_buf: [256]u8 = undefined;
-                        const clean_cmd = formatSubprocessCommand(&cmd_fmt_buf, proc.cmdline[0..proc.cmdline_len], proc.name[0..proc.name_len]);
-
-                        var sub_buf: [256]u8 = undefined;
-                        const sub_max_w: f64 = (pidRight() - 18.0) - 19.0 - 14.0;
-                        const sub_name = renderer.truncateText(
-                            &self.row_measure,
-                            clean_cmd,
-                            @intFromFloat(sub_max_w * @as(f64, @floatFromInt(scale))),
-                            (self.cfg.typography.secondary + 2) * scale,
-                            &sub_buf,
-                        );
-                        ui.text(sub_name, .{
-                            .size = (self.cfg.typography.secondary + 2) * scale,
-                            .color = if (is_selected) th.text_bright else alphaCol(text_main, 0.92),
-                        });
-                        ui.close();
-
-                        // Memory value, aligned with the group rows' memory column.
-                        var mem_row_buf: [32]u8 = undefined;
-                        const mem_row_str = formatMemory(&mem_row_buf, proc.rss_kb);
-                        ui.text(mem_row_str, .{
-                            .size = (self.cfg.typography.ui + 1) * scale,
-                            .color = if (is_selected) th.text_bright else text_main,
-                            .width = ui.s(94),
-                            .text_align = .right,
-                        });
-
-                        // Kill button (x) - shown whenever the row is hovered/selected.
-                        ui.spacerSized(.{ .grow = .{} }, .{ .fixed = 0 });
-                        const is_kill_hov = self.hover_kill_action == .kill and self.hover_kill_pid == proc.pid;
+                        // Single kill button (x) shown on hover/select
                         if (is_hovered or is_selected) {
                             _ = ui.open(.{
-                                .width = .{ .fixed = ui.s(28) },
-                                .height = .{ .fixed = ui.s(26) },
+                                .width = .{ .fixed = ui.s(24) },
+                                .height = .{ .fixed = ui.s(24) },
                                 .bg = if (is_kill_hov) alphaCol(th.error_color, 0.35) else alphaCol(th.error_color, 0.14),
                                 .radius = ui.f(6),
-                                .align_x = .center,
+                                .align_x = .right,
                                 .align_y = .center,
                             });
-                            ui.icon("x", 13 * scale, th.error_color, 0);
+                            ui.icon("x", 12 * scale, th.error_color, 0);
                             ui.close();
                         } else {
-                            // Keep the layout stable when the button is hidden.
-                            ui.spacerSized(.{ .fixed = ui.s(28) }, .{ .fixed = 0 });
+                            ui.spacerSized(.{ .fixed = ui.s(24) }, .{ .fixed = 0 });
                         }
                     }
+                } else {
+                    // Group rows don't have kill button
+                    ui.spacerSized(.{ .fixed = ui.s(28) }, .{ .fixed = 0 });
                 }
 
                 ui.close(); // row
@@ -1776,8 +1783,6 @@ pub const MemoryMonitor = struct {
             alphaCol(overlay, 0.24),
         );
     }
-
-
 };
 
 pub fn formatSubprocessCommand(buf: []u8, cmd: []const u8, name: []const u8) []const u8 {

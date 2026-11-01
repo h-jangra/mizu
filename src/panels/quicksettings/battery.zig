@@ -41,8 +41,8 @@ pub fn renderHeader(panel: anytype, ui: *ui_mod.Ui, scale: u32) void {
     const bat_svg = if (plugged or is_charging) "battery-charging" else if (is_full) "battery-full" else if (bat_pct <= 20) "battery-empty" else if (bat_pct <= 50) "battery-low" else if (bat_pct <= 80) "battery-middle" else "battery-high";
 
     // Battery icon
-    _ = ui.open(.{ .width = .{ .fixed = ui.s(40) }, .height = .{ .fixed = ui.s(40) }, .align_x = .center, .align_y = .center });
-    ui.icon(bat_svg, 32 * scale, bat_color, 0);
+    _ = ui.open(.{ .width = .{ .fixed = ui.s(48) }, .height = .{ .fixed = ui.s(48) }, .align_x = .center, .align_y = .center });
+    ui.icon(bat_svg, 40 * scale, bat_color, 0);
     ui.close();
 
     // Battery percentage

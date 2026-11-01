@@ -53,7 +53,6 @@ fn frameHandleBuffer(
     s.stride = stride;
     s.has_buffer = true;
 
-    // For screencopy version < 3, buffer_done event is not sent, copy immediately
     if (s.screencopy_mgr != null and c.zwlr_screencopy_manager_v1_get_version(s.screencopy_mgr.?) < 3) {
         setupAndCopyShmBuffer(s);
     }
@@ -101,12 +100,7 @@ fn frameHandleDamage(
     width: u32,
     height: u32,
 ) callconv(.c) void {
-    _ = data;
-    _ = frame;
-    _ = x;
-    _ = y;
-    _ = width;
-    _ = height;
+    _ = data; _ = frame; _ = x; _ = y; _ = width; _ = height;
 }
 
 fn frameHandleLinuxDmabuf(
@@ -116,11 +110,7 @@ fn frameHandleLinuxDmabuf(
     width: u32,
     height: u32,
 ) callconv(.c) void {
-    _ = data;
-    _ = frame;
-    _ = format;
-    _ = width;
-    _ = height;
+    _ = data; _ = frame; _ = format; _ = width; _ = height;
 }
 
 fn frameHandleBufferDone(
@@ -137,7 +127,7 @@ fn setupAndCopyShmBuffer(s: *ScreencopyState) void {
     const size = @as(usize, s.stride) * @as(usize, s.height);
     s.shm_size = size;
 
-    const fd = c.memfd_create("mizu-screencopy", 0x0001); // MFD_CLOEXEC
+    const fd = c.memfd_create("mizu-screencopy", 0x0001);
     if (fd < 0) {
         s.failed = true;
         return;
@@ -201,9 +191,7 @@ fn screencopyRegistryGlobal(
 }
 
 fn screencopyRegistryGlobalRemove(data: ?*anyopaque, registry: ?*c.wl_registry, name: u32) callconv(.c) void {
-    _ = data;
-    _ = registry;
-    _ = name;
+    _ = data; _ = registry; _ = name;
 }
 
 const screencopy_registry_listener = c.struct_wl_registry_listener{
@@ -237,7 +225,6 @@ pub fn captureScreenNative(allocator: std.mem.Allocator) !ImageBuffer {
     if (s.screencopy_mgr == null) return error.ScreencopyNotSupported;
     if (s.shm == null or s.output == null) return error.MissingShmOrOutput;
 
-    // Capture output frame (overlay_cursor = 0 so existing cursor is not frozen into pixels)
     s.frame = c.zwlr_screencopy_manager_v1_capture_output(s.screencopy_mgr.?, 0, s.output.?);
     if (s.frame == null) return error.CaptureOutputFailed;
     _ = c.zwlr_screencopy_frame_v1_add_listener(s.frame.?, &screencopy_frame_listener, &s);
@@ -255,9 +242,9 @@ pub fn captureScreenNative(allocator: std.mem.Allocator) !ImageBuffer {
     var img = try ImageBuffer.init(allocator, s.width, s.height, Color.transparent);
     errdefer img.deinit();
 
-    const is_xbgr = (s.format == 0x34324258 or s.format == 0x34324241); // DRM_FORMAT_XBGR8888 or ABGR8888
-    const is_rgba = (s.format == 0x34324152); // DRM_FORMAT_RGBA8888
-    const is_bgra = (s.format == 0x34324142); // DRM_FORMAT_BGRA8888
+    const is_xbgr = (s.format == 0x34324258 or s.format == 0x34324241);
+    const is_rgba = (s.format == 0x34324152);
+    const is_bgra = (s.format == 0x34324142);
 
     for (0..s.height) |y| {
         const src_y = if (s.y_invert) (s.height - 1 - y) else y;
@@ -275,18 +262,11 @@ pub fn captureScreenNative(allocator: std.mem.Allocator) !ImageBuffer {
             var b: u8 = 0;
 
             if (is_xbgr or is_rgba) {
-                r = b0;
-                g = b1;
-                b = b2;
+                r = b0; g = b1; b = b2;
             } else if (is_bgra) {
-                b = b0;
-                g = b1;
-                r = b2;
+                b = b0; g = b1; r = b2;
             } else {
-                // XRGB8888 / ARGB8888
-                b = b0;
-                g = b1;
-                r = b2;
+                b = b0; g = b1; r = b2;
             }
 
             const argb: u32 = (@as(u32, 255) << 24) | (@as(u32, r) << 16) | (@as(u32, g) << 8) | @as(u32, b);
@@ -316,10 +296,7 @@ fn captureScreenGrim(allocator: std.mem.Allocator) ?ImageBuffer {
     return ImageBuffer.loadFromFile(allocator, tmp_path) catch null;
 }
 
-// Main Color Picker Entrypoint
-
 pub fn run(allocator: std.mem.Allocator, cfg: config.Config) !u8 {
-    // Attempt native screencopy first (hyprpicker-style), fallback to grim only if unsupported
     var img_opt: ?ImageBuffer = captureScreenNative(allocator) catch null;
     if (img_opt == null) {
         img_opt = captureScreenGrim(allocator);
@@ -333,10 +310,10 @@ pub fn run(allocator: std.mem.Allocator, cfg: config.Config) !u8 {
     defer screenshot.deinit();
 
     const win_cfg = WindowConfig{
-        .title = "Mizu Color Picker",
+        .title = "Mizu",
         .app_id = "mizu-colorpicker",
-        .width = 400,
-        .height = 240,
+        .width = screenshot.width,
+        .height = screenshot.height,
         .fullscreen_layer = true,
     };
 
@@ -348,7 +325,7 @@ pub fn run(allocator: std.mem.Allocator, cfg: config.Config) !u8 {
     if (timer_fd >= 0) {
         var its: c.struct_itimerspec = undefined;
         its.it_interval.tv_sec = 0;
-        its.it_interval.tv_nsec = 16_666_667; // ~60fps
+        its.it_interval.tv_nsec = 16_666_667;
         its.it_value.tv_sec = 0;
         its.it_value.tv_nsec = 16_666_667;
         _ = c.timerfd_settime(timer_fd, 0, &its, null);
@@ -360,6 +337,7 @@ pub fn run(allocator: std.mem.Allocator, cfg: config.Config) !u8 {
 
     var selected: bool = false;
     var selected_hex_str: [8]u8 = undefined;
+    var refresh_ticks: u32 = 0;
 
     var pointer_screen_x: i32 = -1;
     var pointer_screen_y: i32 = -1;
@@ -388,20 +366,16 @@ pub fn run(allocator: std.mem.Allocator, cfg: config.Config) !u8 {
         }
         _ = c.wl_display_dispatch_pending(win.display.?);
 
-        // Update pointer coordinates from WindowApp state
         pointer_screen_x = win.pointer_x;
         pointer_screen_y = win.pointer_y;
-
         win.setCursorShape(.crosshair);
 
-        // Check for Escape or Q key to cancel
         if (win.repeat_sym == 0xff1b or win.repeat_sym == 'q' or win.repeat_sym == 'Q') {
             selected = false;
             break;
         }
 
         if (win.pointer_down and win.mouse_button == 0x110) {
-            // Left click - sample color and confirm
             const scale_x: f32 = if (win.width > 0) @as(f32, @floatFromInt(screenshot.width)) / @as(f32, @floatFromInt(win.width)) else 1.0;
             const scale_y: f32 = if (win.height > 0) @as(f32, @floatFromInt(screenshot.height)) / @as(f32, @floatFromInt(win.height)) else 1.0;
             const sx_f = @as(f32, @floatFromInt(std.math.clamp(pointer_screen_x, 0, @as(i32, @intCast(win.width)) - 1))) * scale_x;
@@ -417,7 +391,6 @@ pub fn run(allocator: std.mem.Allocator, cfg: config.Config) !u8 {
             selected = true;
             break;
         } else if (win.pointer_down and win.mouse_button == 0x111) {
-            // Right click cancels
             selected = false;
             break;
         }
@@ -425,13 +398,25 @@ pub fn run(allocator: std.mem.Allocator, cfg: config.Config) !u8 {
         if (poll_fds[1].revents & c.POLLIN != 0) {
             var expirations: u64 = 0;
             _ = c.read(timer_fd, &expirations, @sizeOf(u64));
+            refresh_ticks += 1;
+        }
+
+        if (poll_res > 0 and refresh_ticks >= 30) {
+            refresh_ticks = 0;
+            if (captureScreenNative(allocator)) |new_screenshot| {
+                var prev = screenshot;
+                screenshot = new_screenshot;
+                prev.deinit();
+                win.needs_redraw = true;
+            } else |_| {
+                // Keep existing screenshot on failure
+            }
         }
 
         if (poll_res > 0) {
             win.needs_redraw = true;
         }
 
-        // Redraw overlay
         if (win.needs_redraw and win.configured) {
             try redrawOverlay(win, screenshot, pointer_screen_x, pointer_screen_y, &font);
             _ = c.wl_display_flush(win.display.?);
@@ -441,7 +426,6 @@ pub fn run(allocator: std.mem.Allocator, cfg: config.Config) !u8 {
 
     if (selected) {
         const hex_slice = std.mem.sliceTo(&selected_hex_str, 0);
-        // Copy to clipboard using wl-copy
         var copy_cmd_buf: [256]u8 = undefined;
         const copy_cmd = std.fmt.bufPrintSentinel(
             &copy_cmd_buf,
@@ -473,10 +457,8 @@ fn redrawOverlay(
     var target = try renderer.Renderer.init(shmbuf.data.?, phys_w, phys_h, shmbuf.stride);
     defer target.deinit();
 
-    // Clear transparent so desktop remains visible
     target.clear(Color.transparent);
 
-    // If pointer hasn't entered surface yet, just commit blank transparent surface
     if (cursor_x < 0 or cursor_y < 0) {
         c.wl_surface_attach(surf, shmbuf.buffer.?, 0, 0);
         c.wl_surface_damage_buffer(surf, 0, 0, @intCast(phys_w), @intCast(phys_h));
@@ -484,83 +466,53 @@ fn redrawOverlay(
         return;
     }
 
-    const scale_x: f32 = if (win.width > 0) @as(f32, @floatFromInt(screenshot.width)) / @as(f32, @floatFromInt(win.width)) else 1.0;
-    const scale_y: f32 = if (win.height > 0) @as(f32, @floatFromInt(screenshot.height)) / @as(f32, @floatFromInt(win.height)) else 1.0;
+    // Window matches screenshot size for 1:1 tracking
 
-    const sx_center = std.math.clamp(@as(i32, @intFromFloat(@round(@as(f32, @floatFromInt(cursor_x)) * scale_x))), 0, @as(i32, @intCast(screenshot.width)) - 1);
-    const sy_center = std.math.clamp(@as(i32, @intFromFloat(@round(@as(f32, @floatFromInt(cursor_y)) * scale_y))), 0, @as(i32, @intCast(screenshot.height)) - 1);
+    const sx_center = std.math.clamp(cursor_x, 0, @as(i32, @intCast(screenshot.width)) - 1);
+    const sy_center = std.math.clamp(cursor_y, 0, @as(i32, @intCast(screenshot.height)) - 1);
     const center_pixel = screenshot.getPixel(sx_center, sy_center) orelse Color.rgb(0, 0, 0);
 
-    // Floating loupe card
-    const card_w: u32 = 144;
-    const card_h: u32 = 148;
+    // Minimal magnified circular pixel grid (loupe) centered near cursor
+    const grid_cells: u32 = 21;
     const cell_size: u32 = 8;
-    const grid_cells: u32 = 9;
-    const grid_size: u32 = grid_cells * cell_size; // 72px
-    const grid_radius: i32 = 4;
+    const grid_size: u32 = grid_cells * cell_size; // 168px
+    const grid_radius: i32 = 10;
 
-    // Card placement relative to cursor: offset by +18px, flip if near edges
-    var card_x: i32 = cursor_x + 18;
-    var card_y: i32 = cursor_y + 18;
+    // Magnifier locked to cursor (no edge flip)
+    const half = @as(i32, @intCast(@divTrunc(grid_size, 2)));
+    const loupe_x = cursor_x - half;
+    const loupe_y = cursor_y - half;
 
-    if (card_x + @as(i32, @intCast(card_w)) > @as(i32, @intCast(win.width)) - 8) {
-        card_x = cursor_x - @as(i32, @intCast(card_w)) - 18;
-    }
-    if (card_y + @as(i32, @intCast(card_h)) > @as(i32, @intCast(win.height)) - 8) {
-        card_y = cursor_y - @as(i32, @intCast(card_h)) - 18;
-    }
-    card_x = std.math.clamp(card_x, 8, @as(i32, @intCast(win.width)) - @as(i32, @intCast(card_w)) - 8);
-    card_y = std.math.clamp(card_y, 8, @as(i32, @intCast(win.height)) - @as(i32, @intCast(card_h)) - 8);
+    // Minimal: hex directly below the circle, no card
 
-    // Card shadow and background
-    target.drawDropShadow(card_x, card_y, card_w, card_h, 12, 14, Color.init(100, 0, 0, 0));
-    target.fillRoundedRect(card_x, card_y, card_w, card_h, 12, Color.init(240, 20, 20, 24));
-    target.drawRoundedBorder(card_x, card_y, card_w, card_h, 12, 1, Color.init(60, 255, 255, 255));
-
-    // Magnified pixel grid (Loupe)
-    const loupe_x = card_x + @as(i32, @intCast((card_w - grid_size) / 2));
-    const loupe_y = card_y + 10;
-
-    for (0..grid_cells) |gy| {
-        const dy: i32 = @as(i32, @intCast(gy)) - grid_radius;
-        const py = std.math.clamp(sy_center + dy, 0, @as(i32, @intCast(screenshot.height)) - 1);
-        for (0..grid_cells) |gx| {
-            const dx: i32 = @as(i32, @intCast(gx)) - grid_radius;
+    // Draw magnified pixel grid in a circle
+    for (0..grid_cells) |gy_raw| {
+        const gy: i32 = @as(i32, @intCast(gy_raw));
+        for (0..grid_cells) |gx_raw| {
+            const gx: i32 = @as(i32, @intCast(gx_raw));
+            const dy: i32 = gy - grid_radius;
+            const py = std.math.clamp(sy_center + dy, 0, @as(i32, @intCast(screenshot.height)) - 1);
+            const dx: i32 = gx - grid_radius;
             const px = std.math.clamp(sx_center + dx, 0, @as(i32, @intCast(screenshot.width)) - 1);
             const col = screenshot.getPixel(px, py) orelse Color.rgb(0, 0, 0);
             const cx = loupe_x + @as(i32, @intCast(gx * cell_size));
-            const cy = loupe_y + @as(i32, @intCast(gy * cell_size));
-            target.fillRect(cx, cy, cell_size, cell_size, col);
+            const cy_p = loupe_y + @as(i32, @intCast(gy * cell_size));
+            target.fillRect(cx, cy_p, cell_size, cell_size, col);
         }
     }
 
-    // Grid border
-    target.drawRoundedBorder(loupe_x - 1, loupe_y - 1, grid_size + 2, grid_size + 2, 2, 1, Color.init(100, 255, 255, 255));
 
-    // Center pixel crosshair / highlight
-    const center_cell_x = loupe_x + @as(i32, @intCast(grid_radius)) * @as(i32, @intCast(cell_size));
-    const center_cell_y = loupe_y + @as(i32, @intCast(grid_radius)) * @as(i32, @intCast(cell_size));
-    target.drawRoundedBorder(center_cell_x - 1, center_cell_y - 1, cell_size + 2, cell_size + 2, 0, 1, Color.init(255, 255, 255, 255));
 
-    // Swatch and text info
-    const swatch_y = loupe_y + @as(i32, @intCast(grid_size)) + 10;
-    const swatch_x = card_x + 14;
-    const swatch_size: u32 = 18;
-
-    target.fillRoundedRect(swatch_x, swatch_y, swatch_size, swatch_size, 4, center_pixel);
-    target.drawRoundedBorder(swatch_x, swatch_y, swatch_size, swatch_size, 4, 1, Color.init(120, 255, 255, 255));
-
+    // HEX value below magnifier - minimal, clean text
     var hex_buf: [32]u8 = undefined;
     const hex_text = std.fmt.bufPrint(&hex_buf, "#{X:0>2}{X:0>2}{X:0>2}", .{
         center_pixel.r, center_pixel.g, center_pixel.b,
     }) catch "#000000";
-    target.drawTextWithSize(font, hex_text, swatch_x + @as(i32, @intCast(swatch_size)) + 8, swatch_y + 14, 14, Color.init(255, 255, 255, 255));
 
-    var rgb_buf: [32]u8 = undefined;
-    const rgb_text = std.fmt.bufPrint(&rgb_buf, "rgb({d}, {d}, {d})", .{
-        center_pixel.r, center_pixel.g, center_pixel.b,
-    }) catch "rgb(0,0,0)";
-    target.drawTextWithSize(font, rgb_text, card_x + 14, swatch_y + 34, 11, Color.init(200, 180, 180, 180));
+    const text_x = loupe_x + @as(i32, @intCast(@divTrunc(grid_size, 2))) - 40;
+    const text_y = loupe_y + @as(i32, @intCast(grid_size)) + 20;
+
+    target.drawTextWithSize(font, hex_text, text_x, text_y, 20, Color.init(240, 240, 240, 255));
 
     c.wl_surface_attach(surf, shmbuf.buffer.?, 0, 0);
     c.wl_surface_damage_buffer(surf, 0, 0, @intCast(phys_w), @intCast(phys_h));

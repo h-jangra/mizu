@@ -57,6 +57,7 @@ pub const WindowApp = struct {
     viewporter: ?*c.wp_viewporter = null,
     viewport: ?*c.wp_viewport = null,
     output_scale: u32 = 1,
+    scale_factor: f32 = 1.0,
 
     // Window protocols: XDG shell primary, Layer shell fallback/overlay
     wm_base: ?*c.xdg_wm_base = null,
@@ -345,12 +346,19 @@ pub const WindowApp = struct {
         _ = c.wl_display_roundtrip(self.display.?);
     }
 
+    pub fn effectiveScale(self: *const WindowApp) f32 {
+        if (self.scale_factor > 1.0) return self.scale_factor;
+        return @as(f32, @floatFromInt(self.output_scale));
+    }
+
     pub fn physicalWidth(self: *const WindowApp) u32 {
-        return self.width * self.output_scale;
+        const s = self.effectiveScale();
+        return @intFromFloat(@as(f32, @floatFromInt(self.width)) * s);
     }
 
     pub fn physicalHeight(self: *const WindowApp) u32 {
-        return self.height * self.output_scale;
+        const s = self.effectiveScale();
+        return @intFromFloat(@as(f32, @floatFromInt(self.height)) * s);
     }
 
     pub fn getRenderer(self: *WindowApp) !renderer.Renderer {
@@ -379,6 +387,13 @@ pub const WindowApp = struct {
 
         if (self.viewport) |vp| {
             c.wp_viewport_set_destination(vp, @intCast(self.width), @intCast(self.height));
+        } else if (self.scale_factor > 1.0) {
+            // Fractional scaling without viewport: use fractional factor via the compositor's
+            // preferred mechanism. Most compositors that support fractional scaling will
+            // respond to viewport state or apply fractional scaling internally; we fall
+            // back to buffer_scale only when scale_factor is exactly an integer.
+            const buf_scale = @as(u32, @intFromFloat(@max(1.0, self.scale_factor)));
+            c.wl_surface_set_buffer_scale(self.surface.?, @intCast(buf_scale));
         } else {
             c.wl_surface_set_buffer_scale(self.surface.?, @intCast(self.output_scale));
         }
@@ -470,8 +485,31 @@ pub const WindowApp = struct {
         _ = states;
         const self: *WindowApp = @ptrCast(@alignCast(data.?));
         if (width > 0 and height > 0) {
-            self.width = @intCast(width);
-            self.height = @intCast(height);
+            // When user scale_factor is set (>1), the logical surface size requested
+            // by the app includes the user's scale preference. The compositor's
+            // configure event may send logical dimensions that don't include that
+            // preference (e.g., 550 logical for 2x display instead of 1100).
+            // Preserve intended scaled dimensions when configure is clearly off.
+            const w_f = @as(f32, @floatFromInt(width));
+            const intended_w_f = if (self.scale_factor > 1.0)
+                @as(f32, @floatFromInt(self.cfg.width)) * self.scale_factor
+            else
+                @as(f32, @floatFromInt(self.cfg.width));
+            const intended_h_f = if (self.scale_factor > 1.0)
+                @as(f32, @floatFromInt(self.cfg.height)) * self.scale_factor
+            else
+                @as(f32, @floatFromInt(self.cfg.height));
+            const scale_approx = if (intended_w_f > 0) w_f / intended_w_f else 1.0;
+            const is_approx_scaled = @abs(scale_approx - 1.0) < 0.3 or @abs(scale_approx - @as(f32, @floatFromInt(self.output_scale))) < 0.3;
+
+            const intended_w_int = @as(i32, @intFromFloat(intended_w_f));
+            if (is_approx_scaled and width < intended_w_int) {
+                self.width = @as(u32, @intFromFloat(intended_w_f));
+                self.height = @as(u32, @intFromFloat(intended_h_f));
+            } else {
+                self.width = @as(u32, @intCast(width));
+                self.height = @as(u32, @intCast(height));
+            }
         }
         self.needs_redraw = true;
     }

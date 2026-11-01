@@ -1170,7 +1170,7 @@ pub const QuickSettings = struct {
             .width = .{ .grow = .{} },
             .height = .{ .fixed = ui.s(QsLayout.row3_h) },
             .direction = .row,
-            .gap = ui.su(QsLayout.section_gap),
+            .gap = ui.su(10),
         });
         const keymap_active = keymap_module.isKeymapsActive();
         const row3_items = [_]struct { icon: []const u8, active: bool }{
@@ -1196,7 +1196,7 @@ pub const QuickSettings = struct {
                 .align_x = .center,
                 .align_y = .center,
             });
-            ui.icon(it.icon, 30 * scale, fg, 0);
+            ui.icon(it.icon, 36 * scale, fg, 0);
             ui.close();
         }
         ui.close(); // row 3
@@ -1291,7 +1291,7 @@ pub const QuickSettings = struct {
             .height = .{ .fixed = ui.s(QsLayout.card_h) },
             .direction = .row,
             .padding = .{ .left = ui.su(4), .right = ui.su(4), .top = ui.su(1), .bottom = ui.su(1) },
-            .gap = ui.su(8),
+            .gap = ui.su(10),
             .bg = bg,
             .radius = ui.f(QsLayout.radius),
             .align_y = .center,
@@ -1889,7 +1889,7 @@ pub const QuickSettings = struct {
                         .index = s_idx,
                         .width = .{ .grow = .{} },
                         .height = .{ .grow = .{} },
-                        .bg = if (sel) self.cfg.theme.elevated else if (hov) self.cfg.theme.card_hover_bg else null,
+                        .bg = if (sel) self.cfg.theme.elevated else if (hov) self.cfg.theme.card_hover_bg else self.cfg.theme.card_bg,
                         .radius = ui.f(10),
                         .border = ui.su(1),
                         .border_color = if (sel) self.cfg.theme.accent else if (hov) self.cfg.theme.accent else self.cfg.theme.border,
@@ -1954,6 +1954,8 @@ pub const QuickSettings = struct {
                             .height = .{ .grow = .{} },
                             .bg = if (sel) self.cfg.theme.elevated else if (hov) self.cfg.theme.card_hover_bg else self.cfg.theme.card_bg,
                             .radius = ui.f(8),
+                            .border = if (sel) ui.su(1) else ui.su(0),
+                            .border_color = if (sel) self.cfg.theme.accent else null,
                             .align_x = .center,
                             .align_y = .center,
                         });
@@ -2114,7 +2116,7 @@ pub const QuickSettings = struct {
         return switch (idx) {
             0 => .toggle_wifi,
             1 => .toggle_bluetooth,
-            2 => .open_recording_menu,
+            2 => .toggle_recording,
             3 => .cycle_power_profile,
             else => .toggle_wifi,
         };
@@ -2124,8 +2126,8 @@ pub const QuickSettings = struct {
         return switch (idx) {
             0 => .open_wifi_menu,
             1 => .open_bluetooth_menu,
-            2 => .open_audio_menu,
-            3 => .open_audio_menu,
+            2 => .open_recording_menu,
+            3 => .open_power_menu,
             else => .open_wifi_menu,
         };
     }

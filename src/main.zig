@@ -22,6 +22,7 @@ const ink_module = @import("apps/ink/ink.zig");
 const annotate_module = ink_module;
 const image_viewer_module = @import("apps/view/view.zig");
 const wallpaper_module = @import("panels/wallpaper.zig");
+const colorpicker_module = @import("apps/colorpicker/colorpicker.zig");
 
 test {
     _ = @import("services/desktop_entries.zig");
@@ -178,6 +179,7 @@ const Command = enum {
     image,
     view,
     wallpaper,
+    picker,
     list,
     help,
     version,
@@ -198,6 +200,8 @@ fn parseCommand(arg: []const u8) ?Command {
         return .view;
     } else if (std.mem.eql(u8, arg, "ink") or std.mem.eql(u8, arg, "annotate") or std.mem.eql(u8, arg, "image") or std.mem.eql(u8, arg, "shot") or std.mem.eql(u8, arg, "draw") or std.mem.eql(u8, arg, "img")) {
         return .ink;
+    } else if (std.mem.eql(u8, arg, "picker") or std.mem.eql(u8, arg, "colorpicker") or std.mem.eql(u8, arg, "color-picker")) {
+        return .picker;
     } else if (std.mem.eql(u8, arg, "wallpaper") or std.mem.eql(u8, arg, "wall") or std.mem.eql(u8, arg, "bg")) {
         return .wallpaper;
     } else if (std.mem.eql(u8, arg, "launcher") or std.mem.eql(u8, arg, "-l") or std.mem.eql(u8, arg, "--launcher")) {
@@ -653,6 +657,19 @@ pub fn main(init: std.process.Init.Minimal) u8 {
                 return 1;
             };
             return 0;
+        },
+        .picker => {
+            if (!toggleOrLockInstance("picker")) return 0;
+            defer cleanupPidFile("picker");
+
+            const allocator = std.heap.c_allocator;
+            var cfg = loadConfig(allocator);
+            defer cfg.deinit(allocator);
+
+            return colorpicker_module.run(allocator, cfg) catch |err| {
+                std.debug.print("mizu picker error: {any}\n", .{err});
+                return 1;
+            };
         },
         .power => {
             if (!toggleOrLockInstance("power")) return 0;

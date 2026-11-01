@@ -740,6 +740,7 @@ pub const AnnotateApp = struct {
             .min_width = @as(u32, @intFromFloat(720.0 * ui_scale)),
             .min_height = @as(u32, @intFromFloat(460.0 * ui_scale)),
         });
+        win.scale_factor = ui_scale;
         errdefer win.deinit();
 
         const font = try allocator.create(Font);
@@ -815,6 +816,7 @@ pub const AnnotateApp = struct {
         old_font.deinit();
         self.allocator.destroy(old_font);
 
+        self.win.scale_factor = ui_scale;
         self.win.needs_redraw = true;
     }
 
@@ -3343,7 +3345,8 @@ pub const AnnotateApp = struct {
         const th = self.cfg.theme;
         const w = self.win.width;
         const h = self.statusbar_height;
-        const y: i32 = @intCast(self.win.height - h);
+        const s = self.win.effectiveScale();
+        const y: i32 = @as(i32, @intFromFloat(@as(f32, @floatFromInt(self.win.height)) * s)) - @as(i32, @intFromFloat(@as(f32, @floatFromInt(h)) * s));
 
         r.fillRect(0, y, w, h, th.surface);
         r.fillRect(0, y, w, 1, th.glass_border);

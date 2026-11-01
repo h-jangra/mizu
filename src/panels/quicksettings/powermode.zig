@@ -31,6 +31,11 @@ pub fn handleAction(panel: anytype, action: Action) bool {
             }
             return true;
         },
+        .open_power_menu => {
+            panel.view_mode = .power_menu;
+            panel.scroll_offset = 0;
+            return true;
+        },
         .set_power_profile_saver => {
             panel.sys.setPowerProfile(.power_saver);
             return true;
