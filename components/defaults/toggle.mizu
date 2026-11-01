@@ -1,0 +1,7 @@
+component Toggle {
+  props: id = "", checked = false, on_change = ""
+  button {
+    label = if checked { "On" } else { "Off" }
+    bg = if checked { theme.accent } else { theme.surface }
+  }
+}

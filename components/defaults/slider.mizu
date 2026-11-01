@@ -1,0 +1,9 @@
+component Slider {
+  props: id = "", value = 0.0, min = 0.0, max = 100.0, on_drag = ""
+  row { direction = row, gap = 4 }
+    text { content = "Slider", size = 12 }
+    text { content = value, size = 12 }
+  row { direction = row }
+    text { content = min, size = 12 }
+    text { content = max, size = 12 }
+}

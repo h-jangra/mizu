@@ -1,0 +1,4 @@
+component List {
+  props: items = "", selected = 0, on_select = ""
+  list { items = items, selected = selected, on_select = on_select }
+}

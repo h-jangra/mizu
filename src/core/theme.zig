@@ -1388,6 +1388,10 @@ pub fn generateThemeCss(th: *const Theme, buf: []u8) []const u8 {
     var b_muted: [8]u8 = undefined;
     var b_bright: [8]u8 = undefined;
     var b_border: [8]u8 = undefined;
+    var b_border_foc: [8]u8 = undefined;
+    var b_card: [8]u8 = undefined;
+    var b_bar: [8]u8 = undefined;
+    var b_panel: [8]u8 = undefined;
     var b_err: [8]u8 = undefined;
     var b_warn: [8]u8 = undefined;
     var b_succ: [8]u8 = undefined;
@@ -1402,6 +1406,10 @@ pub fn generateThemeCss(th: *const Theme, buf: []u8) []const u8 {
     const muted_hex = th.text_muted.formatHexRgb(&b_muted);
     const bright_hex = th.text_bright.formatHexRgb(&b_bright);
     const border_hex = th.border.formatHexRgb(&b_border);
+    const border_foc_hex = th.border_focused.formatHexRgb(&b_border_foc);
+    const card_hex = th.card_bg.formatHexRgb(&b_card);
+    const bar_hex = th.bar_bg.formatHexRgb(&b_bar);
+    const panel_hex = th.panel_bg.formatHexRgb(&b_panel);
     const err_hex = th.error_color.formatHexRgb(&b_err);
     const warn_hex = th.warning_color.formatHexRgb(&b_warn);
     const succ_hex = th.success_color.formatHexRgb(&b_succ);
@@ -1445,7 +1453,6 @@ pub fn generateThemeCss(th: *const Theme, buf: []u8) []const u8 {
         \\
     , .{
         th.kind.name(),
-        th.kind.name(),
         base_hex,
         surf_hex,
         elev_hex,
@@ -1456,10 +1463,10 @@ pub fn generateThemeCss(th: *const Theme, buf: []u8) []const u8 {
         muted_hex,
         bright_hex,
         border_hex,
-        acc_hex,
-        surf_hex,
-        base_hex,
-        base_hex,
+        border_foc_hex,
+        card_hex,
+        bar_hex,
+        panel_hex,
         err_hex,
         warn_hex,
         succ_hex,

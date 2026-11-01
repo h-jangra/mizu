@@ -100,6 +100,19 @@ pub fn build(b: *std.Build) void {
     configureMizuModule(b, exe.root_module, c_module);
     b.installArtifact(exe);
 
+    // Isolated DSL Milestone 1 demo executable (separate from production mizu)
+    const dsl_demo = b.addExecutable(.{
+        .name = "dsl_demo",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("dsl_demo_main.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        }),
+    });
+    configureMizuModule(b, dsl_demo.root_module, c_module);
+    b.installArtifact(dsl_demo);
+
     // Standalone Mizu Ink executable
     const exe_ink = b.addExecutable(.{
         .name = "mizu-ink",

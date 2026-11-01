@@ -1,0 +1,8 @@
+component Button {
+  props: label = "Button", active = false, icon = ""
+  button {
+    bg = if active { theme.accent } else { theme.surface }
+    padding = 12
+    text { content = label, size = 14 }
+  }
+}

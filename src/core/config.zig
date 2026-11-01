@@ -12,6 +12,10 @@ pub const CustomPanel = struct {
     command: []const u8,
 };
 
+pub const DslConfig = struct {
+    use_dsl_quicksettings: bool = false,
+};
+
 pub const Typography = struct {
     ui: u32 = 15,
     secondary: u32 = 13,
