@@ -159,7 +159,7 @@ pub fn build(b: *std.Build) void {
 
     // Install built-in themes into share/mizu/themes
     b.installDirectory(.{
-        .source_dir = b.path("styles/themes"),
+        .source_dir = b.path("themes"),
         .install_dir = .{ .custom = "share/mizu" },
         .install_subdir = "themes",
     });

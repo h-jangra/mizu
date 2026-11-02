@@ -707,7 +707,8 @@ pub const MemoryMonitor = struct {
 
         const fx: f64 = @as(f64, @floatFromInt(x));
         const s_f = @as(f64, @floatFromInt(self.render_scale));
-        const cx1 = contentX1() * s_f;
+        const btn_left = (contentX0() + 36.0 + 160.0 + 36.0 + 72.0 + 34.0 + 10.0) * s_f;
+        const btn_w = 24.0 * s_f;
         if (new_hover) |idx| {
             if (idx < self.visible_rows.items.len) {
                 const row = self.visible_rows.items[idx];
@@ -716,13 +717,13 @@ pub const MemoryMonitor = struct {
                     if (row.sub_idx < grp.procs.items.len) {
                         const proc = grp.procs.items[row.sub_idx];
                         if (self.confirm_kill_pid == proc.pid) {
-                            if (fx >= cx1 - 26.0 * s_f and fx <= cx1) {
+                            if (fx >= btn_left + 30.0 * s_f and fx <= btn_left + 56.0 * s_f) {
                                 if (self.hover_kill_action != .cancel or self.hover_kill_pid != proc.pid) {
                                     self.hover_kill_action = .cancel;
                                     self.hover_kill_pid = proc.pid;
                                     changed = true;
                                 }
-                            } else if (fx >= cx1 - 56.0 * s_f and fx < cx1 - 26.0 * s_f) {
+                            } else if (fx >= btn_left and fx < btn_left + 30.0 * s_f) {
                                 if (self.hover_kill_action != .confirm or self.hover_kill_pid != proc.pid) {
                                     self.hover_kill_action = .confirm;
                                     self.hover_kill_pid = proc.pid;
@@ -736,7 +737,7 @@ pub const MemoryMonitor = struct {
                                 }
                             }
                         } else {
-                            if (fx >= cx1 - 26.0 * s_f and fx <= cx1) {
+                            if (fx >= btn_left and fx <= btn_left + btn_w) {
                                 if (self.hover_kill_action != .kill or self.hover_kill_pid != proc.pid) {
                                     self.hover_kill_action = .kill;
                                     self.hover_kill_pid = proc.pid;
@@ -838,7 +839,8 @@ pub const MemoryMonitor = struct {
 
         const fx: f64 = @as(f64, @floatFromInt(x));
         const s_f = @as(f64, @floatFromInt(self.render_scale));
-        const cx1 = contentX1() * s_f;
+        const btn_left = (contentX0() + 36.0 + 160.0 + 36.0 + 72.0 + 34.0 + 10.0) * s_f;
+        const btn_w = 24.0 * s_f;
         if (self.rowIndexAt(x, y)) |idx| {
             if (idx < self.visible_rows.items.len) {
                 const row = self.visible_rows.items[idx];
@@ -856,13 +858,13 @@ pub const MemoryMonitor = struct {
                         if (row.sub_idx < grp.procs.items.len) {
                             const proc = grp.procs.items[row.sub_idx];
                             if (self.confirm_kill_pid == proc.pid) {
-                                if (fx >= cx1 - 26.0 * s_f and fx <= cx1) {
+                                if (fx >= btn_left + 30.0 * s_f and fx <= btn_left + 56.0 * s_f) {
                                     // Clicked Cancel (x)
                                     self.confirm_kill_pid = null;
                                     self.hover_kill_action = .none;
                                     self.hover_kill_pid = null;
                                     return true;
-                                } else if (fx >= cx1 - 56.0 * s_f and fx < cx1 - 26.0 * s_f) {
+                                } else if (fx >= btn_left and fx < btn_left + 30.0 * s_f) {
                                     // Clicked Confirm (check)
                                     _ = c.kill(@intCast(proc.pid), c.SIGTERM);
                                     self.confirm_kill_pid = null;
@@ -872,7 +874,7 @@ pub const MemoryMonitor = struct {
                                     return true;
                                 }
                             } else {
-                                if (fx >= cx1 - 26.0 * s_f and fx <= cx1) {
+                                if (fx >= btn_left and fx <= btn_left + btn_w) {
                                     // Clicked Kill (x)
                                     self.confirm_kill_pid = proc.pid;
                                     self.hover_kill_action = .none;
@@ -1508,7 +1510,7 @@ pub const MemoryMonitor = struct {
                     .width = .{ .fixed = ui.s(160) },
                     .height = .{ .grow = .{} },
                     .direction = .column,
-                    .padding = .{ .left = ui.su(if (row.kind == .subprocess) 14 else 6), .top = ui.su(2), .bottom = ui.su(2) },
+                    .padding = .{ .left = ui.su(6), .top = ui.su(2), .bottom = ui.su(2) },
                     .gap = ui.su(1),
                     .align_y = .center,
                 });
@@ -1526,42 +1528,12 @@ pub const MemoryMonitor = struct {
                         .color = if (is_selected) th.text_bright else th.text_main,
                     });
 
-                    // Show root command as second line for group
-                    const root_pid = grp.main_pid;
-                    var root_cmd: [128]u8 = undefined;
-                    var root_cmd_slice: []const u8 = "";
-                    for (grp.procs.items) |p| {
-                        if (p.pid == root_pid) {
-                            const cmd = p.cmdline[0..p.cmdline_len];
-                            if (cmd.len > 0) {
-                                root_cmd_slice = formatSubprocessCommand(&root_cmd, cmd, p.name[0..p.name_len]);
-                            }
-                            break;
-                        }
-                    }
-                    if (root_cmd_slice.len > 0) {
-                        var sub_buf: [128]u8 = undefined;
-                        const sub_name = renderer.truncateText(&self.row_measure, root_cmd_slice, @intFromFloat(160.0 * @as(f64, @floatFromInt(scale))), (self.cfg.typography.secondary) * scale, &sub_buf);
-                        ui.text(sub_name, .{
-                            .size = (self.cfg.typography.secondary) * scale,
-                            .color = alphaCol(text_muted, 0.85),
-                        });
-                    }
                 } else {
                     const proc = grp.procs.items[row.sub_idx];
                     const proc_name = proc.name[0..proc.name_len];
                     ui.text(proc_name, .{
                         .size = (self.cfg.typography.ui + 1) * scale,
                         .color = if (is_selected) th.text_bright else th.text_main,
-                    });
-
-                    var cmd_fmt_buf: [256]u8 = undefined;
-                    const clean_cmd = formatSubprocessCommand(&cmd_fmt_buf, proc.cmdline[0..proc.cmdline_len], proc_name);
-                    var sub_buf: [128]u8 = undefined;
-                    const sub_name = renderer.truncateText(&self.row_measure, clean_cmd, @intFromFloat(160.0 * @as(f64, @floatFromInt(scale))), (self.cfg.typography.secondary) * scale, &sub_buf);
-                    ui.text(sub_name, .{
-                        .size = (self.cfg.typography.secondary) * scale,
-                        .color = alphaCol(text_muted, 0.85),
                     });
                 }
                 ui.close(); // info
@@ -1581,9 +1553,11 @@ pub const MemoryMonitor = struct {
                 ui.text(mem_row_str, .{
                     .size = (self.cfg.typography.ui) * scale,
                     .color = if (is_selected) th.text_bright else text_main,
-                    .width = ui.s(78),
+                    .width = ui.s(72),
                     .text_align = .right,
                 });
+
+                ui.spacerSized(.{ .fixed = ui.s(20) }, .{ .fixed = 0 });
 
                 // % column (memory percent)
                 var pct_buf: [16]u8 = undefined;
@@ -1595,8 +1569,8 @@ pub const MemoryMonitor = struct {
                 ui.text(pct_str, .{
                     .size = (self.cfg.typography.ui) * scale,
                     .color = text_muted,
-                    .width = ui.s(36),
-                    .text_align = .right,
+                    .width = ui.s(34),
+                    .text_align = .left,
                 });
 
                 ui.spacerSized(.{ .fixed = ui.s(10) }, .{ .fixed = 0 });
@@ -1654,7 +1628,7 @@ pub const MemoryMonitor = struct {
                                 .height = .{ .fixed = ui.s(24) },
                                 .bg = if (is_kill_hov) alphaCol(th.error_color, 0.35) else alphaCol(th.error_color, 0.14),
                                 .radius = ui.f(6),
-                                .align_x = .right,
+                                .align_x = .center,
                                 .align_y = .center,
                             });
                             ui.icon("x", 12 * scale, th.error_color, 0);

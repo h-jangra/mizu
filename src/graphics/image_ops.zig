@@ -563,6 +563,24 @@ pub const ImageBuffer = struct {
         }
     }
 
+    /// Erase pixels (set alpha=0) in a region
+    pub fn applyEraseRegion(self: *ImageBuffer, cx: i32, cy: i32, radius: i32) void {
+        const w_i: i32 = @intCast(self.width);
+        const h_i: i32 = @intCast(self.height);
+        const r_sq = radius * radius;
+        var y = cy - radius;
+        while (y <= cy + radius) : (y += 1) {
+            var x = cx - radius;
+            while (x <= cx + radius) : (x += 1) {
+                if (x < 0 or y < 0 or x >= w_i or y >= h_i) continue;
+                if ((x - cx) * (x - cx) + (y - cy) * (y - cy) <= r_sq) {
+                    const idx = @as(usize, @intCast(y)) * @as(usize, self.width) + @as(usize, @intCast(x));
+                    self.pixels[idx] = 0; // transparent
+                }
+            }
+        }
+    }
+
     /// Composite another image scaled to (dest_w, dest_h) at (dest_x, dest_y)
     pub fn compositeScaled(self: *ImageBuffer, src: *const ImageBuffer, dest_x: i32, dest_y: i32, dest_w: u32, dest_h: u32) void {
         if (dest_w == 0 or dest_h == 0 or src.width == 0 or src.height == 0) return;

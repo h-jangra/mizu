@@ -35,6 +35,7 @@ pub const Tool = enum {
     blur,
     pixelate,
     crop,
+    eraser,
 
     pub fn name(self: Tool) []const u8 {
         return switch (self) {
@@ -50,6 +51,7 @@ pub const Tool = enum {
             .blur => "Blur",
             .pixelate => "Pixelate",
             .crop => "Crop",
+            .eraser => "Eraser",
         };
     }
 
@@ -67,6 +69,7 @@ pub const Tool = enum {
             .blur => "B",
             .pixelate => "X",
             .crop => "K",
+            .eraser => "E",
         };
     }
 
@@ -84,6 +87,7 @@ pub const Tool = enum {
             .blur => "󰂶",
             .pixelate => "",
             .crop => "",
+            .eraser => "󰛔",
         };
     }
 };
@@ -704,6 +708,14 @@ pub const AnnotateApp = struct {
     // Inline Text Editing
     editing_text_id: ?u32 = null,
 
+    // Font dropdown
+    font_dropdown_open: bool = false,
+
+    // Font Size Input Box Editing
+    editing_font_size: bool = false,
+    font_size_buf: [8]u8 = @splat(0),
+    font_size_len: usize = 0,
+
     // Crop Tool state
     is_crop_mode: bool = false,
     is_cropping: bool = false,
@@ -1053,9 +1065,11 @@ pub const AnnotateApp = struct {
     pub fn decreaseFontSize(self: *AnnotateApp) void {
         if (self.current_font_size > 8) {
             self.current_font_size -= 2;
+            self.stroke_width = @max(2, @divTrunc(self.current_font_size, 4));
             var updated_text = false;
             for (self.selected_ids.items) |sid| {
                 if (self.findAnnotationById(sid)) |a| {
+                    a.stroke_width = self.stroke_width;
                     if (a.kind == .text) {
                         a.font_size = self.current_font_size;
                         self.updateTextAnnotationBounds(a);
@@ -1072,9 +1086,11 @@ pub const AnnotateApp = struct {
     pub fn increaseFontSize(self: *AnnotateApp) void {
         if (self.current_font_size < 120) {
             self.current_font_size += 2;
+            self.stroke_width = @max(2, @divTrunc(self.current_font_size, 4));
             var updated_text = false;
             for (self.selected_ids.items) |sid| {
                 if (self.findAnnotationById(sid)) |a| {
+                    a.stroke_width = self.stroke_width;
                     if (a.kind == .text) {
                         a.font_size = self.current_font_size;
                         self.updateTextAnnotationBounds(a);
@@ -1793,6 +1809,10 @@ pub const AnnotateApp = struct {
             if (self.active_tool == .freehand and self.annotations.items.len > 0) {
                 const last_idx = self.annotations.items.len - 1;
                 self.annotations.items[last_idx].points.append(self.allocator, .{ .x = img_x, .y = img_y }) catch {};
+            } else if (self.active_tool == .eraser) {
+                // Direct pixel erasure on base image (soft brush)
+                const r_erase = @max(4, @as(i32, @intCast(self.stroke_width)));
+                self.base_image.img.applyEraseRegion(img_x, img_y, r_erase);
             }
             self.win.needs_redraw = true;
             return;
@@ -1879,6 +1899,33 @@ pub const AnnotateApp = struct {
                     return;
                 }
 
+                // Check font dropdown clicks
+                if (self.font_dropdown_open) {
+                    const dx: i32 = 540;
+                    const dy: i32 = @as(i32, @intCast(self.toolbar_height)) + 2;
+                    const dw: i32 = 95;
+                    const dh: i32 = 195;
+                    if (x >= dx and x < dx + dw and y >= dy and y < dy + dh) {
+                        const row_idx = @divTrunc(y - dy - 8, 30);
+                        const sizes = [_]u32{ 12, 16, 20, 24, 32, 48 };
+                        if (row_idx >= 0 and @as(usize, @intCast(row_idx)) < sizes.len) {
+                            self.current_font_size = sizes[@as(usize, @intCast(row_idx))];
+                            self.stroke_width = @max(2, @divTrunc(self.current_font_size, 4));
+                            for (self.selected_ids.items) |sid| {
+                                if (self.findAnnotationById(sid)) |a| a.font_size = self.current_font_size;
+                            }
+                            self.win.needs_redraw = true;
+                        }
+                        self.font_dropdown_open = false;
+                        self.win.needs_redraw = true;
+                        return;
+                    } else {
+                        self.font_dropdown_open = false;
+                        self.win.needs_redraw = true;
+                        return;
+                    }
+                }
+
                 // Check status bar clicks
                 if (y >= @as(i32, @intCast(self.win.height - self.statusbar_height))) {
                     self.handleStatusbarClick(x, y);
@@ -1899,6 +1946,9 @@ pub const AnnotateApp = struct {
 
                 // Commit active text editing if clicked away
                 if (self.editing_text_id != null) {
+                    self.commitTextEditing();
+                }
+                if (self.editing_font_size) {
                     self.commitTextEditing();
                 }
 
@@ -2023,7 +2073,7 @@ pub const AnnotateApp = struct {
                     self.drag_curr_x = img_x;
                     self.drag_curr_y = img_y;
 
-                    if (self.active_tool == .freehand) {
+                    if (self.active_tool == .freehand or self.active_tool == .eraser) {
                         const new_id = self.next_annotation_id;
                         self.next_annotation_id += 1;
 
@@ -2253,6 +2303,17 @@ pub const AnnotateApp = struct {
             self.editing_text_id = null;
             self.win.needs_redraw = true;
         }
+        if (self.editing_font_size) {
+            if (self.font_size_len > 0) {
+                var num: u32 = 0;
+                for (self.font_size_buf[0..self.font_size_len]) |ch| {
+                    if (ch >= 48 and ch <= 57) num = num * 10 + (ch - 48);
+                }
+                if (num >= 8 and num <= 120) self.current_font_size = num;
+                self.editing_font_size = false;
+                self.win.needs_redraw = true;
+            }
+        }
     }
 
     pub fn handleKey(self: *AnnotateApp, sym: u32, utf8: []const u8, is_ctrl: bool, is_shift: bool) void {
@@ -2279,6 +2340,30 @@ pub const AnnotateApp = struct {
                     self.win.needs_redraw = true;
                     return;
                 }
+            }
+        }
+
+        // Font size input box editing
+        if (self.editing_font_size) {
+            if (sym == c.XKB_KEY_Return or sym == c.XKB_KEY_KP_Enter) {
+                self.commitTextEditing();
+                return;
+            } else if (sym == c.XKB_KEY_Escape) {
+                self.editing_font_size = false;
+                self.win.needs_redraw = true;
+                return;
+            } else if (sym == c.XKB_KEY_BackSpace) {
+                if (self.font_size_len > 0) {
+                    self.font_size_len -= 1;
+                    self.font_size_buf[self.font_size_len] = 0;
+                    self.win.needs_redraw = true;
+                }
+                return;
+            } else if (utf8.len > 0 and self.font_size_len + utf8.len < self.font_size_buf.len) {
+                @memcpy(self.font_size_buf[self.font_size_len .. self.font_size_len + utf8.len], utf8);
+                self.font_size_len += utf8.len;
+                self.win.needs_redraw = true;
+                return;
             }
         }
 
@@ -2473,7 +2558,7 @@ pub const AnnotateApp = struct {
 
         if (!on_row2) {
             // Row 1: Tools, Fill, Crop, Rotate, Layers
-            var bx: i32 = 82;
+            var bx: i32 = 14;
             const btn_w: i32 = 28;
 
             const tools = [_]Tool{ .select, .freehand, .arrow, .line, .rect, .circle, .text, .step_badge, .highlight, .blur, .pixelate };
@@ -2485,7 +2570,7 @@ pub const AnnotateApp = struct {
                 bx += btn_w + 3;
             }
 
-            bx += 14; // Separator
+            bx += 6; // Separator gap
 
             // Fill toggle ()
             if (x >= bx and x < bx + 30) {
@@ -2522,7 +2607,8 @@ pub const AnnotateApp = struct {
             bx += 34;
 
             if (!is_narrow) {
-                bx += 14; // Separator
+                bx += 6; // Separator gap
+                bx += 8; // Separator width
 
                 // Font size decrease (󰧳)
                 if (x >= bx and x < bx + 26) {
@@ -2531,12 +2617,16 @@ pub const AnnotateApp = struct {
                 }
                 bx += 28;
 
-                // Font size input box [ 18 ]
-                if (x >= bx and x < bx + 34) {
-                    self.cycleFontSize();
-                    return;
+                // Font size dropdown trigger (Text)
+                {
+                    const btn_w2: i32 = 40;
+                    if (x >= bx and x < bx + btn_w2) {
+                        self.font_dropdown_open = !self.font_dropdown_open;
+                        self.win.needs_redraw = true;
+                        return;
+                    }
+                    bx += btn_w2 + 6;
                 }
-                bx += 36;
 
                 // Font size increase (󰧴)
                 if (x >= bx and x < bx + 26) {
@@ -2545,24 +2635,8 @@ pub const AnnotateApp = struct {
                 }
                 bx += 28;
 
-                // Text alignment: Left / Center / Right
-                const align_btn_w: i32 = 26;
-                const align_items = [_][]const u8{"L", "C", "R"};
-                for (align_items, 0..) |_, idx| {
-                    if (x >= bx and x < bx + align_btn_w) {
-                        self.current_text_align = @as(TextAlign, switch (idx) { 0 => .left, 1 => .center, else => .right });
-                        for (self.selected_ids.items) |sid| {
-                            if (self.findAnnotationById(sid)) |a| {
-                                if (a.kind == .text) a.text_align = @as(TextAlign, switch (idx) { 0 => .left, 1 => .center, else => .right });
-                            }
-                        }
-                        self.win.needs_redraw = true;
-                        return;
-                    }
-                    bx += align_btn_w + 4;
-                }
-
-                bx += 14; // Separator
+                bx += 6; // Separator gap
+                bx += 8; // Separator width
 
                 // Palette swatches
                 for (Palette.colors) |col| {
@@ -2577,7 +2651,32 @@ pub const AnnotateApp = struct {
                     bx += 18;
                 }
 
-                // Right side global buttons: Undo, Redo, Save, Copy (Capture removed)
+                // Color picker () — spawn mizu picker
+                if (x >= bx and x < bx + 28) {
+                    _ = c.system("mizu picker > /tmp/mizu_picker_hex.txt 2>/dev/null || true");
+                    // Read picked hex and set current color
+                    const c_file = c.fopen("/tmp/mizu_picker_hex.txt", "r");
+                    if (c_file != null) {
+                        defer _ = c.fclose(c_file);
+                        var c_buf: [16]u8 = undefined;
+                        _ = c.fread(&c_buf, 1, c_buf.len, c_file.?);
+                        const hex_str = std.mem.trim(u8, c_buf[0..], " \t\r\n");
+                        if (hex_str.len >= 7 and hex_str[0] == '#') {
+                            const r = std.fmt.parseInt(u8, hex_str[1..3], 16) catch self.current_color.r;
+                            const g = std.fmt.parseInt(u8, hex_str[3..5], 16) catch self.current_color.g;
+                            const b = std.fmt.parseInt(u8, hex_str[5..7], 16) catch self.current_color.b;
+                            self.current_color = Color.rgb(r, g, b);
+                            for (self.selected_ids.items) |sid| {
+                                if (self.findAnnotationById(sid)) |a| a.color = self.current_color;
+                            }
+                        }
+                    }
+                    self.win.needs_redraw = true;
+                    return;
+                }
+                bx += 32;
+
+                // Right side global buttons: Undo, Redo, Save, Copy
                 const rx_base: i32 = @as(i32, @intCast(self.win.width)) - 146;
                 if (x >= rx_base) {
                     var rx = rx_base;
@@ -2610,31 +2709,8 @@ pub const AnnotateApp = struct {
                 }
             }
         } else {
-            // Row 2 on narrow windows: Font controls, Palette, Actions
+            // Row 2 on narrow windows: Palette, Color picker, Actions
             var bx2: i32 = 14;
-
-            // Font size decrease (󰧳)
-            if (x >= bx2 and x < bx2 + 26) {
-                self.decreaseFontSize();
-                return;
-            }
-            bx2 += 28;
-
-            // Font size input box [ 18 ]
-            if (x >= bx2 and x < bx2 + 34) {
-                self.cycleFontSize();
-                return;
-            }
-            bx2 += 36;
-
-            // Font size increase (󰧴)
-            if (x >= bx2 and x < bx2 + 26) {
-                self.increaseFontSize();
-                return;
-            }
-            bx2 += 28;
-
-            bx2 += 14; // Separator
 
             // Palette swatches
             for (Palette.colors) |col| {
@@ -2648,6 +2724,30 @@ pub const AnnotateApp = struct {
                 }
                 bx2 += 18;
             }
+
+            // Color picker () — spawn mizu picker
+            if (x >= bx2 and x < bx2 + 28) {
+                _ = c.system("mizu picker > /tmp/mizu_picker_hex.txt 2>/dev/null || true");
+                const c_file = c.fopen("/tmp/mizu_picker_hex.txt", "r");
+                if (c_file != null) {
+                    defer _ = c.fclose(c_file);
+                    var c_buf: [16]u8 = undefined;
+                    _ = c.fread(&c_buf, 1, c_buf.len, c_file.?);
+                    const hex_str = std.mem.trim(u8, c_buf[0..], " \t\r\n");
+                    if (hex_str.len >= 7 and hex_str[0] == '#') {
+                        const r = std.fmt.parseInt(u8, hex_str[1..3], 16) catch self.current_color.r;
+                        const g = std.fmt.parseInt(u8, hex_str[3..5], 16) catch self.current_color.g;
+                        const b = std.fmt.parseInt(u8, hex_str[5..7], 16) catch self.current_color.b;
+                        self.current_color = Color.rgb(r, g, b);
+                        for (self.selected_ids.items) |sid| {
+                            if (self.findAnnotationById(sid)) |a| a.color = self.current_color;
+                        }
+                    }
+                }
+                self.win.needs_redraw = true;
+                return;
+            }
+            bx2 += 32;
 
             // Right side global buttons: Undo, Redo, Save, Copy
             const rx_base: i32 = @as(i32, @intCast(self.win.width)) - 146;
@@ -2922,6 +3022,11 @@ pub const AnnotateApp = struct {
         // Render Toolbar & Statusbar on top
         self.renderToolbar(r);
         self.renderStatusbar(r);
+
+        // Render Font Size Dropdown
+        if (self.font_dropdown_open) {
+            self.renderFontDropdown(r);
+        }
 
         if (self.status_ticks > 0) {
             self.status_ticks -= 1;
@@ -3218,13 +3323,12 @@ pub const AnnotateApp = struct {
         r.fillRect(0, 0, w, h, th.surface);
         r.fillRect(0, @intCast(h - 1), w, 1, th.glass_border);
 
-        // Ink SVG Logo + Name (only SVG icon + "ink", no "Mizu")
+        // Ink SVG Logo (only icon, no label)
         icons.drawSvgIcon(r, self.allocator, "mizu", 14, 12, 24, 24, th.accent);
-        r.drawTextWithSize(self.font, "ink", 42, 29, 14, th.accent);
 
         const btn_y: i32 = 8;
         const btn_h: i32 = 32;
-        var bx: i32 = 78;
+        var bx: i32 = 14;
         const btn_w: i32 = 28;
 
         // Tool buttons with Nerd Font icons
@@ -3290,32 +3394,24 @@ pub const AnnotateApp = struct {
             r.drawIconCentered(self.font, "󰧳", bx + 13, btn_y + 21, 14, th.text_main);
             bx += 28;
 
-            // Font size input box [ 18 ]
-            r.fillRoundedRect(bx, btn_y, 34, @intCast(btn_h), 6, th.surface);
-            r.drawRoundedBorder(bx, btn_y, 34, @intCast(btn_h), 6, 1, th.accent);
-            var f_buf: [16]u8 = undefined;
-            const f_label = std.fmt.bufPrint(&f_buf, "{d}", .{self.current_font_size}) catch "18";
-            const f_lw = r.measureTextWithSize(self.font, f_label, 11);
-            const f_lx = bx + @divTrunc(34 - @as(i32, @intCast(f_lw)), 2);
-            r.drawTextWithSize(self.font, f_label, f_lx, btn_y + 21, 11, th.accent);
-            bx += 36;
+            // Font size label / dropdown trigger (Text)
+            {
+                const btn_w2: i32 = 40;
+                r.fillRoundedRect(bx, btn_y, btn_w2, @intCast(btn_h), 6, if (self.font_dropdown_open) th.accent else th.btn_raised_bg);
+                r.drawRoundedBorder(bx, btn_y, btn_w2, @intCast(btn_h), 6, 1, if (self.font_dropdown_open) th.accent else th.glass_border);
+                var sz_buf: [8]u8 = undefined;
+                const sz_str = std.fmt.bufPrint(&sz_buf, "{d}px", .{self.current_font_size}) catch "18";
+                const sz_lw = r.measureTextWithSize(self.font, sz_str, 11);
+                const sz_lx = bx + @divTrunc(btn_w2 - @as(i32, @intCast(sz_lw)), 2);
+                r.drawTextWithSize(self.font, sz_str, sz_lx, btn_y + 21, 11, if (self.font_dropdown_open) th.accent_fg else th.text_main);
+                bx += btn_w2 + 6;
+            }
 
             // Font size increase (󰧴)
             r.fillRoundedRect(bx, btn_y, 26, @intCast(btn_h), 6, th.btn_raised_bg);
             r.drawRoundedBorder(bx, btn_y, 26, @intCast(btn_h), 6, 1, th.glass_border);
             r.drawIconCentered(self.font, "󰧴", bx + 13, btn_y + 21, 14, th.text_main);
             bx += 28;
-
-            // Text alignment: Left / Center / Right
-            const align_btn_w: i32 = 26;
-            const align_btns = [_][]const u8{"L", "C", "R"};
-            for (align_btns, 0..) |_, idx| {
-                const align_val: TextAlign = switch (idx) { 0 => .left, 1 => .center, else => .right };
-                r.fillRoundedRect(bx, btn_y, @intCast(align_btn_w), @intCast(btn_h), 6, if ((self.current_text_align == align_val and self.selected_ids.items.len > 0)) th.accent else th.btn_raised_bg);
-                r.drawRoundedBorder(bx, btn_y, @intCast(align_btn_w), @intCast(btn_h), 6, 1, if ((self.current_text_align == align_val and self.selected_ids.items.len > 0)) th.accent else th.glass_border);
-                r.drawIconCentered(self.font, "󰍺", bx + @divTrunc(align_btn_w, 2), btn_y + 21, 14, if ((self.current_text_align == align_val and self.selected_ids.items.len > 0)) th.accent_fg else th.text_main);
-                bx += align_btn_w + 4;
-            }
 
             // Separator
             bx += 6;
@@ -3330,6 +3426,14 @@ pub const AnnotateApp = struct {
                     r.drawCircleBorder(@floatFromInt(bx + 8), @floatFromInt(btn_y + 16), 9, 2, th.accent);
                 }
                 bx += 18;
+            }
+
+            // Color picker (mizu picker) with  icon
+            {
+                r.fillRoundedRect(bx, btn_y, 28, @intCast(btn_h), 6, th.btn_raised_bg);
+                r.drawRoundedBorder(bx, btn_y, 28, @intCast(btn_h), 6, 1, th.glass_border);
+                r.drawIconCentered(self.font, "", bx + 14, btn_y + 21, 14, th.accent);
+                bx += 32;
             }
 
             // Right-aligned Global Actions: Undo, Redo, Save, Copy (Capture removed)
@@ -3362,33 +3466,6 @@ pub const AnnotateApp = struct {
             const btn_y2: i32 = 44;
             var bx2: i32 = 14;
 
-            // Font size decrease (󰧳)
-            r.fillRoundedRect(bx2, btn_y2, 26, @intCast(btn_h), 6, th.btn_raised_bg);
-            r.drawRoundedBorder(bx2, btn_y2, 26, @intCast(btn_h), 6, 1, th.glass_border);
-            r.drawIconCentered(self.font, "󰧳", bx2 + 13, btn_y2 + 21, 14, th.text_main);
-            bx2 += 28;
-
-            // Font size input box [ 18 ]
-            r.fillRoundedRect(bx2, btn_y2, 34, @intCast(btn_h), 6, th.surface);
-            r.drawRoundedBorder(bx2, btn_y2, 34, @intCast(btn_h), 6, 1, th.accent);
-            var f_buf: [16]u8 = undefined;
-            const f_label = std.fmt.bufPrint(&f_buf, "{d}", .{self.current_font_size}) catch "18";
-            const f_lw = r.measureTextWithSize(self.font, f_label, 11);
-            const f_lx = bx2 + @divTrunc(34 - @as(i32, @intCast(f_lw)), 2);
-            r.drawTextWithSize(self.font, f_label, f_lx, btn_y2 + 21, 11, th.accent);
-            bx2 += 36;
-
-            // Font size increase (󰧴)
-            r.fillRoundedRect(bx2, btn_y2, 26, @intCast(btn_h), 6, th.btn_raised_bg);
-            r.drawRoundedBorder(bx2, btn_y2, 26, @intCast(btn_h), 6, 1, th.glass_border);
-            r.drawIconCentered(self.font, "󰧴", bx2 + 13, btn_y2 + 21, 14, th.text_main);
-            bx2 += 28;
-
-            // Separator
-            bx2 += 6;
-            r.fillRect(bx2, btn_y2 + 5, 1, 22, th.glass_border);
-            bx2 += 8;
-
             // Color palette swatches
             for (Palette.colors) |col| {
                 const active = (self.current_color.toArgb() == col.toArgb());
@@ -3397,6 +3474,14 @@ pub const AnnotateApp = struct {
                     r.drawCircleBorder(@floatFromInt(bx2 + 8), @floatFromInt(btn_y2 + 16), 9, 2, th.accent);
                 }
                 bx2 += 18;
+            }
+
+            // Color picker (mizu picker) with  icon
+            {
+                r.fillRoundedRect(bx2, btn_y2, 28, @intCast(btn_h), 6, th.btn_raised_bg);
+                r.drawRoundedBorder(bx2, btn_y2, 28, @intCast(btn_h), 6, 1, th.glass_border);
+                r.drawIconCentered(self.font, "", bx2 + 14, btn_y2 + 21, 14, th.accent);
+                bx2 += 32;
             }
 
             // Right-aligned Global Actions on Row 2: Undo, Redo, Save, Copy
@@ -3637,6 +3722,34 @@ pub const AnnotateApp = struct {
         r.fillRoundedRect(zoom_x + 86, btn_y, 24, btn_h, 4, th.btn_raised_bg);
         r.drawRoundedBorder(zoom_x + 86, btn_y, 24, btn_h, 4, 1, th.glass_border);
         r.drawIconCentered(self.font, "󰐕", zoom_x + 86 + 12, btn_y + 15, 12, th.text_main);
+    }
+
+    fn renderFontDropdown(self: *AnnotateApp, r: renderer.Renderer) void {
+        const th = self.cfg.theme;
+        const w = 95;
+        const h = 195;
+        const x: i32 = 540;
+        const y: i32 = @as(i32, @intCast(self.toolbar_height)) + 2;
+        const row_h: i32 = 30;
+
+        r.fillRoundedRect(x, y, w, h, 6, th.surface);
+        r.drawRoundedBorder(x, y, w, h, 6, 1, th.glass_border);
+        r.fillRect(x, y, w, 1, th.glass_border);
+
+        const sizes = [_]u32{ 12, 16, 20, 24, 32, 48 };
+        var cur_y = y + 8;
+        for (sizes) |sz| {
+            const active = (self.current_font_size == sz);
+            const bg = if (active) th.accent else th.btn_raised_bg;
+            const fg = if (active) th.accent_fg else th.text_main;
+            r.fillRoundedRect(x + 4, cur_y, w - 8, row_h - 4, 4, bg);
+            var label_buf: [8]u8 = undefined;
+            const label = std.fmt.bufPrint(&label_buf, "{d}px", .{sz}) catch "";
+            const lw = r.measureTextWithSize(self.font, label, 12);
+            const lx = x + @divTrunc(w - @as(i32, @intCast(lw)), 2);
+            r.drawTextWithSize(self.font, label, lx, cur_y + 19, 12, fg);
+            cur_y += row_h;
+        }
     }
 };
 
