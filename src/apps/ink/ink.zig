@@ -2561,7 +2561,7 @@ pub const AnnotateApp = struct {
             var bx: i32 = 14;
             const btn_w: i32 = 28;
 
-            const tools = [_]Tool{ .select, .freehand, .arrow, .line, .rect, .circle, .text, .step_badge, .highlight, .blur, .pixelate };
+            const tools = [_]Tool{ .select, .freehand, .arrow, .line, .rect, .circle, .text, .step_badge, .highlight, .blur, .pixelate, .eraser };
             for (tools) |t| {
                 if (x >= bx and x < bx + btn_w) {
                     self.setActiveTool(t);
@@ -2659,8 +2659,9 @@ pub const AnnotateApp = struct {
                     if (c_file != null) {
                         defer _ = c.fclose(c_file);
                         var c_buf: [16]u8 = undefined;
-                        _ = c.fread(&c_buf, 1, c_buf.len, c_file.?);
-                        const hex_str = std.mem.trim(u8, c_buf[0..], " \t\r\n");
+                        const n_read = c.fread(&c_buf, 1, c_buf.len, c_file.?);
+                        if (n_read > 6) {
+                            const hex_str = std.mem.trim(u8, c_buf[0..n_read], " \t\r\n");
                         if (hex_str.len >= 7 and hex_str[0] == '#') {
                             const r = std.fmt.parseInt(u8, hex_str[1..3], 16) catch self.current_color.r;
                             const g = std.fmt.parseInt(u8, hex_str[3..5], 16) catch self.current_color.g;
@@ -2669,6 +2670,7 @@ pub const AnnotateApp = struct {
                             for (self.selected_ids.items) |sid| {
                                 if (self.findAnnotationById(sid)) |a| a.color = self.current_color;
                             }
+                        }
                         }
                     }
                     self.win.needs_redraw = true;
@@ -3332,7 +3334,7 @@ pub const AnnotateApp = struct {
         const btn_w: i32 = 28;
 
         // Tool buttons with Nerd Font icons
-        const tools = [_]Tool{ .select, .freehand, .arrow, .line, .rect, .circle, .text, .step_badge, .highlight, .blur, .pixelate };
+        const tools = [_]Tool{ .select, .freehand, .arrow, .line, .rect, .circle, .text, .step_badge, .highlight, .blur, .pixelate, .eraser };
         for (tools) |t| {
             const active = (self.active_tool == t);
             const bg = if (active) th.accent else th.btn_raised_bg;

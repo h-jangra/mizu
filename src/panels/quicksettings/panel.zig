@@ -42,8 +42,8 @@ pub const QuickSettings = struct {
     font: renderer.Font,
     sys: sys_status.SysStatus,
 
-    width: u32 = 600,
-    height: u32 = 500,
+    width: u32 = 550,
+    height: u32 = 370,
     running: bool = true,
 
     view_mode: ViewMode = .main,
@@ -91,19 +91,19 @@ pub const QuickSettings = struct {
     pub fn getDesiredHeight(self: *const QuickSettings) u32 {
         return switch (self.view_mode) {
             .main => blk: {
-                var h: u32 = 500;
+                var h: u32 = 370;
                 if (self.sys.mpris_state != .stopped and self.sys.mpris_track_len > 0) {
                     h += 78;
                 }
                 break :blk h;
             },
-            .display_menu => 600,
-            .wifi_menu, .bluetooth_menu => 580,
-            .audio_menu => 560,
-            .notifications_menu => 520,
-            .recording_menu => 360,
-            .power_menu => 380,
-            .keymap_menu => 380,
+            .display_menu => 540,
+            .wifi_menu, .bluetooth_menu => 520,
+            .audio_menu => 500,
+            .notifications_menu => 460,
+            .recording_menu => 350,
+            .power_menu => 320,
+            .keymap_menu => 360,
         };
     }
 
@@ -127,8 +127,8 @@ pub const QuickSettings = struct {
             .cfg = cfg,
             .font = font,
             .sys = sys,
-            .width = 600,
-            .height = 500,
+            .width = 550,
+            .height = 370,
             .hit_areas = std.ArrayList(HitArea).empty,
             .wifi = wifi.State.init(allocator),
             .bluetooth = bluetooth.State.init(),
@@ -1087,7 +1087,7 @@ pub const QuickSettings = struct {
                     .left = ui.su(QsLayout.pad),
                     .right = ui.su(QsLayout.pad),
                     .top = top_pad,
-                    .bottom = ui.su(QsLayout.pad),
+                    .bottom = ui.su(0),
                 },
                 .gap = ui.su(QsLayout.section_gap),
                 .bg = self.cfg.theme.panel_bg,

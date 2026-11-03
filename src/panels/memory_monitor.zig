@@ -707,7 +707,7 @@ pub const MemoryMonitor = struct {
 
         const fx: f64 = @as(f64, @floatFromInt(x));
         const s_f = @as(f64, @floatFromInt(self.render_scale));
-        const btn_left = (contentX0() + 36.0 + 160.0 + 36.0 + 72.0 + 34.0 + 10.0) * s_f;
+        const btn_left = (contentX0() + 36.0 + 160.0 + 36.0 + 72.0 + 34.0 + 36.0) * s_f;
         const btn_w = 24.0 * s_f;
         if (new_hover) |idx| {
             if (idx < self.visible_rows.items.len) {
@@ -839,7 +839,7 @@ pub const MemoryMonitor = struct {
 
         const fx: f64 = @as(f64, @floatFromInt(x));
         const s_f = @as(f64, @floatFromInt(self.render_scale));
-        const btn_left = (contentX0() + 36.0 + 160.0 + 36.0 + 72.0 + 34.0 + 10.0) * s_f;
+        const btn_left = (contentX0() + 36.0 + 160.0 + 36.0 + 72.0 + 34.0 + 36.0) * s_f;
         const btn_w = 24.0 * s_f;
         if (self.rowIndexAt(x, y)) |idx| {
             if (idx < self.visible_rows.items.len) {
@@ -1527,7 +1527,6 @@ pub const MemoryMonitor = struct {
                         .size = (self.cfg.typography.ui + 1) * scale,
                         .color = if (is_selected) th.text_bright else th.text_main,
                     });
-
                 } else {
                     const proc = grp.procs.items[row.sub_idx];
                     const proc_name = proc.name[0..proc.name_len];
@@ -1573,7 +1572,7 @@ pub const MemoryMonitor = struct {
                     .text_align = .left,
                 });
 
-                ui.spacerSized(.{ .fixed = ui.s(10) }, .{ .fixed = 0 });
+                ui.spacerSized(.{ .fixed = ui.s(20) }, .{ .fixed = 0 });
 
                 // Kill button column
                 if (row.kind == .subprocess) {

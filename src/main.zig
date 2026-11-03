@@ -274,7 +274,7 @@ fn printVersion() void {
 
 fn toggleOrLockInstance(name: []const u8) bool {
     var pid_path_buf: [64]u8 = undefined;
-    const pid_path = std.fmt.bufPrintSentinel(&pid_path_buf, "/tmp/mizu-{s}.pid", .{name}, 0) catch return true;
+    const pid_path = std.fmt.bufPrintSentinel(&pid_path_buf, "/tmp/mizu-{s}.{d}.pid", .{ name, c.getuid() }, 0) catch return true;
 
     // Check if pid file exists
     if (c.fopen(pid_path.ptr, "r")) |f| {
@@ -289,7 +289,7 @@ fn toggleOrLockInstance(name: []const u8) bool {
                 if (c.kill(existing_pid, 0) == 0) {
                     _ = c.kill(existing_pid, c.SIGTERM);
                     _ = c.unlink(pid_path.ptr);
-                    return false;
+                    return true;
                 }
             }
         }
@@ -306,14 +306,15 @@ fn toggleOrLockInstance(name: []const u8) bool {
 
 fn cleanupPidFile(name: []const u8) void {
     var pid_path_buf: [64]u8 = undefined;
-    if (std.fmt.bufPrintSentinel(&pid_path_buf, "/tmp/mizu-{s}.pid", .{name}, 0)) |pid_path| {
+    if (std.fmt.bufPrintSentinel(&pid_path_buf, "/tmp/mizu-{s}.{d}.pid", .{ name, c.getuid() }, 0)) |pid_path| {
         _ = c.unlink(pid_path.ptr);
     } else |_| {}
 }
 
 fn getBarPid() ?c_int {
-    const pid_path = "/tmp/mizu-bar.pid";
-    if (c.fopen(pid_path, "r")) |f| {
+    var pid_path_buf: [64]u8 = undefined;
+    const pid_path = std.fmt.bufPrintSentinel(&pid_path_buf, "/tmp/mizu-bar.{d}.pid", .{c.getuid()}, 0) catch return null;
+    if (c.fopen(pid_path.ptr, "r")) |f| {
         var buf: [32]u8 = undefined;
         const n = c.fread(&buf, 1, buf.len - 1, f);
         _ = c.fclose(f);
@@ -371,7 +372,7 @@ fn runCustomPanel(allocator: std.mem.Allocator, name: []const u8, cmd: []const u
         c.exit(1);
     } else if (pid > 0) {
         var pid_path_buf: [64]u8 = undefined;
-        if (std.fmt.bufPrintSentinel(&pid_path_buf, "/tmp/mizu-{s}.pid", .{name}, 0)) |pid_path| {
+        if (std.fmt.bufPrintSentinel(&pid_path_buf, "/tmp/mizu-{s}.{d}.pid", .{ name, c.getuid() }, 0)) |pid_path| {
             if (c.fopen(pid_path.ptr, "w")) |f| {
                 var buf: [32]u8 = undefined;
                 const pid_str = std.fmt.bufPrint(&buf, "{d}\n", .{pid}) catch "";

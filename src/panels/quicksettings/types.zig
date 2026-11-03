@@ -7,14 +7,14 @@ const sys_status = @import("../../services/system_status.zig");
 
 /// Layout tokens for Quick Settings panels (logical pixels).
 pub const QsLayout = struct {
-    pub const pad: u32 = 24;
-    pub const section_gap: u32 = 14;
-    pub const header_h: u32 = 60;
-    pub const row_h: u32 = 56;
-    pub const card_h: u32 = 64;
-    pub const row3_h: u32 = 64;
-    pub const slider_h: u32 = 56;
-    pub const row_gap: u32 = 10;
+    pub const pad: u32 = 20;
+    pub const section_gap: u32 = 12;
+    pub const header_h: u32 = 52;
+    pub const row_h: u32 = 48;
+    pub const card_h: u32 = 56;
+    pub const row3_h: u32 = 56;
+    pub const slider_h: u32 = 48;
+    pub const row_gap: u32 = 8;
     pub const radius: u32 = 16;
 };
 

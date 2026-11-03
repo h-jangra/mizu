@@ -988,14 +988,14 @@ pub fn renderMenu(
                     _ = ui.open(.{
                         .id = "qs-wifi-forget",
                         .index = @intCast(actual_idx),
-                        .width = .{ .fixed = ui.s(20) },
-                        .height = .{ .fixed = ui.s(20) },
+                        .width = .{ .fixed = ui.s(28) },
+                        .height = .{ .fixed = ui.s(28) },
                         .bg = if (forget_hov) panel.cfg.theme.error_color else panel.cfg.theme.surface,
                         .radius = ui.f(6),
                         .align_x = .center,
                         .align_y = .center,
                     });
-                    ui.icon("trash", 14 * scale, if (forget_hov) panel.cfg.theme.accent_fg else panel.cfg.theme.error_color, 0);
+                    ui.icon("trash", 16 * scale, if (forget_hov) panel.cfg.theme.accent_fg else panel.cfg.theme.error_color, 0);
                     ui.close();
                 }
 
