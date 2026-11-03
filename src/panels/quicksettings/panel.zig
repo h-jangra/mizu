@@ -542,7 +542,11 @@ pub const QuickSettings = struct {
                         return true;
                     },
                     .toggle_keymap => {
-                        sys_status.spawnCmd("mizu keyoverlay 2>/dev/null || true");
+                        if (keymap_module.isKeymapsActive()) {
+                            sys_status.spawnCmd("pkill -f 'mizu keyoverlay' 2>/dev/null || true");
+                        } else {
+                            sys_status.spawnCmd("mizu keyoverlay 2>/dev/null || true");
+                        }
                         return true;
                     },
                     .set_keymap_size => |sz| {
@@ -3337,7 +3341,7 @@ test "QuickSettings keymap submenu navigation and settings" {
     try qs.hit_areas.append(allocator, .{ .x = 10, .y = 10, .w = 50, .h = 50, .action = .open_keymap_menu });
     try std.testing.expect(qs.handlePointerButton(20, 20, 272, true));
     try std.testing.expectEqual(ViewMode.keymap_menu, qs.view_mode);
-    try std.testing.expectEqual(@as(u32, 380), qs.getDesiredHeight());
+    try std.testing.expectEqual(@as(u32, 360), qs.getDesiredHeight());
 
     // Change keymap size
     qs.hit_areas.clearRetainingCapacity();

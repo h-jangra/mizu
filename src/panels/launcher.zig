@@ -18,16 +18,6 @@ pub const Mode = enum {
     calc,
     files,
 
-    pub fn icon(self: Mode) []const u8 {
-        return switch (self) {
-            .app => "󰍉 ",
-            .action => "󰘳 ",
-            .command => " ",
-            .calc => "󰪚 ",
-            .files => "󰉋 ",
-        };
-    }
-
     pub fn svgIcon(self: Mode) []const u8 {
         return switch (self) {
             .app => "search",
@@ -86,24 +76,35 @@ pub const MizuAction = struct {
     destructive: bool = false,
 };
 
+const MIZU_THEME_ACTIONS = blk: {
+    var actions: [theme.ThemeKind.count]MizuAction = undefined;
+    var i: usize = 0;
+    while (i < theme.ThemeKind.count) : (i += 1) {
+        const kind: theme.ThemeKind = @fromBackingInt(@intCast(i));
+        actions[i] = .{
+            .icon = "palette",
+            .title = std.fmt.comptimePrint("Theme: {s}", .{kind.name()}),
+            .desc = std.fmt.comptimePrint("Switch to the {s} color scheme", .{kind.name()}),
+            .cmd = std.fmt.comptimePrint("mizu theme set {s}", .{kind.id()}),
+        };
+    }
+    break :blk actions;
+};
+
 pub const MIZU_ACTIONS = [_]MizuAction{
-    .{ .icon = "󰏘 ", .title = "Theme: Next Theme", .desc = "Cycle to next desktop color scheme", .cmd = "mizu theme next" },
-    .{ .icon = "󰏘 ", .title = "Theme: Previous Theme", .desc = "Cycle to previous desktop color scheme", .cmd = "mizu theme prev" },
-    .{ .icon = "󰏘 ", .title = "Theme: Frosted Neumorphic", .desc = "Clean glassy neumorphic aesthetic", .cmd = "mizu theme set frosted_neumorphic" },
-    .{ .icon = "󰏘 ", .title = "Theme: Nord Frost", .desc = "Arctic north-bluish palette", .cmd = "mizu theme set nord" },
-    .{ .icon = "󰏘 ", .title = "Theme: Catppuccin Mocha", .desc = "Soothing pastel theme for high-spirited minds", .cmd = "mizu theme set catppuccin_mocha" },
-    .{ .icon = "󰏘 ", .title = "Theme: Tokyo Night", .desc = "Clean neon cyberpunk night in Shibuya", .cmd = "mizu theme set tokyo_night" },
-    .{ .icon = "󰏘 ", .title = "Theme: Rosé Pine", .desc = "All natural pine, faux fur and delicate bougainvillea", .cmd = "mizu theme set rose_pine" },
-    .{ .icon = "󰒓 ", .title = "Quick Settings", .desc = "Open quick settings control panel", .cmd = "mizu quicksettings" },
-    .{ .icon = "󰍛 ", .title = "System Monitor", .desc = "Open live system & process monitor", .cmd = "mizu system-monitor" },
-    .{ .icon = " ", .title = "Calendar", .desc = "Open interactive calendar popup", .cmd = "mizu calendar" },
-    .{ .icon = "󰅍 ", .title = "Clipboard History", .desc = "Open clipboard history search & manager", .cmd = "mizu clipboard" },
-    .{ .icon = "󰌌 ", .title = "Keybindings Overlay", .desc = "Show keyboard shortcuts cheat sheet", .cmd = "mizu keyoverlay" },
-    .{ .icon = " ", .title = "Lock Screen", .desc = "Lock current session with native screen locker", .cmd = "mizu lock" },
-    .{ .icon = "󰤄 ", .title = "Suspend System", .desc = "Suspend computer to sleep", .cmd = "systemctl suspend" },
-    .{ .icon = "󰜉 ", .title = "Restart Computer", .desc = "Reboot computer", .cmd = "systemctl reboot", .destructive = true },
-    .{ .icon = " ", .title = "Power Off", .desc = "Shut down computer", .cmd = "systemctl poweroff", .destructive = true },
-    .{ .icon = "󰍃 ", .title = "Log Out", .desc = "Exit current Wayland desktop session", .cmd = "loginctl terminate-user $USER", .destructive = true },
+    .{ .icon = "next", .title = "Theme: Next Theme", .desc = "Cycle to next desktop color scheme", .cmd = "mizu theme next" },
+    .{ .icon = "prev", .title = "Theme: Previous Theme", .desc = "Cycle to previous desktop color scheme", .cmd = "mizu theme prev" },
+} ++ MIZU_THEME_ACTIONS ++ [_]MizuAction{
+    .{ .icon = "settings", .title = "Quick Settings", .desc = "Open quick settings control panel", .cmd = "mizu quicksettings" },
+    .{ .icon = "monitor", .title = "System Monitor", .desc = "Open live system & process monitor", .cmd = "mizu system-monitor" },
+    .{ .icon = "calendar", .title = "Calendar", .desc = "Open interactive calendar popup", .cmd = "mizu calendar" },
+    .{ .icon = "clipboard", .title = "Clipboard History", .desc = "Open clipboard history search & manager", .cmd = "mizu clipboard" },
+    .{ .icon = "keyboard", .title = "Keybindings Overlay", .desc = "Show keyboard shortcuts cheat sheet", .cmd = "mizu keyoverlay" },
+    .{ .icon = "lock", .title = "Lock Screen", .desc = "Lock current session with native screen locker", .cmd = "mizu lock" },
+    .{ .icon = "sleep", .title = "Suspend System", .desc = "Suspend computer to sleep", .cmd = "systemctl suspend" },
+    .{ .icon = "restart", .title = "Restart Computer", .desc = "Reboot computer", .cmd = "systemctl reboot", .destructive = true },
+    .{ .icon = "power", .title = "Power Off", .desc = "Shut down computer", .cmd = "systemctl poweroff", .destructive = true },
+    .{ .icon = "logout", .title = "Log Out", .desc = "Exit current Wayland desktop session", .cmd = "loginctl terminate-user $USER", .destructive = true },
 };
 
 pub fn isDestructiveAction(cmd: []const u8) bool {
@@ -215,64 +216,8 @@ pub const IconCache = struct {
         return null;
     }
 
-    fn tryLoadFile(allocator: std.mem.Allocator, path: []const u8) ?*renderer.Image {
-        return renderer.Image.loadPng(allocator, path) catch null;
-    }
-
     fn loadIconSurface(self: *IconCache, name: []const u8) ?*renderer.Image {
-        if (name.len == 0) return null;
-
-        // 1. Direct path
-        if (name[0] == '/') {
-            if (tryLoadFile(self.allocator, name)) |s| return s;
-            var buf: [512]u8 = undefined;
-            if (!std.mem.endsWith(u8, name, ".png")) {
-                const with_png = std.fmt.bufPrint(&buf, "{s}.png", .{name}) catch null;
-                if (with_png) |p| {
-                    if (tryLoadFile(self.allocator, p)) |s| return s;
-                }
-            }
-            return null;
-        }
-
-        // 2. Strip extension if given
-        var base_name = name;
-        if (std.mem.endsWith(u8, base_name, ".png")) {
-            base_name = base_name[0 .. base_name.len - 4];
-        } else if (std.mem.endsWith(u8, base_name, ".svg")) {
-            base_name = base_name[0 .. base_name.len - 4];
-        }
-
-        const search_dirs = [_][]const u8{
-            "/usr/share/icons/hicolor/48x48/apps",
-            "/usr/share/icons/hicolor/64x64/apps",
-            "/usr/share/icons/hicolor/128x128/apps",
-            "/usr/share/icons/hicolor/32x32/apps",
-            "/usr/share/icons/hicolor/256x256/apps",
-            "/usr/share/icons/hicolor/scalable/apps",
-            "/usr/share/pixmaps",
-        };
-
-        var path_buf: [512]u8 = undefined;
-        var lower_buf: [128]u8 = undefined;
-        const lower_name = if (base_name.len <= lower_buf.len)
-            std.ascii.lowerString(&lower_buf, base_name)
-        else
-            base_name;
-
-        for (search_dirs) |dir| {
-            if (std.fmt.bufPrint(&path_buf, "{s}/{s}.png", .{ dir, base_name })) |p| {
-                if (tryLoadFile(self.allocator, p)) |s| return s;
-            } else |_| {}
-
-            if (!std.mem.eql(u8, base_name, lower_name)) {
-                if (std.fmt.bufPrint(&path_buf, "{s}/{s}.png", .{ dir, lower_name })) |p| {
-                    if (tryLoadFile(self.allocator, p)) |s| return s;
-                } else |_| {}
-            }
-        }
-
-        return null;
+        return icons.loadImage(self.allocator, name, 96, 1);
     }
 };
 
@@ -494,26 +439,6 @@ fn copyToClipboard(text: []const u8) void {
         var status: c_int = 0;
         _ = c.waitpid(pid, &status, 0);
     }
-}
-
-/// Map built-in glyph symbols to SVG asset names.
-fn builtinSvgIcon(icon: []const u8) ?[]const u8 {
-    const glyph = std.mem.trim(u8, icon, " ");
-    if (std.mem.eql(u8, glyph, "\u{f03d8}")) return "palette";
-    if (std.mem.eql(u8, glyph, "\u{f0493}")) return "monitor";
-    if (std.mem.eql(u8, glyph, "\u{f07f}")) return "calendar";
-    if (std.mem.eql(u8, glyph, "\u{f014d}")) return "clipboard";
-    if (std.mem.eql(u8, glyph, "\u{f030c}")) return "keyboard";
-    if (std.mem.eql(u8, glyph, "\u{f023}")) return "lock";
-    if (std.mem.eql(u8, glyph, "\u{f0904}")) return "moon";
-    if (std.mem.eql(u8, glyph, "\u{f0709}")) return "restart";
-    if (std.mem.eql(u8, glyph, "\u{f011}")) return "power";
-    if (std.mem.eql(u8, glyph, "\u{f0343}")) return "logout";
-    if (std.mem.eql(u8, glyph, "\u{f120}")) return "terminal";
-    if (std.mem.eql(u8, glyph, "\u{f018d}")) return "terminal";
-    if (std.mem.eql(u8, glyph, "\u{f0a9a}")) return "calculator";
-    if (std.mem.eql(u8, glyph, "\u{f01da}")) return "refresh";
-    return null;
 }
 
 fn getHistoryFilePath(buf: []u8) ?[]const u8 {
@@ -1116,7 +1041,7 @@ pub const Launcher = struct {
         if (cmd.len == 0) {
             if (self.cmd_history.items.len == 0) {
                 try self.items.append(self.allocator, .{
-                    .icon = " ",
+                    .icon = "terminal",
                     .title = "Execute Shell Command",
                     .description = "Type any shell command and press Enter to execute",
                     .action_data = "",
@@ -1130,7 +1055,7 @@ pub const Launcher = struct {
                     const desc = try self.allocator.dupe(u8, "Recent command");
                     const act = try self.allocator.dupe(u8, hist_cmd);
                     try self.items.append(self.allocator, .{
-                        .icon = " ",
+                        .icon = "history",
                         .title = title,
                         .description = desc,
                         .action_data = act,
@@ -1148,7 +1073,7 @@ pub const Launcher = struct {
         const bg_desc = try std.fmt.allocPrint(self.allocator, "Execute in background (/bin/sh -c \"{s}\")", .{cmd});
         const bg_act = try self.allocator.dupe(u8, cmd);
         try self.items.append(self.allocator, .{
-            .icon = " ",
+            .icon = "terminal",
             .title = bg_title,
             .description = bg_desc,
             .action_data = bg_act,
@@ -1161,7 +1086,7 @@ pub const Launcher = struct {
         const term_desc = try std.fmt.allocPrint(self.allocator, "Execute interactively inside terminal", .{});
         const term_act = try self.allocator.dupe(u8, cmd);
         try self.items.append(self.allocator, .{
-            .icon = "󰆍 ",
+            .icon = "terminal",
             .title = term_title,
             .description = term_desc,
             .action_data = term_act,
@@ -1176,7 +1101,7 @@ pub const Launcher = struct {
                 const desc = try self.allocator.dupe(u8, "Recent command");
                 const act = try self.allocator.dupe(u8, hist_cmd);
                 try self.items.append(self.allocator, .{
-                    .icon = " ",
+                    .icon = "history",
                     .title = title,
                     .description = desc,
                     .action_data = act,
@@ -1209,7 +1134,7 @@ pub const Launcher = struct {
         for (self.cfg.panels.items) |p| {
             if (query.len == 0 or file_search.matchPattern(query, p.name) or file_search.matchPattern(query, p.command)) {
                 try self.items.append(self.allocator, .{
-                    .icon = "󰒓 ",
+                    .icon = "settings",
                     .title = p.name,
                     .description = p.command,
                     .action_data = p.command,
@@ -1226,7 +1151,7 @@ pub const Launcher = struct {
         if (expr.len == 0) {
             if (self.calc_history.items.len == 0) {
                 try self.items.append(self.allocator, .{
-                    .icon = "󰪚 ",
+                    .icon = "calculator",
                     .title = "Calculator",
                     .description = "Enter math expression (e.g. 125 / 5, 2^10, sqrt(144), sin(pi/2))",
                     .action_data = "",
@@ -1245,7 +1170,7 @@ pub const Launcher = struct {
                     const desc = try std.fmt.allocPrint(self.allocator, "Press Enter to copy \"{s}\" to clipboard", .{res_part});
                     const act = try self.allocator.dupe(u8, res_part);
                     try self.items.append(self.allocator, .{
-                        .icon = "󰪚 ",
+                        .icon = "calculator",
                         .title = title,
                         .description = desc,
                         .action_data = act,
@@ -1268,7 +1193,7 @@ pub const Launcher = struct {
             const act = try self.allocator.dupe(u8, res_str);
 
             try self.items.append(self.allocator, .{
-                .icon = "󰪚 ",
+                .icon = "calculator",
                 .title = title,
                 .description = desc,
                 .action_data = act,
@@ -1288,7 +1213,7 @@ pub const Launcher = struct {
                     const h_desc = try std.fmt.allocPrint(self.allocator, "Press Enter to copy \"{s}\" to clipboard", .{res_part});
                     const h_act = try self.allocator.dupe(u8, res_part);
                     try self.items.append(self.allocator, .{
-                        .icon = "󰪚 ",
+                        .icon = "calculator",
                         .title = h_title,
                         .description = h_desc,
                         .action_data = h_act,
@@ -1311,7 +1236,7 @@ pub const Launcher = struct {
             };
 
             try self.items.append(self.allocator, .{
-                .icon = "󰪚 ",
+                .icon = "calculator",
                 .title = "= ...",
                 .description = err_msg,
                 .action_data = "",
@@ -1331,7 +1256,7 @@ pub const Launcher = struct {
                     const h_desc = try std.fmt.allocPrint(self.allocator, "Press Enter to copy \"{s}\" to clipboard", .{res_part});
                     const h_act = try self.allocator.dupe(u8, res_part);
                     try self.items.append(self.allocator, .{
-                        .icon = "󰪚 ",
+                        .icon = "calculator",
                         .title = h_title,
                         .description = h_desc,
                         .action_data = h_act,
@@ -1706,11 +1631,7 @@ pub const Launcher = struct {
     }
 
     fn getTextOriginX(self: *Launcher) i32 {
-        const in_rect = self.getInputRect();
-        const cur_mode = self.effectiveMode();
-        const icon_str = cur_mode.icon();
-        const icon_w = self.font.measureText(icon_str);
-        return in_rect.x + 16 + @as(i32, @intCast(icon_w)) + 8;
+        return self.getInputRect().x + 16 + @as(i32, @intCast(self.cfg.typography.bar_icon)) + 8;
     }
 
     pub fn getItemAt(self: *const Launcher, x: i32, y: i32) ?usize {
@@ -1856,11 +1777,11 @@ pub const Launcher = struct {
                 self.moveSelection(1);
             }
             return true;
-        } else if (sym == c.XKB_KEY_Left and self.isGridView() and self.input.getText().len == 0 and !ctrl) {
+        } else if (sym == c.XKB_KEY_Left and self.isGridView() and !ctrl) {
             self.confirm_index = null;
             self.moveSelectionGrid(0, -1);
             return true;
-        } else if (sym == c.XKB_KEY_Right and self.isGridView() and self.input.getText().len == 0 and !ctrl) {
+        } else if (sym == c.XKB_KEY_Right and self.isGridView() and !ctrl) {
             self.confirm_index = null;
             self.moveSelectionGrid(0, 1);
             return true;
@@ -1931,23 +1852,6 @@ pub const Launcher = struct {
         }
 
         return false;
-    }
-
-    fn getAppToneColor(t: theme.Theme, name: []const u8) theme.Color {
-        var h: u32 = 5381;
-        for (name) |byte| {
-            h = ((h << 5) +% h) +% byte;
-        }
-        const tones = [_]theme.Color{
-            t.surface,
-            t.elevated,
-            t.secondary,
-            theme.Color.init(180, t.accent.r, t.accent.g, t.accent.b),
-            theme.Color.rgb(0x3B, 0x52, 0x49),
-            theme.Color.rgb(0x56, 0x43, 0x36),
-            theme.Color.rgb(0x36, 0x48, 0x5C),
-        };
-        return tones[h % tones.len];
     }
 
     fn truncateText(target: renderer.Renderer, font: *renderer.Font, text: []const u8, max_w: u32, size: u32, buf: []u8) []const u8 {
@@ -2072,10 +1976,7 @@ pub const Launcher = struct {
                 "No applications found"
             else
                 "No matching items found";
-            ui.text("󰋽", .{
-                .size = self.cfg.typography.title * scale,
-                .color = self.cfg.theme.text_muted,
-            });
+            ui.icon("search", self.cfg.typography.title * scale, self.cfg.theme.text_muted, 0);
             ui.text(no_match_str, .{
                 .size = panel_font_size,
                 .color = self.cfg.theme.text_muted,
@@ -2130,26 +2031,25 @@ pub const Launcher = struct {
                             .align_y = .center,
                         });
 
-                        if (item.action_type == .launch_app and item.icon != null) {
-                            if (self.icon_cache.getCachedOnly(item.icon)) |surf| {
-                                ui.image(surf, .{ .fixed = @floatFromInt(grid_icon_s) }, .{ .fixed = @floatFromInt(grid_icon_s) }, null, 0);
-                            } else {
-                                _ = ui.open(.{
-                                    .width = .{ .fixed = @floatFromInt(grid_icon_s) },
-                                    .height = .{ .fixed = @floatFromInt(grid_icon_s) },
-                                    .bg = getAppToneColor(self.cfg.theme, item.title),
-                                    .radius = ui.f(10),
-                                    .border = ui.su(1),
-                                    .border_color = self.cfg.theme.border,
-                                    .align_x = .center,
-                                    .align_y = .center,
-                                });
-                                ui.text(initialFor(item.title), .{
-                                    .size = self.cfg.typography.title * scale,
-                                    .color = self.cfg.theme.text_bright,
-                                });
-                                ui.close();
-                            }
+                        const app_icon = if (item.action_type == .launch_app) self.icon_cache.getCachedOnly(item.icon) else null;
+                        if (app_icon) |surf| {
+                            ui.image(surf, .{ .fixed = @floatFromInt(grid_icon_s) }, .{ .fixed = @floatFromInt(grid_icon_s) }, null, 0);
+                        } else if (item.action_type == .launch_app) {
+                            _ = ui.open(.{
+                                .width = .{ .fixed = @floatFromInt(grid_icon_s) },
+                                .height = .{ .fixed = @floatFromInt(grid_icon_s) },
+                                .bg = self.cfg.theme.elevated,
+                                .radius = ui.f(10),
+                                .border = ui.su(1),
+                                .border_color = self.cfg.theme.border,
+                                .align_x = .center,
+                                .align_y = .center,
+                            });
+                            ui.text(initialFor(item.title), .{
+                                .size = self.cfg.typography.title * scale,
+                                .color = self.cfg.theme.text_bright,
+                            });
+                            ui.close();
                         } else {
                             _ = ui.open(.{
                                 .width = .{ .fixed = @floatFromInt(grid_icon_s) },
@@ -2161,15 +2061,7 @@ pub const Launcher = struct {
                                 .align_x = .center,
                                 .align_y = .center,
                             });
-                            const icon_str = item.icon orelse "•";
-                            if (builtinSvgIcon(icon_str)) |svg_name| {
-                                ui.icon(svg_name, 24 * scale, self.cfg.theme.accent, 0);
-                            } else {
-                                ui.text(icon_str, .{
-                                    .size = 24 * scale,
-                                    .color = self.cfg.theme.accent,
-                                });
-                            }
+                            ui.icon(item.icon orelse "command", 24 * scale, self.cfg.theme.accent, 0);
                             ui.close();
                         }
 
@@ -2238,26 +2130,25 @@ pub const Launcher = struct {
                 });
 
                 const icon_s: u32 = 32 * scale;
-                if (item.action_type == .launch_app and item.icon != null) {
-                    if (self.icon_cache.getCachedOnly(item.icon)) |surf| {
-                        ui.image(surf, .{ .fixed = @floatFromInt(icon_s) }, .{ .fixed = @floatFromInt(icon_s) }, null, 0);
-                    } else {
-                        _ = ui.open(.{
-                            .width = .{ .fixed = @floatFromInt(icon_s) },
-                            .height = .{ .fixed = @floatFromInt(icon_s) },
-                            .bg = getAppToneColor(self.cfg.theme, item.title),
-                            .radius = ui.f(8),
-                            .border = ui.su(1),
-                            .border_color = self.cfg.theme.border,
-                            .align_x = .center,
-                            .align_y = .center,
-                        });
-                        ui.text(initialFor(item.title), .{
-                            .size = self.cfg.typography.ui * scale,
-                            .color = self.cfg.theme.text_bright,
-                        });
-                        ui.close();
-                    }
+                const app_icon = if (item.action_type == .launch_app) self.icon_cache.getCachedOnly(item.icon) else null;
+                if (app_icon) |surf| {
+                    ui.image(surf, .{ .fixed = @floatFromInt(icon_s) }, .{ .fixed = @floatFromInt(icon_s) }, null, 0);
+                } else if (item.action_type == .launch_app) {
+                    _ = ui.open(.{
+                        .width = .{ .fixed = @floatFromInt(icon_s) },
+                        .height = .{ .fixed = @floatFromInt(icon_s) },
+                        .bg = self.cfg.theme.elevated,
+                        .radius = ui.f(8),
+                        .border = ui.su(1),
+                        .border_color = self.cfg.theme.border,
+                        .align_x = .center,
+                        .align_y = .center,
+                    });
+                    ui.text(initialFor(item.title), .{
+                        .size = self.cfg.typography.ui * scale,
+                        .color = self.cfg.theme.text_bright,
+                    });
+                    ui.close();
                 } else {
                     _ = ui.open(.{
                         .width = .{ .fixed = @floatFromInt(icon_s) },
@@ -2269,15 +2160,7 @@ pub const Launcher = struct {
                         .align_x = .center,
                         .align_y = .center,
                     });
-                    const icon_str = item.icon orelse "•";
-                    if (builtinSvgIcon(icon_str)) |svg_name| {
-                        ui.icon(svg_name, icon_font_size, self.cfg.theme.accent, 0);
-                    } else {
-                        ui.text(icon_str, .{
-                            .size = icon_font_size,
-                            .color = self.cfg.theme.accent,
-                        });
-                    }
+                    ui.icon(item.icon orelse "command", icon_font_size, self.cfg.theme.accent, 0);
                     ui.close();
                 }
 
@@ -2359,7 +2242,6 @@ pub const Launcher = struct {
         const commands = ui.endLayout();
         ui.render(target, commands);
     }
-
 };
 
 // --- Unit Tests ---
@@ -2726,6 +2608,49 @@ test "Launcher grid view for apps and list view for other modules" {
     try std.testing.expectEqual(@as(?usize, 1), hit1);
     const hit5 = launcher.getItemAt(rect5.x + 10, rect5.y + 10);
     try std.testing.expectEqual(@as(?usize, 5), hit5);
+}
+
+test "Launcher Left/Right navigate grid while search text is present" {
+    const allocator = std.testing.allocator;
+    var cfg = config.Config.init(allocator);
+    defer cfg.deinit(allocator);
+
+    var launcher = Launcher{
+        .allocator = allocator,
+        .cfg = cfg,
+        .font = undefined,
+        .icon_cache = IconCache.init(allocator),
+        .apps = std.ArrayList(desktop_entry.DesktopApp).empty,
+        .results = std.ArrayList(desktop_entry.SearchResult).empty,
+        .items = std.ArrayList(GenericItem).empty,
+        .cmd_history = std.ArrayList([]const u8).empty,
+        .calc_history = std.ArrayList([]const u8).empty,
+        .input = text_input.TextInput.init(allocator, Mode.app.placeholder(), false),
+    };
+    defer {
+        launcher.clearItems();
+        launcher.items.deinit(allocator);
+        launcher.calc_history.deinit(allocator);
+        launcher.cmd_history.deinit(allocator);
+        launcher.input.deinit();
+        launcher.results.deinit(allocator);
+        launcher.apps.deinit(allocator);
+        launcher.icon_cache.deinit();
+    }
+
+    try launcher.apps.append(allocator, .{ .id = "firefox.desktop", .name = "Firefox", .exec = "firefox", .icon = "firefox" });
+    try launcher.apps.append(allocator, .{ .id = "files.desktop", .name = "Files", .exec = "nautilus", .icon = "folder" });
+    try launcher.appendBytes("f");
+    try std.testing.expect(launcher.isGridView());
+    try std.testing.expect(launcher.items.items.len >= 2);
+
+    launcher.selected_index = 0;
+    try std.testing.expect(launcher.handleKey(c.XKB_KEY_Right, "", false, false));
+    try std.testing.expectEqual(@as(usize, 1), launcher.selected_index);
+    try std.testing.expect(launcher.handleKey(c.XKB_KEY_Left, "", false, false));
+    try std.testing.expectEqual(@as(usize, 0), launcher.selected_index);
+    _ = launcher.handleKey(c.XKB_KEY_Right, "", true, false);
+    try std.testing.expectEqual(@as(usize, 0), launcher.selected_index);
 }
 
 test "Launcher performance latency measurements" {

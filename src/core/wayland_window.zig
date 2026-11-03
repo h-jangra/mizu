@@ -44,6 +44,15 @@ pub const WindowConfig = struct {
     fullscreen_layer: bool = false, // When true, uses zwlr_layer_shell overlay (e.g. for screenshot overlay)
 };
 
+pub const QueuedKeyEvent = struct {
+    sym: u32,
+    utf8_buf: [32]u8,
+    utf8_len: usize,
+    is_ctrl: bool,
+    is_shift: bool,
+    is_alt: bool,
+};
+
 pub const WindowApp = struct {
     allocator: std.mem.Allocator,
     display: ?*c.wl_display = null,
@@ -95,6 +104,18 @@ pub const WindowApp = struct {
     repeat_sym: u32 = 0,
     repeat_utf8_buf: [32]u8 = @splat(0),
     repeat_utf8_len: usize = 0,
+
+    key_queue: [64]QueuedKeyEvent = undefined,
+    key_queue_head: usize = 0,
+    key_queue_tail: usize = 0,
+    key_queue_count: usize = 0,
+
+    repeat_rate: i32 = 25,
+    repeat_delay: i32 = 400,
+    repeat_key: ?u32 = null,
+    repeat_sym_val: u32 = 0,
+    repeat_utf8_saved: [32]u8 = @splat(0),
+    repeat_utf8_saved_len: usize = 0,
 
     cursor_theme: ?*c.wl_cursor_theme = null,
     cursor_default: ?*c.wl_cursor = null,
@@ -346,19 +367,77 @@ pub const WindowApp = struct {
         _ = c.wl_display_roundtrip(self.display.?);
     }
 
+    pub fn pushKeyEvent(self: *WindowApp, ev: QueuedKeyEvent) void {
+        if (self.key_queue_count < self.key_queue.len) {
+            self.key_queue[self.key_queue_tail] = ev;
+            self.key_queue_tail = (self.key_queue_tail + 1) % self.key_queue.len;
+            self.key_queue_count += 1;
+        }
+    }
+
+    pub fn popKeyEvent(self: *WindowApp) ?QueuedKeyEvent {
+        if (self.key_queue_count == 0) return null;
+        const ev = self.key_queue[self.key_queue_head];
+        self.key_queue_head = (self.key_queue_head + 1) % self.key_queue.len;
+        self.key_queue_count -= 1;
+        return ev;
+    }
+
+    pub fn armRepeatTimer(self: *WindowApp, delay_ms: i64, interval_ms: i64) void {
+        if (self.repeat_timer_fd < 0) return;
+        var its: c.struct_itimerspec = undefined;
+        its.it_value.tv_sec = @intCast(@divTrunc(delay_ms, 1000));
+        its.it_value.tv_nsec = @intCast(@mod(delay_ms, 1000) * 1_000_000);
+        its.it_interval.tv_sec = @intCast(@divTrunc(interval_ms, 1000));
+        its.it_interval.tv_nsec = @intCast(@mod(interval_ms, 1000) * 1_000_000);
+        _ = c.timerfd_settime(self.repeat_timer_fd, 0, &its, null);
+    }
+
+    pub fn stopRepeatTimer(self: *WindowApp) void {
+        if (self.repeat_timer_fd >= 0) {
+            var its: c.struct_itimerspec = undefined;
+            @memset(std.mem.asBytes(&its), 0);
+            _ = c.timerfd_settime(self.repeat_timer_fd, 0, &its, null);
+        }
+        self.repeat_key = null;
+    }
+
+    pub fn handleRepeatTimer(self: *WindowApp) void {
+        if (self.repeat_timer_fd < 0 or self.repeat_key == null) return;
+        var expirations: u64 = 0;
+        const n = c.read(self.repeat_timer_fd, &expirations, @sizeOf(u64));
+        if (n <= 0 or expirations == 0) return;
+
+        const ev = QueuedKeyEvent{
+            .sym = self.repeat_sym_val,
+            .utf8_buf = self.repeat_utf8_saved,
+            .utf8_len = self.repeat_utf8_saved_len,
+            .is_ctrl = self.is_ctrl,
+            .is_shift = self.is_shift,
+            .is_alt = self.is_alt,
+        };
+        self.pushKeyEvent(ev);
+
+        // Also update repeat_sym for backward compatibility
+        self.repeat_sym = self.repeat_sym_val;
+        @memcpy(self.repeat_utf8_buf[0..self.repeat_utf8_saved_len], self.repeat_utf8_saved[0..self.repeat_utf8_saved_len]);
+        self.repeat_utf8_len = self.repeat_utf8_saved_len;
+    }
+
     pub fn effectiveScale(self: *const WindowApp) f32 {
-        if (self.scale_factor > 1.0) return self.scale_factor;
-        return @as(f32, @floatFromInt(self.output_scale));
+        if (self.scale_factor >= 0.5) return self.scale_factor;
+        if (self.output_scale > 0) return @as(f32, @floatFromInt(self.output_scale));
+        return 1.0;
     }
 
     pub fn physicalWidth(self: *const WindowApp) u32 {
         const s = self.effectiveScale();
-        return @intFromFloat(@as(f32, @floatFromInt(self.width)) * s);
+        return @max(1, @as(u32, @intFromFloat(@round(@as(f32, @floatFromInt(self.width)) * s))));
     }
 
     pub fn physicalHeight(self: *const WindowApp) u32 {
         const s = self.effectiveScale();
-        return @intFromFloat(@as(f32, @floatFromInt(self.height)) * s);
+        return @max(1, @as(u32, @intFromFloat(@round(@as(f32, @floatFromInt(self.height)) * s))));
     }
 
     pub fn getRenderer(self: *WindowApp) !renderer.Renderer {
@@ -486,31 +565,8 @@ pub const WindowApp = struct {
         _ = states;
         const self: *WindowApp = @ptrCast(@alignCast(data.?));
         if (width > 0 and height > 0) {
-            // When user scale_factor is set (>1), the logical surface size requested
-            // by the app includes the user's scale preference. The compositor's
-            // configure event may send logical dimensions that don't include that
-            // preference (e.g., 550 logical for 2x display instead of 1100).
-            // Preserve intended scaled dimensions when configure is clearly off.
-            const w_f = @as(f32, @floatFromInt(width));
-            const intended_w_f = if (self.scale_factor > 1.0)
-                @as(f32, @floatFromInt(self.cfg.width)) * self.scale_factor
-            else
-                @as(f32, @floatFromInt(self.cfg.width));
-            const intended_h_f = if (self.scale_factor > 1.0)
-                @as(f32, @floatFromInt(self.cfg.height)) * self.scale_factor
-            else
-                @as(f32, @floatFromInt(self.cfg.height));
-            const scale_approx = if (intended_w_f > 0) w_f / intended_w_f else 1.0;
-            const is_approx_scaled = @abs(scale_approx - 1.0) < 0.3 or @abs(scale_approx - @as(f32, @floatFromInt(self.output_scale))) < 0.3;
-
-            const intended_w_int = @as(i32, @intFromFloat(intended_w_f));
-            if (is_approx_scaled and width < intended_w_int) {
-                self.width = @as(u32, @intFromFloat(intended_w_f));
-                self.height = @as(u32, @intFromFloat(intended_h_f));
-            } else {
-                self.width = @as(u32, @intCast(width));
-                self.height = @as(u32, @intCast(height));
-            }
+            self.width = @as(u32, @intCast(width));
+            self.height = @as(u32, @intCast(height));
         }
         self.needs_redraw = true;
     }
@@ -741,7 +797,9 @@ pub const WindowApp = struct {
     }
 
     fn kbd_leave(data: ?*anyopaque, kbd: ?*c.wl_keyboard, serial: u32, surface: ?*c.wl_surface) callconv(.c) void {
-        _ = data; _ = kbd; _ = serial; _ = surface;
+        _ = kbd; _ = serial; _ = surface;
+        const self: *WindowApp = @ptrCast(@alignCast(data.?));
+        self.stopRepeatTimer();
     }
 
     fn kbd_key(data: ?*anyopaque, kbd: ?*c.wl_keyboard, serial: u32, time: u32, key: u32, state: u32) callconv(.c) void {
@@ -757,12 +815,34 @@ pub const WindowApp = struct {
             var buf: [32]u8 = undefined;
             const len = c.xkb_state_key_get_utf8(self.xkb_state.?, keycode, &buf, buf.len);
             const utf8_len: usize = if (len > 0) @intCast(len) else 0;
+
+            var ev = QueuedKeyEvent{
+                .sym = sym,
+                .utf8_buf = @splat(0),
+                .utf8_len = utf8_len,
+                .is_ctrl = self.is_ctrl,
+                .is_shift = self.is_shift,
+                .is_alt = self.is_alt,
+            };
+            if (utf8_len > 0) @memcpy(ev.utf8_buf[0..utf8_len], buf[0..utf8_len]);
+            self.pushKeyEvent(ev);
+
+            // Backward compatibility
             self.repeat_sym = sym;
             @memcpy(self.repeat_utf8_buf[0..utf8_len], buf[0..utf8_len]);
             self.repeat_utf8_len = utf8_len;
+
+            // Arm key repeat timer
+            self.repeat_key = key;
+            self.repeat_sym_val = sym;
+            @memcpy(self.repeat_utf8_saved[0..utf8_len], buf[0..utf8_len]);
+            self.repeat_utf8_saved_len = utf8_len;
+            const interval_ms = if (self.repeat_rate > 0) @divTrunc(1000, self.repeat_rate) else 40;
+            self.armRepeatTimer(self.repeat_delay, interval_ms);
         } else {
-            self.repeat_sym = 0;
-            self.repeat_utf8_len = 0;
+            if (self.repeat_key != null and self.repeat_key.? == key) {
+                self.stopRepeatTimer();
+            }
         }
     }
 
@@ -779,7 +859,10 @@ pub const WindowApp = struct {
     }
 
     fn kbd_repeat_info(data: ?*anyopaque, kbd: ?*c.wl_keyboard, rate: i32, delay: i32) callconv(.c) void {
-        _ = data; _ = kbd; _ = rate; _ = delay;
+        _ = kbd;
+        const self: *WindowApp = @ptrCast(@alignCast(data.?));
+        if (rate > 0) self.repeat_rate = rate;
+        if (delay > 0) self.repeat_delay = delay;
     }
 
     const keyboard_listener = c.wl_keyboard_listener{

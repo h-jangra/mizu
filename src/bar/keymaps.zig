@@ -37,8 +37,8 @@ pub fn render(ctx: *types.BarContext, ui: *ui_mod.Ui) !void {
 
     try ctx.linkClick(ui, id, 0, .{
         .dual_command = .{
-            .left = "mizu keyoverlay 2>/dev/null || true",
-            .right = "mizu keyoverlay 2>/dev/null || true",
+            .left = "sh -c 'UID=$(id -u); PIDFILE=\"/tmp/mizu-keyoverlay.$UID.pid\"; if [ -r \"$PIDFILE\" ]; then PID=$(cat \"$PIDFILE\" 2>/dev/null); if [ -n \"$PID\" ] && kill -0 \"$PID\" 2>/dev/null; then kill -TERM \"$PID\" 2>/dev/null; else mizu keyoverlay 2>/dev/null; fi; else mizu keyoverlay 2>/dev/null; fi'",
+            .right = "sh -c 'UID=$(id -u); PIDFILE=\"/tmp/mizu-keyoverlay.$UID.pid\"; if [ -r \"$PIDFILE\" ]; then PID=$(cat \"$PIDFILE\" 2>/dev/null); if [ -n \"$PID\" ] && kill -0 \"$PID\" 2>/dev/null; then kill -TERM \"$PID\" 2>/dev/null; else mizu keyoverlay 2>/dev/null; fi; else mizu keyoverlay 2>/dev/null; fi'",
         },
     }, null);
 }

@@ -29,8 +29,9 @@ pub const Segment = struct {
 pub const max_segments = 6;
 
 pub fn isKeymapsActive() bool {
-    const pid_path = "/tmp/mizu-keyoverlay.pid";
-    if (c.fopen(pid_path, "rb")) |f| {
+    var pid_path_buf: [64]u8 = undefined;
+    const pid_path = std.fmt.bufPrintSentinel(&pid_path_buf, "/tmp/mizu-keyoverlay.{d}.pid", .{c.getuid()}, 0) catch return false;
+    if (c.fopen(pid_path.ptr, "rb")) |f| {
         defer _ = c.fclose(f);
         var buf: [32]u8 = undefined;
         const n = c.fread(&buf, 1, buf.len - 1, f);

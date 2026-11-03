@@ -549,46 +549,61 @@ fn fileExists(path: []const u8) bool {
     return c.access(&buf, c.F_OK) == 0;
 }
 
-fn pathFor(buf: []u8, dir: []const u8, name: []const u8) ?[]const u8 {
-    if (dir.len == 0) return null;
-    if (std.mem.endsWith(u8, name, ".svg")) {
-        return std.fmt.bufPrint(buf, "{s}/{s}", .{ dir, name }) catch null;
-    }
-    return std.fmt.bufPrint(buf, "{s}/{s}.svg", .{ dir, name }) catch null;
+fn hasExt(path: []const u8, ext: []const u8) bool {
+    return path.len >= ext.len and std.ascii.eqlIgnoreCase(path[path.len - ext.len ..], ext);
 }
 
-fn existingPath(allocator: std.mem.Allocator, dir: []const u8, name: []const u8) ?[]u8 {
+fn stripIconExt(name: []const u8) []const u8 {
+    if (hasExt(name, ".svg") or hasExt(name, ".png")) return name[0 .. name.len - 4];
+    return name;
+}
+
+fn existingFile(allocator: std.mem.Allocator, dir: []const u8, file_name: []const u8) ?[]u8 {
     var buf: [512]u8 = undefined;
-    const path = pathFor(&buf, dir, name) orelse return null;
+    const path = std.fmt.bufPrint(&buf, "{s}/{s}", .{ dir, file_name }) catch return null;
     if (!fileExists(path)) return null;
     return allocator.dupe(u8, path) catch null;
 }
 
-fn tryDir(allocator: std.mem.Allocator, dir: []const u8, name: []const u8) ?[]u8 {
-    return existingPath(allocator, dir, name);
+fn existingPathExact(allocator: std.mem.Allocator, dir: []const u8, name: []const u8) ?[]u8 {
+    if (hasExt(name, ".svg") or hasExt(name, ".png")) return existingFile(allocator, dir, name);
+    var buf: [512]u8 = undefined;
+    const svg = std.fmt.bufPrint(&buf, "{s}.svg", .{name}) catch return null;
+    if (existingFile(allocator, dir, svg)) |p| return p;
+    const png = std.fmt.bufPrint(&buf, "{s}.png", .{name}) catch return null;
+    return existingFile(allocator, dir, png);
+}
+
+fn existingPath(allocator: std.mem.Allocator, dir: []const u8, name: []const u8) ?[]u8 {
+    if (existingPathExact(allocator, dir, name)) |p| return p;
+    var lower_buf: [256]u8 = undefined;
+    if (name.len > lower_buf.len) return null;
+    const lower = std.ascii.lowerString(&lower_buf, name);
+    if (std.mem.eql(u8, lower, name)) return null;
+    return existingPathExact(allocator, dir, lower);
 }
 
 fn tryDirWithAliases(allocator: std.mem.Allocator, dir: []const u8, name: []const u8) ?[]u8 {
-    if (tryDir(allocator, dir, name)) |p| return p;
+    if (existingPath(allocator, dir, name)) |p| return p;
 
     // Common freedesktop and Mizu icon aliases
     if (std.mem.eql(u8, name, "trash")) {
-        if (tryDir(allocator, dir, "user-trash")) |p| return p;
-        if (tryDir(allocator, dir, "user-trash-full")) |p| return p;
+        if (existingPath(allocator, dir, "user-trash")) |p| return p;
+        if (existingPath(allocator, dir, "user-trash-full")) |p| return p;
     } else if (std.mem.eql(u8, name, "power")) {
-        if (tryDir(allocator, dir, "shutdown")) |p| return p;
-        if (tryDir(allocator, dir, "system-shutdown")) |p| return p;
+        if (existingPath(allocator, dir, "shutdown")) |p| return p;
+        if (existingPath(allocator, dir, "system-shutdown")) |p| return p;
     } else if (std.mem.eql(u8, name, "restart")) {
-        if (tryDir(allocator, dir, "system-reboot")) |p| return p;
+        if (existingPath(allocator, dir, "system-reboot")) |p| return p;
     } else if (std.mem.eql(u8, name, "home")) {
-        if (tryDir(allocator, dir, "user-home")) |p| return p;
-        if (tryDir(allocator, dir, "folder-home")) |p| return p;
+        if (existingPath(allocator, dir, "user-home")) |p| return p;
+        if (existingPath(allocator, dir, "folder-home")) |p| return p;
     } else if (std.mem.eql(u8, name, "search")) {
-        if (tryDir(allocator, dir, "edit-find")) |p| return p;
+        if (existingPath(allocator, dir, "edit-find")) |p| return p;
     } else if (std.mem.eql(u8, name, "spinner")) {
-        if (tryDir(allocator, dir, "process-working")) |p| return p;
+        if (existingPath(allocator, dir, "process-working")) |p| return p;
     } else if (std.mem.eql(u8, name, "folder")) {
-        if (tryDir(allocator, dir, "folder-blue")) |p| return p;
+        if (existingPath(allocator, dir, "folder-blue")) |p| return p;
     }
     return null;
 }
@@ -608,109 +623,339 @@ fn tryRelative(allocator: std.mem.Allocator, base: []const u8, suffix: []const u
     return tryDirWithAliases(allocator, dir, name);
 }
 
-fn tryIconTheme(allocator: std.mem.Allocator, base_dir: []const u8, name: []const u8) ?[]u8 {
-    const subdirs = [_][]const u8{
-        "64x64/places",
-        "64x64/apps",
-        "64x64/devices",
-        "64x64/mimetypes",
-        "symbolic/actions",
-        "symbolic/apps",
-        "symbolic/status",
-        "symbolic/places",
-        "symbolic/devices",
-    };
-    for (subdirs) |sub| {
-        var buf: [512]u8 = undefined;
-        if (std.fmt.bufPrint(&buf, "{s}/{s}", .{ base_dir, sub })) |dir| {
-            if (tryDirWithAliases(allocator, dir, name)) |path| return path;
-        } else |_| {}
+fn readFileInto(path: []const u8, buf: []u8) ?[]const u8 {
+    if (path.len == 0 or path.len >= 512) return null;
+    var path_z: [512]u8 = undefined;
+    @memcpy(path_z[0..path.len], path);
+    path_z[path.len] = 0;
+    const fp = c.fopen(path_z[0..path.len :0].ptr, "rb") orelse return null;
+    defer _ = c.fclose(fp);
+    const n = c.fread(buf.ptr, 1, buf.len, fp);
+    if (n == 0) return null;
+    return buf[0..n];
+}
+
+fn indexValue(content: []const u8, key: []const u8, out: []u8) ?[]const u8 {
+    var lines = std.mem.splitScalar(u8, content, '\n');
+    while (lines.next()) |line| {
+        const trimmed = std.mem.trim(u8, line, " \t\r");
+        if (trimmed.len <= key.len) continue;
+        if (!std.mem.startsWith(u8, trimmed, key)) continue;
+        if (trimmed[key.len] != '=') continue;
+        const val = std.mem.trim(u8, trimmed[key.len + 1 ..], " \t\r");
+        if (val.len > out.len) return null;
+        @memcpy(out[0..val.len], val);
+        return out[0..val.len];
     }
     return null;
 }
 
-/// Resolve an SVG asset path for `name` (caller frees).
-pub fn resolveIconPath(allocator: std.mem.Allocator, name: []const u8) ![]u8 {
-    if (c.getenv("MIZU_ICON_DIR")) |raw| {
-        const dir = std.mem.span(raw);
-        if (tryDirWithAliases(allocator, dir, name)) |path| return path;
-    }
+fn iconDirScore(dir: []const u8, target: u16) u16 {
+    if (std.mem.startsWith(u8, dir, "scalable")) return 10;
+    var end: usize = 0;
+    while (end < dir.len and std.ascii.isDigit(dir[end])) : (end += 1) {}
+    if (end == 0 or end >= dir.len or dir[end] != 'x') return 1000;
+    const size = std.fmt.parseInt(u16, dir[0..end], 10) catch return 1000;
+    if (size == target) return 0;
+    if (size > target) return 1 + (size - target);
+    return 100 + (target - size);
+}
 
-    // 1. Check themes/icons directly
-    if (tryIconTheme(allocator, "themes/icons", name)) |path| return path;
-    if (tryIconTheme(allocator, "../themes/icons", name)) |path| return path;
+fn tryIndexTheme(allocator: std.mem.Allocator, base: []const u8, content: []const u8, name: []const u8, target: u16) ?[]u8 {
+    var dirs_buf: [16384]u8 = undefined;
+    const dirs = indexValue(content, "Directories", &dirs_buf) orelse return null;
 
-    // 2. Check active user theme icon folder: ~/.config/mizu/themes/<active_theme>/icons/
-    if (g_active_theme_name_len > 0) {
-        const active_theme = g_active_theme_name[0..g_active_theme_name_len];
-        var user_dir_buf: [512]u8 = undefined;
-        if (theme.getUserThemesDir(&user_dir_buf)) |ub| {
-            var path_buf: [512]u8 = undefined;
-            if (std.fmt.bufPrint(&path_buf, "{s}/{s}/icons", .{ ub, active_theme })) |theme_icons_dir| {
-                if (tryDirWithAliases(allocator, theme_icons_dir, name)) |path| return path;
-            } else |_| {}
+    var pass: u8 = 0;
+    while (pass < 3) : (pass += 1) {
+        // For fallback sizes, only probe the two closest size groups. Scanning
+        // every directory in large themes (hicolor has hundreds) is slow.
+        var best_group: u16 = std.math.maxInt(u16);
+        var second_group: u16 = std.math.maxInt(u16);
+        if (pass == 2) {
+            var scan = std.mem.splitScalar(u8, dirs, ',');
+            while (scan.next()) |raw| {
+                const sub = std.mem.trim(u8, raw, " \t\r");
+                if (sub.len == 0) continue;
+                const score = iconDirScore(sub, target);
+                if (score <= 10) continue;
+                if (score < best_group) {
+                    second_group = best_group;
+                    best_group = score;
+                } else if (score > best_group and score < second_group) {
+                    second_group = score;
+                }
+            }
         }
 
-        // 3. Check active built-in theme icon folder: /usr/share/mizu/themes/<active_theme>/icons/
-        var builtin_dir_buf: [512]u8 = undefined;
-        if (theme.resolveBuiltinThemesDir(&builtin_dir_buf)) |bb| {
-            var path_buf: [512]u8 = undefined;
-            if (std.fmt.bufPrint(&path_buf, "{s}/{s}/icons", .{ bb, active_theme })) |theme_icons_dir| {
-                if (tryDirWithAliases(allocator, theme_icons_dir, name)) |path| return path;
-            } else |_| {}
+        var best: ?[]u8 = null;
+        var best_score: u16 = std.math.maxInt(u16);
+        var it = std.mem.splitScalar(u8, dirs, ',');
+        while (it.next()) |raw| {
+            const sub = std.mem.trim(u8, raw, " \t\r");
+            if (sub.len == 0) continue;
+            const score = iconDirScore(sub, target);
+            if (pass == 0 and score != 0) continue;
+            if (pass == 1 and score != 10) continue;
+            if (pass == 2 and (score <= 10 or (score != best_group and score != second_group))) continue;
+
+            var dir_buf: [512]u8 = undefined;
+            const dir = std.fmt.bufPrint(&dir_buf, "{s}/{s}", .{ base, sub }) catch continue;
+            if (tryDirWithAliases(allocator, dir, name)) |p| {
+                if (pass < 2) return p;
+                if (score < best_score) {
+                    if (best) |old| allocator.free(old);
+                    best = p;
+                    best_score = score;
+                } else {
+                    allocator.free(p);
+                }
+            }
         }
+        if (best) |p| return p;
     }
+    return null;
+}
 
-    // 4. Fallback to standard asset search directories
-    if (tryDirWithAliases(allocator, "assets", name)) |path| return path;
+fn tryDirRecursive(allocator: std.mem.Allocator, dir_path: []const u8, name: []const u8, depth: u8) ?[]u8 {
+    if (depth > 3) return null;
+    if (tryDirWithAliases(allocator, dir_path, name)) |p| return p;
 
-    var exe_buf: [4096]u8 = undefined;
-    if (exeDir(&exe_buf)) |base| {
-        var pbuf: [512]u8 = undefined;
-        if (std.fmt.bufPrint(&pbuf, "{s}/../share/mizu/themes/icons", .{base})) |p| {
-            if (tryIconTheme(allocator, p, name)) |path| return path;
-        } else |_| {}
-        if (tryRelative(allocator, base, "assets", name)) |path| return path;
-        if (tryRelative(allocator, base, "../assets", name)) |path| return path;
-        if (tryRelative(allocator, base, "../../assets", name)) |path| return path;
-        if (tryRelative(allocator, base, "../../../assets", name)) |path| return path;
-        if (tryRelative(allocator, base, "../share/mizu/assets", name)) |path| return path;
-        if (tryRelative(allocator, base, "../../share/mizu/assets", name)) |path| return path;
+    var dir_z: [512]u8 = undefined;
+    const dir_path_z = std.fmt.bufPrintSentinel(&dir_z, "{s}", .{dir_path}, 0) catch return null;
+    const dir = c.opendir(dir_path_z.ptr) orelse return null;
+    defer _ = c.closedir(dir);
+    while (c.readdir(dir)) |entry| {
+        if (entry.*.d_type != c.DT_DIR) continue;
+        const entry_name = std.mem.span(@as([*:0]const u8, @ptrCast(&entry.*.d_name)));
+        var buf: [512]u8 = undefined;
+        const sub = std.fmt.bufPrint(&buf, "{s}/{s}", .{ dir_path, entry_name }) catch continue;
+        if (tryDirRecursive(allocator, sub, name, depth + 1)) |p| return p;
     }
+    return null;
+}
 
+fn tryMizuIconDir(allocator: std.mem.Allocator, base: []const u8, name: []const u8, target: u16) ?[]u8 {
+    var index_buf: [512]u8 = undefined;
+    if (std.fmt.bufPrint(&index_buf, "{s}/index.theme", .{base})) |index_path| {
+        var content_buf: [65536]u8 = undefined;
+        if (readFileInto(index_path, &content_buf)) |content| {
+            return tryIndexTheme(allocator, base, content, name, target);
+        }
+    } else |_| {}
+    return tryDirRecursive(allocator, base, name, 0);
+}
+
+fn tryThemeRoot(buf: []u8, root: []const u8, sub: []const u8, theme_name: []const u8) ?[]const u8 {
+    const path = std.fmt.bufPrint(buf, "{s}/{s}/{s}", .{ root, sub, theme_name }) catch return null;
+    if (!fileExists(path)) return null;
+    return path;
+}
+
+fn findThemeDir(buf: []u8, theme_name: []const u8) ?[]const u8 {
+    if (theme_name.len == 0) return null;
     if (c.getenv("XDG_DATA_HOME")) |raw| {
-        const xdg = std.mem.span(raw);
-        var dir_buf: [512]u8 = undefined;
-        if (std.fmt.bufPrint(&dir_buf, "{s}/mizu/assets", .{xdg})) |dir| {
-            if (tryDirWithAliases(allocator, dir, name)) |path| return path;
-        } else |_| {}
+        if (tryThemeRoot(buf, std.mem.span(raw), "icons", theme_name)) |p| return p;
     }
     if (c.getenv("HOME")) |raw| {
         const home = std.mem.span(raw);
-        var dir_buf: [512]u8 = undefined;
-        if (std.fmt.bufPrint(&dir_buf, "{s}/.local/share/icons/Papirus-Custom", .{home})) |dir| {
-            if (tryIconTheme(allocator, dir, name)) |path| return path;
-        } else |_| {}
-        if (std.fmt.bufPrint(&dir_buf, "{s}/.icons/Papirus-Custom", .{home})) |dir| {
-            if (tryIconTheme(allocator, dir, name)) |path| return path;
-        } else |_| {}
-        if (std.fmt.bufPrint(&dir_buf, "{s}/.local/share/mizu/assets", .{home})) |dir| {
-            if (tryDirWithAliases(allocator, dir, name)) |path| return path;
-        } else |_| {}
+        if (tryThemeRoot(buf, home, ".local/share/icons", theme_name)) |p| return p;
+        if (tryThemeRoot(buf, home, ".icons", theme_name)) |p| return p;
     }
-    if (tryIconTheme(allocator, "/usr/share/mizu/themes/icons", name)) |path| return path;
-    if (tryIconTheme(allocator, "/usr/local/share/mizu/themes/icons", name)) |path| return path;
-    if (tryIconTheme(allocator, "/usr/share/icons/Papirus-Custom", name)) |path| return path;
-    if (tryIconTheme(allocator, "/usr/local/share/icons/Papirus-Custom", name)) |path| return path;
-    if (tryDirWithAliases(allocator, "/usr/local/share/mizu/assets", name)) |path| return path;
-    if (tryDirWithAliases(allocator, "/usr/share/mizu/assets", name)) |path| return path;
+    if (c.getenv("XDG_DATA_DIRS")) |raw| {
+        var it = std.mem.splitScalar(u8, std.mem.span(raw), ':');
+        while (it.next()) |root| {
+            if (root.len == 0) continue;
+            if (tryThemeRoot(buf, root, "icons", theme_name)) |p| return p;
+        }
+    }
+    if (tryThemeRoot(buf, "/usr/local/share", "icons", theme_name)) |p| return p;
+    if (tryThemeRoot(buf, "/usr/share", "icons", theme_name)) |p| return p;
+    return null;
+}
 
-    // Not found: return the default location so callers get a consistent path
-    // (parsing will fail and the caller falls back gracefully).
-    if (std.mem.endsWith(u8, name, ".svg")) {
-        return try std.fmt.allocPrint(allocator, "assets/{s}", .{name});
+fn gtkIconThemeName(buf: []u8) ?[]const u8 {
+    const config_home = c.getenv("XDG_CONFIG_HOME");
+    const home = c.getenv("HOME");
+    const rels = [_][]const u8{ "gtk-3.0/settings.ini", "gtk-4.0/settings.ini" };
+    for (rels) |rel| {
+        var path_buf: [512]u8 = undefined;
+        const path = if (config_home) |raw|
+            std.fmt.bufPrint(&path_buf, "{s}/{s}", .{ std.mem.span(raw), rel }) catch continue
+        else if (home) |raw|
+            std.fmt.bufPrint(&path_buf, "{s}/.config/{s}", .{ std.mem.span(raw), rel }) catch continue
+        else
+            continue;
+        var content_buf: [4096]u8 = undefined;
+        const content = readFileInto(path, &content_buf) orelse continue;
+        if (indexValue(content, "gtk-icon-theme-name", buf)) |v| return v;
     }
-    return try std.fmt.allocPrint(allocator, "assets/{s}.svg", .{name});
+    return null;
+}
+
+fn tryThemeRecursive(allocator: std.mem.Allocator, theme_name: []const u8, name: []const u8, target: u16, depth: u8) ?[]u8 {
+    if (depth > 8) return null;
+    var base_buf: [512]u8 = undefined;
+    const base = findThemeDir(&base_buf, theme_name) orelse return null;
+
+    var index_path_buf: [512]u8 = undefined;
+    const index_path = std.fmt.bufPrint(&index_path_buf, "{s}/index.theme", .{base}) catch return null;
+    var content_buf: [65536]u8 = undefined;
+    const content = readFileInto(index_path, &content_buf) orelse return null;
+
+    if (tryIndexTheme(allocator, base, content, name, target)) |p| return p;
+
+    var inherits_buf: [1024]u8 = undefined;
+    const inherits = indexValue(content, "Inherits", &inherits_buf) orelse return null;
+    var it = std.mem.splitScalar(u8, inherits, ',');
+    while (it.next()) |raw| {
+        const parent = std.mem.trim(u8, raw, " \t\r");
+        if (parent.len == 0) continue;
+        if (tryThemeRecursive(allocator, parent, name, target, depth + 1)) |p| return p;
+    }
+    return null;
+}
+
+fn tryGtkIconPath(allocator: std.mem.Allocator, name: []const u8, target: u16) ?[]u8 {
+    var theme_buf: [128]u8 = undefined;
+    const theme_name = gtkIconThemeName(&theme_buf) orelse "hicolor";
+    if (tryThemeRecursive(allocator, theme_name, name, target, 0)) |p| return p;
+    if (!std.ascii.eqlIgnoreCase(theme_name, "hicolor")) {
+        if (tryThemeRecursive(allocator, "hicolor", name, target, 0)) |p| return p;
+    }
+    return null;
+}
+
+fn tryPixmap(allocator: std.mem.Allocator, name: []const u8) ?[]u8 {
+    const dirs = [_][]const u8{ "/usr/share/pixmaps", "/usr/local/share/pixmaps" };
+    for (dirs) |dir| {
+        if (tryDirWithAliases(allocator, dir, name)) |p| return p;
+    }
+    return null;
+}
+
+fn existingDirect(allocator: std.mem.Allocator, path: []const u8) ?[]u8 {
+    if (fileExists(path)) return allocator.dupe(u8, path) catch null;
+    if (hasExt(path, ".svg") or hasExt(path, ".png")) return null;
+    const exts = [_][]const u8{ ".svg", ".png" };
+    for (exts) |ext| {
+        var buf: [512]u8 = undefined;
+        const p = std.fmt.bufPrint(&buf, "{s}{s}", .{ path, ext }) catch continue;
+        if (fileExists(p)) return allocator.dupe(u8, p) catch null;
+    }
+    return null;
+}
+
+fn directIconPath(allocator: std.mem.Allocator, name: []const u8) ?[]u8 {
+    if (name.len == 0) return null;
+    if (name[0] == '~' and name.len > 1 and name[1] == '/') {
+        const home = c.getenv("HOME") orelse return null;
+        var buf: [512]u8 = undefined;
+        const path = std.fmt.bufPrint(&buf, "{s}/{s}", .{ std.mem.span(home), name[2..] }) catch return null;
+        return existingDirect(allocator, path);
+    }
+    if (name[0] == '/') return existingDirect(allocator, name);
+    if (std.mem.indexOfScalar(u8, name, '/') != null) {
+        if (existingDirect(allocator, name)) |p| return p;
+        if (c.getenv("HOME")) |raw| {
+            var buf: [512]u8 = undefined;
+            const path = std.fmt.bufPrint(&buf, "{s}/{s}", .{ std.mem.span(raw), name }) catch return null;
+            return existingDirect(allocator, path);
+        }
+    }
+    return null;
+}
+
+fn tryMizuAssets(allocator: std.mem.Allocator, name: []const u8) ?[]u8 {
+    if (c.getenv("MIZU_ICON_DIR")) |raw| {
+        if (tryDirWithAliases(allocator, std.mem.span(raw), name)) |p| return p;
+    }
+    if (tryDirWithAliases(allocator, "assets", name)) |p| return p;
+
+    var exe_buf: [4096]u8 = undefined;
+    if (exeDir(&exe_buf)) |base| {
+        const rels = [_][]const u8{
+            "assets",
+            "../assets",
+            "../../assets",
+            "../../../assets",
+            "../share/mizu/assets",
+            "../../share/mizu/assets",
+        };
+        for (rels) |rel| {
+            if (tryRelative(allocator, base, rel, name)) |p| return p;
+        }
+    }
+
+    if (c.getenv("XDG_DATA_HOME")) |raw| {
+        var dir_buf: [512]u8 = undefined;
+        if (std.fmt.bufPrint(&dir_buf, "{s}/mizu/assets", .{std.mem.span(raw)})) |dir| {
+            if (tryDirWithAliases(allocator, dir, name)) |p| return p;
+        } else |_| {}
+    }
+    if (c.getenv("HOME")) |raw| {
+        var dir_buf: [512]u8 = undefined;
+        if (std.fmt.bufPrint(&dir_buf, "{s}/.local/share/mizu/assets", .{std.mem.span(raw)})) |dir| {
+            if (tryDirWithAliases(allocator, dir, name)) |p| return p;
+        } else |_| {}
+    }
+    if (tryDirWithAliases(allocator, "/usr/local/share/mizu/assets", name)) |p| return p;
+    if (tryDirWithAliases(allocator, "/usr/share/mizu/assets", name)) |p| return p;
+    return null;
+}
+
+fn tryMizuThemeIcons(allocator: std.mem.Allocator, name: []const u8, target: u16) ?[]u8 {
+    const local_dirs = [_][]const u8{ "themes/icons", "../themes/icons" };
+    for (local_dirs) |dir| {
+        if (tryMizuIconDir(allocator, dir, name, target)) |p| return p;
+    }
+
+    if (g_active_theme_name_len > 0) {
+        const active = g_active_theme_name[0..g_active_theme_name_len];
+        var base_buf: [512]u8 = undefined;
+        if (theme.getUserThemesDir(&base_buf)) |ub| {
+            var dir_buf: [512]u8 = undefined;
+            if (std.fmt.bufPrint(&dir_buf, "{s}/{s}/icons", .{ ub, active })) |dir| {
+                if (tryMizuIconDir(allocator, dir, name, target)) |p| return p;
+            } else |_| {}
+        }
+        var builtin_buf: [512]u8 = undefined;
+        if (theme.resolveBuiltinThemesDir(&builtin_buf)) |bb| {
+            var dir_buf: [512]u8 = undefined;
+            if (std.fmt.bufPrint(&dir_buf, "{s}/{s}/icons", .{ bb, active })) |dir| {
+                if (tryMizuIconDir(allocator, dir, name, target)) |p| return p;
+            } else |_| {}
+        }
+    }
+
+    if (tryMizuIconDir(allocator, "/usr/share/mizu/themes/icons", name, target)) |p| return p;
+    if (tryMizuIconDir(allocator, "/usr/local/share/mizu/themes/icons", name, target)) |p| return p;
+    return null;
+}
+
+/// Resolve a UI icon path for `name` (caller frees). Bundled assets win so
+/// launcher chrome keeps its crisp SVGs.
+pub fn resolveIconPath(allocator: std.mem.Allocator, name: []const u8, target_size: u16) ![]u8 {
+    if (name.len == 0) return error.NotFound;
+    const target = if (target_size == 0) 1 else target_size;
+    if (directIconPath(allocator, name)) |p| return p;
+    const base = stripIconExt(name);
+    if (tryMizuAssets(allocator, base)) |p| return p;
+    if (tryMizuThemeIcons(allocator, base, target)) |p| return p;
+    if (tryGtkIconPath(allocator, base, target)) |p| return p;
+    return error.NotFound;
+}
+
+/// Resolve an application icon path (caller frees). Icon themes win, like rofi.
+pub fn resolveAppIconPath(allocator: std.mem.Allocator, name: []const u8, target_size: u16) ![]u8 {
+    if (name.len == 0) return error.NotFound;
+    const target = if (target_size == 0) 1 else target_size;
+    if (directIconPath(allocator, name)) |p| return p;
+    const base = stripIconExt(name);
+    if (tryMizuThemeIcons(allocator, base, target)) |p| return p;
+    if (tryGtkIconPath(allocator, base, target)) |p| return p;
+    if (tryPixmap(allocator, base)) |p| return p;
+    if (tryMizuAssets(allocator, base)) |p| return p;
+    return error.NotFound;
 }
 
 fn isMultiColor(image: *c.NSVGimage) bool {
@@ -839,11 +1084,39 @@ pub fn recolorSvg(allocator: std.mem.Allocator, svg_bytes: []const u8) ![]u8 {
     return result.toOwnedSlice(allocator);
 }
 
-/// Load and rasterize an SVG asset at the given physical size.
+fn rasterFromImage(allocator: std.mem.Allocator, name: []const u8, size_px: u32, scale: u32, img: *const renderer.Image) ?RasterIcon {
+    const pixels = allocator.alloc(u8, img.pixels.len * 4) catch return null;
+    @memcpy(pixels, std.mem.sliceAsBytes(img.pixels));
+    const asset = allocator.dupe(u8, name) catch {
+        allocator.free(pixels);
+        return null;
+    };
+    return .{
+        .width = img.width,
+        .height = img.height,
+        .stride = img.width,
+        .pixels = pixels,
+        .allocator = allocator,
+        .asset = asset,
+        .size_px = size_px,
+        .scale = scale,
+        .is_argb = true,
+    };
+}
+
+/// Load an icon from the resolved path as a rasterized icon. SVGs are
+/// recolored and rasterized; PNG/JPEG files are decoded directly.
 pub fn loadSvgIcon(allocator: std.mem.Allocator, name: []const u8, size_px: u32, scale: u32) ?RasterIcon {
     if (size_px == 0) return null;
-    const path = resolveIconPath(allocator, name) catch return null;
+    const target: u16 = @intCast(@min(size_px, 512));
+    const path = resolveIconPath(allocator, name, target) catch return null;
     defer allocator.free(path);
+
+    if (!hasExt(path, ".svg")) {
+        const img = (renderer.Image.loadFile(allocator, path) catch return null) orelse return null;
+        defer img.deinit();
+        return rasterFromImage(allocator, name, size_px, scale, img);
+    }
 
     const c_path = allocator.alloc(u8, path.len + 1) catch return null;
     defer allocator.free(c_path);
@@ -930,6 +1203,55 @@ pub fn loadSvgIcon(allocator: std.mem.Allocator, name: []const u8, size_px: u32,
         .scale = scale,
         .is_argb = is_argb,
     };
+}
+
+fn imageFromRaster(allocator: std.mem.Allocator, raster: *const RasterIcon) ?*renderer.Image {
+    const img = allocator.create(renderer.Image) catch return null;
+    const pixels = allocator.alloc(u32, @as(usize, raster.width) * raster.height) catch {
+        allocator.destroy(img);
+        return null;
+    };
+
+    if (raster.is_argb) {
+        var y: u32 = 0;
+        while (y < raster.height) : (y += 1) {
+            const src = raster.pixels.ptr + @as(usize, y) * raster.stride * 4;
+            const dst = @as([*]u8, @ptrCast(pixels.ptr + @as(usize, y) * raster.width));
+            const row_bytes = @as(usize, raster.width) * 4;
+            @memcpy(dst[0..row_bytes], src[0..row_bytes]);
+        }
+    } else {
+        const tint = if (g_active_theme_palette_set) g_palette_text else theme.Color.rgb(255, 255, 255);
+        const count = @as(usize, raster.width) * raster.height;
+        var i: usize = 0;
+        while (i < count) : (i += 1) {
+            pixels[i] = theme.Color.init(raster.pixels[i], tint.r, tint.g, tint.b).toArgb();
+        }
+    }
+
+    img.* = .{
+        .width = raster.width,
+        .height = raster.height,
+        .pixels = pixels,
+        .allocator = allocator,
+    };
+    return img;
+}
+
+/// Load an application icon as a renderer image. SVGs are rasterized; PNG and
+/// JPEG files are decoded directly.
+pub fn loadImage(allocator: std.mem.Allocator, name: []const u8, size_px: u32, scale: u32) ?*renderer.Image {
+    if (size_px == 0) return null;
+    const target: u16 = @intCast(@min(size_px, 512));
+    const path = resolveAppIconPath(allocator, name, target) catch return null;
+    defer allocator.free(path);
+
+    if (hasExt(path, ".svg")) {
+        var raster = loadSvgIcon(allocator, path, size_px, scale) orelse return null;
+        defer raster.deinit();
+        return imageFromRaster(allocator, &raster);
+    }
+    return renderer.Image.loadFile(allocator, path) catch null;
 }
 
 fn findCached(name: []const u8, size_px: u32, scale: u32) ?*RasterIcon {
@@ -1230,4 +1552,31 @@ test "Load integrated theme icons" {
         try std.testing.expectEqual(@as(u32, 32), ic.height);
         try std.testing.expect(ic.pixels.len > 0);
     }
+}
+
+test "dotted icon names are not treated as file extensions" {
+    try std.testing.expect(!hasExt("org.gnome.Nautilus", ".svg"));
+    try std.testing.expect(!hasExt("org.gnome.Nautilus", ".png"));
+    try std.testing.expectEqualStrings("org.gnome.Nautilus", stripIconExt("org.gnome.Nautilus"));
+    try std.testing.expect(hasExt("org.gnome.Nautilus.SVG", ".svg"));
+    try std.testing.expectEqualStrings("org.gnome.Nautilus", stripIconExt("org.gnome.Nautilus.SVG"));
+}
+
+test "icon theme index parsing and size scoring" {
+    const content = "[Icon Theme]\nDirectories=16x16/apps,48x48/apps,scalable/apps\nInherits=hicolor\n";
+    var dirs_buf: [256]u8 = undefined;
+    const dirs = indexValue(content, "Directories", &dirs_buf) orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqualStrings("16x16/apps,48x48/apps,scalable/apps", dirs);
+    try std.testing.expectEqual(@as(u16, 0), iconDirScore("48x48/apps", 48));
+    try std.testing.expect(iconDirScore("scalable/apps", 48) < iconDirScore("16x16/apps", 48));
+    try std.testing.expect(iconDirScore("64x64/apps", 48) < iconDirScore("16x16/apps", 48));
+}
+
+test "loadImage rasterizes an SVG path into a renderer image" {
+    const allocator = std.testing.allocator;
+    const img = loadImage(allocator, "assets/palette.svg", 32, 1) orelse return error.TestUnexpectedResult;
+    defer img.deinit();
+    try std.testing.expectEqual(@as(u32, 32), img.width);
+    try std.testing.expectEqual(@as(u32, 32), img.height);
+    try std.testing.expectEqual(@as(usize, 32 * 32), img.pixels.len);
 }

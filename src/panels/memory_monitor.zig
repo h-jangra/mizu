@@ -2134,7 +2134,8 @@ test "system monitor stats and subprocess kill confirm flow" {
 
     // Subprocess 1 is at index 2 (row 2 in list)
     const row2_y: i32 = @intFromFloat(MemoryMonitor.listTop() + ROW_H * 2.0 + 10.0);
-    const click_kill_x: i32 = @intFromFloat(MemoryMonitor.contentX1() - 15.0);
+    const click_kill_x: i32 = @intFromFloat(MemoryMonitor.contentX0() + 374.0 + 10.0);
+    const click_cancel_x: i32 = @intFromFloat(MemoryMonitor.contentX0() + 374.0 + 40.0);
 
     // Initial state: no confirmation
     try std.testing.expectEqual(@as(?u32, null), mm.confirm_kill_pid);
@@ -2143,8 +2144,8 @@ test "system monitor stats and subprocess kill confirm flow" {
     _ = mm.handlePointerButton(click_kill_x, row2_y, POINTER_BUTTON_LEFT, true);
     try std.testing.expectEqual(@as(?u32, 1001), mm.confirm_kill_pid);
 
-    // In confirm mode, clicking cancel (x) at the same right edge cancels it
-    _ = mm.handlePointerButton(click_kill_x, row2_y, POINTER_BUTTON_LEFT, true);
+    // In confirm mode, clicking cancel (x) cancels it
+    _ = mm.handlePointerButton(click_cancel_x, row2_y, POINTER_BUTTON_LEFT, true);
     try std.testing.expectEqual(@as(?u32, null), mm.confirm_kill_pid);
 
     // Click kill button again to re-enter confirm mode

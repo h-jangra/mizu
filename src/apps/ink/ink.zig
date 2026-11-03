@@ -187,6 +187,25 @@ pub const Adjustments = struct {
     }
 };
 
+/// Enlarge saved images to fit a 1080p frame so video editors do not have to
+/// scale small screenshot crops up (which looks blocky). Never downscales.
+/// shortcut: assumes a 1080p video target, 4K projects still upscale.
+fn exportScaleFor(width: u32, height: u32) f32 {
+    if (width == 0 or height == 0) return 1.0;
+    const target_w: f32 = 1920.0;
+    const target_h: f32 = 1080.0;
+    const scale = @min(target_w / @as(f32, @floatFromInt(width)), target_h / @as(f32, @floatFromInt(height)));
+    return @min(@max(scale, 1.0), 4.0);
+}
+
+fn scaleCoord(value: i32, scale: f32) i32 {
+    return @intFromFloat(@round(@as(f32, @floatFromInt(value)) * scale));
+}
+
+fn scaleSize(value: u32, scale: f32) u32 {
+    return @max(1, @as(u32, @intFromFloat(@round(@as(f32, @floatFromInt(value)) * scale))));
+}
+
 /// Distance squared from point (px, py) to segment (x0, y0)-(x1, y1)
 fn distSqPointToSegment(px: f32, py: f32, x0: f32, y0: f32, x1: f32, y1: f32) f32 {
     const l2 = (x1 - x0) * (x1 - x0) + (y1 - y0) * (y1 - y0);
@@ -217,7 +236,7 @@ pub const Annotation = struct {
     points: std.ArrayListUnmanaged(Point) = .empty,
 
     // For text
-    text_buf: [128]u8 = @splat(0),
+    text_buf: [1024]u8 = @splat(0),
     text_len: usize = 0,
     font_size: u32 = 18,
     text_align: TextAlign = .left,
@@ -473,75 +492,118 @@ pub const Annotation = struct {
         }
     }
 
-    /// Composite this vector annotation directly onto the target pixel buffer
-    pub fn renderToImage(self: *const Annotation, img: *ImageBuffer, font: *Font) void {
-        if (!self.visible) return;
+    /// Composite this vector annotation directly onto the target pixel buffer.
+    /// `scale` lets save/export render at a higher resolution than the base image.
+    pub fn renderToImage(self: *const Annotation, img: *ImageBuffer, font: *Font, scale: f32) void {
+        if (!self.visible or scale <= 0.0) return;
+
+        const sw = scaleSize(self.stroke_width, scale);
+        const b = self.getBounds();
+        const br = Rect{
+            .x = scaleCoord(b.x, scale),
+            .y = scaleCoord(b.y, scale),
+            .w = scaleSize(b.w, scale),
+            .h = scaleSize(b.h, scale),
+        };
 
         switch (self.kind) {
             .arrow => {
-                img.drawArrow(self.start_x, self.start_y, self.end_x, self.end_y, self.stroke_width, self.color);
+                img.drawArrow(
+                    scaleCoord(self.start_x, scale),
+                    scaleCoord(self.start_y, scale),
+                    scaleCoord(self.end_x, scale),
+                    scaleCoord(self.end_y, scale),
+                    sw,
+                    self.color,
+                );
             },
             .line => {
-                img.drawStrokeLine(self.start_x, self.start_y, self.end_x, self.end_y, self.stroke_width, self.color);
+                img.drawStrokeLine(
+                    scaleCoord(self.start_x, scale),
+                    scaleCoord(self.start_y, scale),
+                    scaleCoord(self.end_x, scale),
+                    scaleCoord(self.end_y, scale),
+                    sw,
+                    self.color,
+                );
             },
             .rect => {
-                img.drawRect(self.getBounds(), self.stroke_width, self.color, self.filled);
+                img.drawRect(br, sw, self.color, self.filled);
             },
             .circle => {
-                const b = self.getBounds();
-                const cx = b.x + @divTrunc(@as(i32, @intCast(b.w)), 2);
-                const cy = b.y + @divTrunc(@as(i32, @intCast(b.h)), 2);
-                const rad = @divTrunc(@min(b.w, b.h), 2);
-                img.drawCircle(cx, cy, @intCast(rad), self.stroke_width, self.color, self.filled);
+                const cx = br.x + @divTrunc(@as(i32, @intCast(br.w)), 2);
+                const cy = br.y + @divTrunc(@as(i32, @intCast(br.h)), 2);
+                const rx = @max(1, @divTrunc(br.w, 2));
+                const ry = @max(1, @divTrunc(br.h, 2));
+                img.drawEllipse(cx, cy, rx, ry, sw, self.color, self.filled);
             },
             .highlight => {
                 const tint = Color.init(100, self.color.r, self.color.g, self.color.b);
-                img.applyHighlightRegion(self.getBounds(), tint);
+                img.applyHighlightRegion(br, tint);
             },
             .blur => {
-                img.applyBlurRegion(self.getBounds(), @max(4, self.stroke_width * 2));
+                img.applyBlurRegion(br, scaleSize(@max(4, self.stroke_width * 2), scale));
             },
             .pixelate => {
-                img.applyPixelateRegion(self.getBounds(), @max(6, self.stroke_width * 3));
+                img.applyPixelateRegion(br, scaleSize(@max(6, self.stroke_width * 3), scale));
             },
             .image => {
                 if (self.image_data) |*src| {
-                    const b = self.getBounds();
-                    img.compositeScaled(src, b.x, b.y, b.w, b.h);
+                    img.compositeScaled(src, br.x, br.y, br.w, br.h);
                 }
             },
             .step_badge => {
-                const cx = self.rect.x;
-                const cy = self.rect.y;
-                const r: i32 = 16;
+                const cx = scaleCoord(self.rect.x, scale);
+                const cy = scaleCoord(self.rect.y, scale);
+                const r = scaleCoord(16, scale);
                 // Outer filled circle
                 img.fillCircle(cx, cy, r, self.color);
                 // White step number text
                 var num_buf: [16]u8 = undefined;
                 const num_str = std.fmt.bufPrint(&num_buf, "{d}", .{self.step_number}) catch "1";
-                img.drawText(font, num_str, cx - 4, cy + 5, 13, Color.rgb(255, 255, 255));
+                img.drawText(
+                    font,
+                    num_str,
+                    cx - scaleCoord(4, scale),
+                    cy + scaleCoord(5, scale),
+                    scaleSize(13, scale),
+                    Color.rgb(255, 255, 255),
+                );
             },
             .text => {
                 const slice = self.text_buf[0..self.text_len];
-                const w = font.measureTextWithSize(slice, self.font_size);
-                var x = self.rect.x;
-                switch (self.text_align) {
-                    .center => x = self.rect.x + @divTrunc(@as(i32, @intCast(self.rect.w)), 2) - @divTrunc(@as(i32, @intCast(w)), 2),
-                    .right => x = self.rect.x + @as(i32, @intCast(self.rect.w)) - @as(i32, @intCast(w)) - 4,
-                    else => x = self.rect.x + 2,
+                const font_size = scaleSize(self.font_size, scale);
+                const line_height = font_size + scaleSize(@max(4, @divTrunc(self.font_size, 4)), scale);
+
+                var line_it = std.mem.splitScalar(u8, slice, '\n');
+                var line_idx: usize = 0;
+                while (line_it.next()) |line| : (line_idx += 1) {
+                    const w = font.measureTextWithSize(line, font_size);
+                    var x = br.x;
+                    switch (self.text_align) {
+                        .center => x = br.x + @divTrunc(@as(i32, @intCast(br.w)), 2) - @divTrunc(@as(i32, @intCast(w)), 2),
+                        .right => x = br.x + @as(i32, @intCast(br.w)) - @as(i32, @intCast(w)) - scaleCoord(4, scale),
+                        else => x = br.x + scaleCoord(2, scale),
+                    }
+                    const y = br.y + @as(i32, @intCast(line_idx)) * @as(i32, @intCast(line_height)) + @as(i32, @intCast(font_size));
+                    img.drawText(font, line, x, y, font_size, self.color);
                 }
-                img.drawText(font, slice, x, self.rect.y + @as(i32, @intCast(self.font_size)), self.font_size, self.color);
             },
             .pen => {
+                if (self.points.items.len < 1) return;
+                const radius = @divTrunc(@as(i32, @intCast(sw)), 2);
+                for (self.points.items) |pt| {
+                    img.fillCircle(scaleCoord(pt.x, scale), scaleCoord(pt.y, scale), radius, self.color);
+                }
                 if (self.points.items.len < 2) return;
                 var i: usize = 0;
                 while (i + 1 < self.points.items.len) : (i += 1) {
                     img.drawStrokeLine(
-                        self.points.items[i].x,
-                        self.points.items[i].y,
-                        self.points.items[i + 1].x,
-                        self.points.items[i + 1].y,
-                        self.stroke_width,
+                        scaleCoord(self.points.items[i].x, scale),
+                        scaleCoord(self.points.items[i].y, scale),
+                        scaleCoord(self.points.items[i + 1].x, scale),
+                        scaleCoord(self.points.items[i + 1].y, scale),
+                        sw,
                         self.color,
                     );
                 }
@@ -659,6 +721,499 @@ pub const UndoManager = struct {
     }
 };
 
+pub const TextUndoEntry = struct {
+    text: []u8,
+    cursor_idx: usize,
+};
+
+pub const TextEditState = struct {
+    allocator: std.mem.Allocator,
+    annotation_id: u32,
+    text: std.ArrayListUnmanaged(u8) = .empty,
+    cursor_idx: usize = 0,
+    selection_anchor: ?usize = null,
+    caret_visible: bool = true,
+    drag_active: bool = false,
+    undo_stack: std.ArrayListUnmanaged(TextUndoEntry) = .empty,
+    redo_stack: std.ArrayListUnmanaged(TextUndoEntry) = .empty,
+
+    pub fn init(allocator: std.mem.Allocator, annotation_id: u32, initial_text: []const u8) !TextEditState {
+        var text = std.ArrayListUnmanaged(u8).empty;
+        try text.appendSlice(allocator, initial_text);
+        return TextEditState{
+            .allocator = allocator,
+            .annotation_id = annotation_id,
+            .text = text,
+            .cursor_idx = text.items.len,
+            .selection_anchor = null,
+            .caret_visible = true,
+            .drag_active = false,
+        };
+    }
+
+    pub fn deinit(self: *TextEditState) void {
+        self.text.deinit(self.allocator);
+        for (self.undo_stack.items) |entry| {
+            self.allocator.free(entry.text);
+        }
+        self.undo_stack.deinit(self.allocator);
+        for (self.redo_stack.items) |entry| {
+            self.allocator.free(entry.text);
+        }
+        self.redo_stack.deinit(self.allocator);
+    }
+
+    pub fn pushUndo(self: *TextEditState) void {
+        const text_dupe = self.allocator.dupe(u8, self.text.items) catch return;
+        self.undo_stack.append(self.allocator, .{
+            .text = text_dupe,
+            .cursor_idx = self.cursor_idx,
+        }) catch {
+            self.allocator.free(text_dupe);
+            return;
+        };
+        for (self.redo_stack.items) |entry| self.allocator.free(entry.text);
+        self.redo_stack.clearRetainingCapacity();
+    }
+
+    pub fn undo(self: *TextEditState) void {
+        if (self.undo_stack.items.len == 0) return;
+        const current_dupe = self.allocator.dupe(u8, self.text.items) catch return;
+        self.redo_stack.append(self.allocator, .{
+            .text = current_dupe,
+            .cursor_idx = self.cursor_idx,
+        }) catch {
+            self.allocator.free(current_dupe);
+            return;
+        };
+
+        const prev = self.undo_stack.pop().?;
+        self.text.clearRetainingCapacity();
+        self.text.appendSlice(self.allocator, prev.text) catch {};
+        self.cursor_idx = @min(prev.cursor_idx, self.text.items.len);
+        self.selection_anchor = null;
+        self.allocator.free(prev.text);
+    }
+
+    pub fn redo(self: *TextEditState) void {
+        if (self.redo_stack.items.len == 0) return;
+        const current_dupe = self.allocator.dupe(u8, self.text.items) catch return;
+        self.undo_stack.append(self.allocator, .{
+            .text = current_dupe,
+            .cursor_idx = self.cursor_idx,
+        }) catch {
+            self.allocator.free(current_dupe);
+            return;
+        };
+
+        const next = self.redo_stack.pop().?;
+        self.text.clearRetainingCapacity();
+        self.text.appendSlice(self.allocator, next.text) catch {};
+        self.cursor_idx = @min(next.cursor_idx, self.text.items.len);
+        self.selection_anchor = null;
+        self.allocator.free(next.text);
+    }
+
+    pub fn hasSelection(self: *const TextEditState) bool {
+        if (self.selection_anchor) |anchor| {
+            return anchor != self.cursor_idx;
+        }
+        return false;
+    }
+
+    pub const Range = struct { start: usize, end: usize };
+
+    pub fn getSelectionRange(self: *const TextEditState) ?Range {
+        if (self.selection_anchor) |anchor| {
+            if (anchor == self.cursor_idx) return null;
+            return Range{
+                .start = @min(anchor, self.cursor_idx),
+                .end = @max(anchor, self.cursor_idx),
+            };
+        }
+        return null;
+    }
+
+    pub fn getSelectedText(self: *const TextEditState) ?[]const u8 {
+        if (self.getSelectionRange()) |r| {
+            return self.text.items[r.start..r.end];
+        }
+        return null;
+    }
+
+    pub fn removeSelection(self: *TextEditState) bool {
+        if (self.getSelectionRange()) |r| {
+            self.pushUndo();
+            const count = r.end - r.start;
+            var i = r.start;
+            while (i + count < self.text.items.len) : (i += 1) {
+                self.text.items[i] = self.text.items[i + count];
+            }
+            self.text.shrinkRetainingCapacity(self.text.items.len - count);
+            self.cursor_idx = r.start;
+            self.selection_anchor = null;
+            return true;
+        }
+        return false;
+    }
+
+    pub fn selectAll(self: *TextEditState) void {
+        if (self.text.items.len == 0) return;
+        self.selection_anchor = 0;
+        self.cursor_idx = self.text.items.len;
+    }
+
+    pub fn insertBytes(self: *TextEditState, bytes: []const u8) !void {
+        if (bytes.len == 0) return;
+        if (self.text.items.len + bytes.len > 1023) return;
+        _ = self.removeSelection();
+        self.pushUndo();
+        self.cursor_idx = @min(self.cursor_idx, self.text.items.len);
+        try self.text.insertSlice(self.allocator, self.cursor_idx, bytes);
+        self.cursor_idx += bytes.len;
+        self.selection_anchor = null;
+    }
+
+    pub fn deleteBackward(self: *TextEditState) void {
+        if (self.removeSelection()) return;
+        if (self.cursor_idx == 0 or self.text.items.len == 0) return;
+        self.pushUndo();
+        var prev_idx = self.cursor_idx - 1;
+        while (prev_idx > 0 and (self.text.items[prev_idx] & 0xC0) == 0x80) {
+            prev_idx -= 1;
+        }
+        const count = self.cursor_idx - prev_idx;
+        var i = prev_idx;
+        while (i + count < self.text.items.len) : (i += 1) {
+            self.text.items[i] = self.text.items[i + count];
+        }
+        self.text.shrinkRetainingCapacity(self.text.items.len - count);
+        self.cursor_idx = prev_idx;
+    }
+
+    pub fn deleteForward(self: *TextEditState) void {
+        if (self.removeSelection()) return;
+        if (self.cursor_idx >= self.text.items.len) return;
+        self.pushUndo();
+        var next_idx = self.cursor_idx + 1;
+        while (next_idx < self.text.items.len and (self.text.items[next_idx] & 0xC0) == 0x80) {
+            next_idx += 1;
+        }
+        const count = next_idx - self.cursor_idx;
+        var i = self.cursor_idx;
+        while (i + count < self.text.items.len) : (i += 1) {
+            self.text.items[i] = self.text.items[i + count];
+        }
+        self.text.shrinkRetainingCapacity(self.text.items.len - count);
+    }
+
+    pub fn deleteWordBackward(self: *TextEditState) void {
+        if (self.removeSelection()) return;
+        if (self.cursor_idx == 0) return;
+        self.pushUndo();
+        var i = self.cursor_idx;
+        while (i > 0 and (self.text.items[i - 1] == ' ' or self.text.items[i - 1] == '\t' or self.text.items[i - 1] == '\n')) {
+            i -= 1;
+        }
+        while (i > 0 and self.text.items[i - 1] != ' ' and self.text.items[i - 1] != '\t' and self.text.items[i - 1] != '\n') {
+            i -= 1;
+        }
+        const count = self.cursor_idx - i;
+        var j = i;
+        while (j + count < self.text.items.len) : (j += 1) {
+            self.text.items[j] = self.text.items[j + count];
+        }
+        self.text.shrinkRetainingCapacity(self.text.items.len - count);
+        self.cursor_idx = i;
+    }
+
+    pub fn deleteWordForward(self: *TextEditState) void {
+        if (self.removeSelection()) return;
+        if (self.cursor_idx >= self.text.items.len) return;
+        self.pushUndo();
+        var i = self.cursor_idx;
+        while (i < self.text.items.len and (self.text.items[i] == ' ' or self.text.items[i] == '\t' or self.text.items[i] == '\n')) {
+            i += 1;
+        }
+        while (i < self.text.items.len and self.text.items[i] != ' ' and self.text.items[i] != '\t' and self.text.items[i] != '\n') {
+            i += 1;
+        }
+        const count = i - self.cursor_idx;
+        var j = self.cursor_idx;
+        while (j + count < self.text.items.len) : (j += 1) {
+            self.text.items[j] = self.text.items[j + count];
+        }
+        self.text.shrinkRetainingCapacity(self.text.items.len - count);
+    }
+
+    pub fn moveLeft(self: *TextEditState, extend_selection: bool) void {
+        if (!extend_selection and self.hasSelection()) {
+            if (self.getSelectionRange()) |r| {
+                self.cursor_idx = r.start;
+                self.selection_anchor = null;
+                return;
+            }
+        }
+        if (self.cursor_idx > 0) {
+            if (extend_selection and self.selection_anchor == null) {
+                self.selection_anchor = self.cursor_idx;
+            }
+            var prev = self.cursor_idx - 1;
+            while (prev > 0 and (self.text.items[prev] & 0xC0) == 0x80) {
+                prev -= 1;
+            }
+            self.cursor_idx = prev;
+            if (extend_selection and self.selection_anchor.? == self.cursor_idx) {
+                self.selection_anchor = null;
+            }
+        } else if (!extend_selection) {
+            self.selection_anchor = null;
+        }
+    }
+
+    pub fn moveRight(self: *TextEditState, extend_selection: bool) void {
+        if (!extend_selection and self.hasSelection()) {
+            if (self.getSelectionRange()) |r| {
+                self.cursor_idx = r.end;
+                self.selection_anchor = null;
+                return;
+            }
+        }
+        if (self.cursor_idx < self.text.items.len) {
+            if (extend_selection and self.selection_anchor == null) {
+                self.selection_anchor = self.cursor_idx;
+            }
+            var next = self.cursor_idx + 1;
+            while (next < self.text.items.len and (self.text.items[next] & 0xC0) == 0x80) {
+                next += 1;
+            }
+            self.cursor_idx = next;
+            if (extend_selection and self.selection_anchor.? == self.cursor_idx) {
+                self.selection_anchor = null;
+            }
+        } else if (!extend_selection) {
+            self.selection_anchor = null;
+        }
+    }
+
+    pub fn moveWordLeft(self: *TextEditState, extend_selection: bool) void {
+        if (extend_selection and self.selection_anchor == null) {
+            self.selection_anchor = self.cursor_idx;
+        } else if (!extend_selection) {
+            self.selection_anchor = null;
+        }
+        var i = self.cursor_idx;
+        while (i > 0 and (self.text.items[i - 1] == ' ' or self.text.items[i - 1] == '\t' or self.text.items[i - 1] == '\n')) {
+            i -= 1;
+        }
+        while (i > 0 and self.text.items[i - 1] != ' ' and self.text.items[i - 1] != '\t' and self.text.items[i - 1] != '\n') {
+            i -= 1;
+        }
+        self.cursor_idx = i;
+    }
+
+    pub fn moveWordRight(self: *TextEditState, extend_selection: bool) void {
+        if (extend_selection and self.selection_anchor == null) {
+            self.selection_anchor = self.cursor_idx;
+        } else if (!extend_selection) {
+            self.selection_anchor = null;
+        }
+        var i = self.cursor_idx;
+        while (i < self.text.items.len and (self.text.items[i] == ' ' or self.text.items[i] == '\t' or self.text.items[i] == '\n')) {
+            i += 1;
+        }
+        while (i < self.text.items.len and self.text.items[i] != ' ' and self.text.items[i] != '\t' and self.text.items[i] != '\n') {
+            i += 1;
+        }
+        self.cursor_idx = i;
+    }
+
+    pub fn moveHome(self: *TextEditState, extend_selection: bool, entire: bool) void {
+        if (extend_selection and self.selection_anchor == null) {
+            self.selection_anchor = self.cursor_idx;
+        } else if (!extend_selection) {
+            self.selection_anchor = null;
+        }
+        if (entire or self.cursor_idx == 0) {
+            self.cursor_idx = 0;
+            return;
+        }
+        var i = self.cursor_idx;
+        while (i > 0 and self.text.items[i - 1] != '\n') {
+            i -= 1;
+        }
+        self.cursor_idx = i;
+    }
+
+    pub fn moveEnd(self: *TextEditState, extend_selection: bool, entire: bool) void {
+        if (extend_selection and self.selection_anchor == null) {
+            self.selection_anchor = self.cursor_idx;
+        } else if (!extend_selection) {
+            self.selection_anchor = null;
+        }
+        if (entire or self.cursor_idx >= self.text.items.len) {
+            self.cursor_idx = self.text.items.len;
+            return;
+        }
+        var i = self.cursor_idx;
+        while (i < self.text.items.len and self.text.items[i] != '\n') {
+            i += 1;
+        }
+        self.cursor_idx = i;
+    }
+
+    pub fn moveUp(self: *TextEditState, extend_selection: bool, font: *Font, font_size: u32) void {
+        if (extend_selection and self.selection_anchor == null) {
+            self.selection_anchor = self.cursor_idx;
+        } else if (!extend_selection) {
+            self.selection_anchor = null;
+        }
+        var cur_start: usize = self.cursor_idx;
+        while (cur_start > 0 and self.text.items[cur_start - 1] != '\n') {
+            cur_start -= 1;
+        }
+        if (cur_start == 0) {
+            self.cursor_idx = 0;
+            return;
+        }
+        const prev_end = cur_start - 1;
+        var prev_start = prev_end;
+        while (prev_start > 0 and self.text.items[prev_start - 1] != '\n') {
+            prev_start -= 1;
+        }
+        const cur_slice = self.text.items[cur_start..self.cursor_idx];
+        const cur_w = font.measureTextWithSize(cur_slice, font_size);
+        const prev_slice = self.text.items[prev_start..prev_end];
+        var closest = prev_start;
+        var min_d: i32 = std.math.maxInt(i32);
+        var b: usize = 0;
+        while (b <= prev_slice.len) {
+            const prefix = prev_slice[0..b];
+            const w = @as(i32, @intCast(font.measureTextWithSize(prefix, font_size)));
+            const d = @abs(w - @as(i32, @intCast(cur_w)));
+            if (d < min_d) {
+                min_d = @as(i32, @intCast(d));
+                closest = prev_start + b;
+            }
+            if (b == prev_slice.len) break;
+            const seq_len = std.unicode.utf8ByteSequenceLength(prev_slice[b]) catch 1;
+            b += seq_len;
+        }
+        self.cursor_idx = closest;
+    }
+
+    pub fn moveDown(self: *TextEditState, extend_selection: bool, font: *Font, font_size: u32) void {
+        if (extend_selection and self.selection_anchor == null) {
+            self.selection_anchor = self.cursor_idx;
+        } else if (!extend_selection) {
+            self.selection_anchor = null;
+        }
+        var cur_start: usize = self.cursor_idx;
+        while (cur_start > 0 and self.text.items[cur_start - 1] != '\n') {
+            cur_start -= 1;
+        }
+        var cur_end = self.cursor_idx;
+        while (cur_end < self.text.items.len and self.text.items[cur_end] != '\n') {
+            cur_end += 1;
+        }
+        if (cur_end >= self.text.items.len) {
+            self.cursor_idx = self.text.items.len;
+            return;
+        }
+        const next_start = cur_end + 1;
+        var next_end = next_start;
+        while (next_end < self.text.items.len and self.text.items[next_end] != '\n') {
+            next_end += 1;
+        }
+        const cur_slice = self.text.items[cur_start..self.cursor_idx];
+        const cur_w = font.measureTextWithSize(cur_slice, font_size);
+        const next_slice = self.text.items[next_start..next_end];
+        var closest = next_start;
+        var min_d: i32 = std.math.maxInt(i32);
+        var b: usize = 0;
+        while (b <= next_slice.len) {
+            const prefix = next_slice[0..b];
+            const w = @as(i32, @intCast(font.measureTextWithSize(prefix, font_size)));
+            const d = @abs(w - @as(i32, @intCast(cur_w)));
+            if (d < min_d) {
+                min_d = @as(i32, @intCast(d));
+                closest = next_start + b;
+            }
+            if (b == next_slice.len) break;
+            const seq_len = std.unicode.utf8ByteSequenceLength(next_slice[b]) catch 1;
+            b += seq_len;
+        }
+        self.cursor_idx = closest;
+    }
+
+    pub fn copyToClipboard(self: *const TextEditState) void {
+        const text_to_copy = if (self.getSelectedText()) |s| s else self.text.items;
+        if (text_to_copy.len == 0) return;
+        const pid = c.fork();
+        if (pid == 0) {
+            _ = c.setsid();
+            const pipe = c.popen("export PATH=\"$PATH:/usr/sbin:/usr/local/bin:/usr/bin:$HOME/.local/bin\"; wl-copy 2>/dev/null", "w");
+            if (pipe != null) {
+                _ = c.fwrite(text_to_copy.ptr, 1, text_to_copy.len, pipe);
+                _ = c.pclose(pipe);
+            }
+            c.exit(0);
+        }
+    }
+
+    pub fn cutToClipboard(self: *TextEditState) void {
+        self.copyToClipboard();
+        _ = self.removeSelection();
+    }
+
+    pub fn pasteFromClipboard(self: *TextEditState) void {
+        const pipe = c.popen("export PATH=\"$PATH:/usr/sbin:/usr/local/bin:/usr/bin:$HOME/.local/bin\"; wl-paste 2>/dev/null", "r");
+        if (pipe != null) {
+            defer _ = c.pclose(pipe);
+            var buf: [1024]u8 = undefined;
+            const n = c.fread(&buf, 1, buf.len, pipe);
+            if (n > 0) {
+                self.insertBytes(buf[0..n]) catch {};
+            }
+        }
+    }
+
+    pub fn findCursorFromXY(self: *const TextEditState, font: *Font, font_size: u32, line_height: u32, rel_x: i32, rel_y: i32) usize {
+        if (self.text.items.len == 0) return 0;
+        const target_line: usize = if (rel_y <= 0) 0 else @intCast(@divTrunc(rel_y, @as(i32, @intCast(@max(1, line_height)))));
+        var cur_line: usize = 0;
+        var line_start: usize = 0;
+        var i: usize = 0;
+        while (i <= self.text.items.len) : (i += 1) {
+            const is_end = (i == self.text.items.len);
+            if (is_end or self.text.items[i] == '\n') {
+                if (cur_line == target_line or is_end) {
+                    const line_slice = self.text.items[line_start..i];
+                    var closest_idx = line_start;
+                    var min_dist: i32 = std.math.maxInt(i32);
+                    var b_idx: usize = 0;
+                    while (b_idx <= line_slice.len) {
+                        const prefix = line_slice[0..b_idx];
+                        const w = @as(i32, @intCast(font.measureTextWithSize(prefix, font_size)));
+                        const dist = @abs(w - rel_x);
+                        if (dist < min_dist) {
+                            min_dist = @as(i32, @intCast(dist));
+                            closest_idx = line_start + b_idx;
+                        }
+                        if (b_idx == line_slice.len) break;
+                        const seq_len = std.unicode.utf8ByteSequenceLength(line_slice[b_idx]) catch 1;
+                        b_idx += seq_len;
+                    }
+                    return closest_idx;
+                }
+                cur_line += 1;
+                line_start = i + 1;
+            }
+        }
+        return self.text.items.len;
+    }
+};
+
 /// The main Tensaku-inspired vector Annotator & Image Editor Application
 pub const InkApp = AnnotateApp;
 pub const AnnotateApp = struct {
@@ -707,9 +1262,19 @@ pub const AnnotateApp = struct {
 
     // Inline Text Editing
     editing_text_id: ?u32 = null,
+    text_editor: ?TextEditState = null,
+
+    // Eraser gesture undo tracker
+    has_pushed_eraser_undo: bool = false,
 
     // Font dropdown
     font_dropdown_open: bool = false,
+
+    // Custom Hex Color Dialog
+    color_dialog_open: bool = false,
+    color_dialog_buf: [16]u8 = @splat(0),
+    color_dialog_len: usize = 0,
+    color_dialog_cursor: usize = 0,
 
     // Font Size Input Box Editing
     editing_font_size: bool = false,
@@ -743,9 +1308,10 @@ pub const AnnotateApp = struct {
     status_len: usize = 0,
     status_ticks: u32 = 0,
 
-    // Dimensions
+    // Dimensions (Logical coordinates)
     ui_scale: f32 = 1.0,
-    toolbar_height: u32 = 48,
+    ui_font_size: u32 = 13,
+    toolbar_height: u32 = 44,
     statusbar_height: u32 = 28,
     layers_panel_width: u32 = 230,
     adjust_panel_width: u32 = 240,
@@ -753,21 +1319,22 @@ pub const AnnotateApp = struct {
     pub fn init(allocator: std.mem.Allocator, cfg: config.Config, image_to_load: ?ImageBuffer, file_path: ?[]const u8) !*AnnotateApp {
         const scale_opt = quicksettings.loadDisplayScale();
         var ui_scale: f32 = if (scale_opt) |s| @as(f32, @floatFromInt(s)) / 100.0 else 1.0;
-        if (ui_scale < 1.0) ui_scale = 1.0;
+        if (ui_scale < 0.5) ui_scale = 1.0;
 
         var win = try WindowApp.init(allocator, .{
-            .title = "Mizu Annotate & Editor",
-            .app_id = "mizu-annotate",
-            .width = @as(u32, @intFromFloat(1240.0 * ui_scale)),
-            .height = @as(u32, @intFromFloat(760.0 * ui_scale)),
-            .min_width = @as(u32, @intFromFloat(720.0 * ui_scale)),
-            .min_height = @as(u32, @intFromFloat(460.0 * ui_scale)),
+            .title = "Mizu Ink",
+            .app_id = "mizu-ink",
+            .width = 1240,
+            .height = 760,
+            .min_width = 720,
+            .min_height = 460,
         });
         win.scale_factor = ui_scale;
         errdefer win.deinit();
 
         const font = try allocator.create(Font);
-        font.* = try Font.init(allocator, cfg.theme.font_family, @as(u32, @intFromFloat(13.0 * ui_scale)));
+        const ui_font_size = @max(13, @as(u32, @intFromFloat(@round(13.5 * ui_scale))));
+        font.* = try Font.init(allocator, cfg.theme.font_family, ui_font_size);
         errdefer {
             font.deinit();
             allocator.destroy(font);
@@ -806,10 +1373,11 @@ pub const AnnotateApp = struct {
             .original_path = path_copy,
             .file_size_bytes = f_size,
             .ui_scale = ui_scale,
-            .toolbar_height = @as(u32, @intFromFloat(48.0 * ui_scale)),
-            .statusbar_height = @as(u32, @intFromFloat(28.0 * ui_scale)),
-            .layers_panel_width = @as(u32, @intFromFloat(230.0 * ui_scale)),
-            .adjust_panel_width = @as(u32, @intFromFloat(240.0 * ui_scale)),
+            .ui_font_size = @max(13, @as(u32, @intFromFloat(@round(13.5 * ui_scale)))),
+            .toolbar_height = 44,
+            .statusbar_height = 28,
+            .layers_panel_width = 230,
+            .adjust_panel_width = 240,
             .undo_mgr = UndoManager.init(allocator, 30),
         };
 
@@ -820,17 +1388,15 @@ pub const AnnotateApp = struct {
     pub fn reloadScale(self: *AnnotateApp) void {
         const scale_opt = quicksettings.loadDisplayScale();
         var ui_scale: f32 = if (scale_opt) |s| @as(f32, @floatFromInt(s)) / 100.0 else 1.0;
-        if (ui_scale < 1.0) ui_scale = 1.0;
+        if (ui_scale < 0.5) ui_scale = 1.0;
         if (ui_scale == self.ui_scale) return;
         self.ui_scale = ui_scale;
-
-        self.toolbar_height = @as(u32, @intFromFloat(48.0 * ui_scale));
-        self.statusbar_height = @as(u32, @intFromFloat(28.0 * ui_scale));
-        self.layers_panel_width = @as(u32, @intFromFloat(230.0 * ui_scale));
-        self.adjust_panel_width = @as(u32, @intFromFloat(240.0 * ui_scale));
+        self.win.scale_factor = ui_scale;
 
         const new_font = self.allocator.create(Font) catch return;
-        new_font.* = Font.init(self.allocator, self.cfg.theme.font_family, @as(u32, @intFromFloat(13.0 * ui_scale))) catch {
+        const ui_font_size = @max(13, @as(u32, @intFromFloat(@round(13.5 * ui_scale))));
+        self.ui_font_size = ui_font_size;
+        new_font.* = Font.init(self.allocator, self.cfg.theme.font_family, ui_font_size) catch {
             self.allocator.destroy(new_font);
             return;
         };
@@ -839,12 +1405,12 @@ pub const AnnotateApp = struct {
         old_font.deinit();
         self.allocator.destroy(old_font);
 
-        self.win.scale_factor = ui_scale;
         self.win.needs_redraw = true;
     }
 
     pub fn deinit(self: *AnnotateApp) void {
         const alloc = self.allocator;
+        if (self.text_editor) |*te| te.deinit();
         if (self.adjust_base_image) |*abi| abi.deinit();
         if (self.original_path) |p| alloc.free(p);
         for (self.annotations.items) |*ann| ann.deinit(alloc);
@@ -856,6 +1422,48 @@ pub const AnnotateApp = struct {
         alloc.destroy(self.font);
         self.win.deinit();
         alloc.destroy(self);
+    }
+
+    pub fn effectiveScale(self: *const AnnotateApp) f32 {
+        return self.win.effectiveScale();
+    }
+
+    pub fn toPhysX(self: *const AnnotateApp, lx: i32) i32 {
+        return @intFromFloat(@round(@as(f32, @floatFromInt(lx)) * self.effectiveScale()));
+    }
+
+    pub fn toPhysY(self: *const AnnotateApp, ly: i32) i32 {
+        return @intFromFloat(@round(@as(f32, @floatFromInt(ly)) * self.effectiveScale()));
+    }
+
+    pub fn toPhysSize(self: *const AnnotateApp, sz: anytype) u32 {
+        const f: f32 = switch (@typeInfo(@TypeOf(sz))) {
+            .comptime_int, .int => @floatFromInt(sz),
+            .comptime_float, .float => @floatCast(sz),
+            else => @compileError("Unsupported size type"),
+        };
+        return @max(1, @as(u32, @intFromFloat(@round(f * self.effectiveScale()))));
+    }
+
+    pub fn toPhysRect(self: *const AnnotateApp, r: Rect) Rect {
+        const px = self.toPhysX(r.x);
+        const py = self.toPhysY(r.y);
+        const pw = self.toPhysX(r.x + @as(i32, @intCast(r.w))) - px;
+        const ph = self.toPhysY(r.y + @as(i32, @intCast(r.h))) - py;
+        return Rect{
+            .x = px,
+            .y = py,
+            .w = @intCast(@max(0, pw)),
+            .h = @intCast(@max(0, ph)),
+        };
+    }
+
+    pub fn imageToPhysX(self: *const AnnotateApp, ix: i32) i32 {
+        return self.toPhysX(self.imageToScreenX(ix));
+    }
+
+    pub fn imageToPhysY(self: *const AnnotateApp, iy: i32) i32 {
+        return self.toPhysY(self.imageToScreenY(iy));
     }
 
     pub fn setStatus(self: *AnnotateApp, msg: []const u8) void {
@@ -1056,25 +1664,40 @@ pub const AnnotateApp = struct {
 
     pub fn updateTextAnnotationBounds(self: *AnnotateApp, ann: *Annotation) void {
         if (ann.kind != .text) return;
-        const slice = ann.text_buf[0..ann.text_len];
-        const w = self.font.measureTextWithSize(slice, ann.font_size);
-        ann.rect.w = @intCast(@max(20, w + 12));
-        ann.rect.h = @intCast(@max(16, ann.font_size + 8));
+        const slice = if (self.text_editor) |*te|
+            if (te.annotation_id == ann.id) te.text.items else ann.text_buf[0..ann.text_len]
+        else
+            ann.text_buf[0..ann.text_len];
+
+        var max_w: u32 = 0;
+        var line_count: u32 = 0;
+        var it = std.mem.splitScalar(u8, slice, '\n');
+        while (it.next()) |line| {
+            line_count += 1;
+            const lw = self.font.measureTextWithSize(line, ann.font_size);
+            if (lw > max_w) max_w = lw;
+        }
+        if (line_count == 0) line_count = 1;
+        const line_h = ann.font_size + @max(4, @divTrunc(ann.font_size, 4));
+        ann.rect.w = @intCast(@max(24, max_w + 12));
+        ann.rect.h = @intCast(@max(18, line_count * line_h + 8));
     }
 
     pub fn decreaseFontSize(self: *AnnotateApp) void {
         if (self.current_font_size > 8) {
             self.current_font_size -= 2;
-            self.stroke_width = @max(2, @divTrunc(self.current_font_size, 4));
-            var updated_text = false;
             for (self.selected_ids.items) |sid| {
                 if (self.findAnnotationById(sid)) |a| {
-                    a.stroke_width = self.stroke_width;
                     if (a.kind == .text) {
                         a.font_size = self.current_font_size;
                         self.updateTextAnnotationBounds(a);
-                        updated_text = true;
                     }
+                }
+            }
+            if (self.editing_text_id) |tid| {
+                if (self.findAnnotationById(tid)) |a| {
+                    a.font_size = self.current_font_size;
+                    self.updateTextAnnotationBounds(a);
                 }
             }
             var buf: [32]u8 = undefined;
@@ -1086,21 +1709,238 @@ pub const AnnotateApp = struct {
     pub fn increaseFontSize(self: *AnnotateApp) void {
         if (self.current_font_size < 120) {
             self.current_font_size += 2;
-            self.stroke_width = @max(2, @divTrunc(self.current_font_size, 4));
-            var updated_text = false;
             for (self.selected_ids.items) |sid| {
                 if (self.findAnnotationById(sid)) |a| {
-                    a.stroke_width = self.stroke_width;
                     if (a.kind == .text) {
                         a.font_size = self.current_font_size;
                         self.updateTextAnnotationBounds(a);
-                        updated_text = true;
                     }
+                }
+            }
+            if (self.editing_text_id) |tid| {
+                if (self.findAnnotationById(tid)) |a| {
+                    a.font_size = self.current_font_size;
+                    self.updateTextAnnotationBounds(a);
                 }
             }
             var buf: [32]u8 = undefined;
             self.setStatus(std.fmt.bufPrint(&buf, "Font size: {d}px", .{self.current_font_size}) catch "Font size +");
             self.win.needs_redraw = true;
+        }
+    }
+
+    pub fn increaseStrokeWidth(self: *AnnotateApp) void {
+        if (self.stroke_width < 64) {
+            self.stroke_width += 1;
+            for (self.selected_ids.items) |sid| {
+                if (self.findAnnotationById(sid)) |a| {
+                    a.stroke_width = self.stroke_width;
+                }
+            }
+            var buf: [32]u8 = undefined;
+            self.setStatus(std.fmt.bufPrint(&buf, "Thickness: {d}px", .{self.stroke_width}) catch "Thickness +");
+            self.win.needs_redraw = true;
+        }
+    }
+
+    pub fn decreaseStrokeWidth(self: *AnnotateApp) void {
+        if (self.stroke_width > 1) {
+            self.stroke_width -= 1;
+            for (self.selected_ids.items) |sid| {
+                if (self.findAnnotationById(sid)) |a| {
+                    a.stroke_width = self.stroke_width;
+                }
+            }
+            var buf: [32]u8 = undefined;
+            self.setStatus(std.fmt.bufPrint(&buf, "Thickness: {d}px", .{self.stroke_width}) catch "Thickness -");
+            self.win.needs_redraw = true;
+        }
+    }
+
+    pub fn handleShiftScroll(self: *AnnotateApp, delta: f64) void {
+        const is_text = (self.active_tool == .text or self.editing_text_id != null or blk: {
+            for (self.selected_ids.items) |sid| {
+                if (self.findAnnotationById(sid)) |a| {
+                    if (a.kind == .text) break :blk true;
+                }
+            }
+            break :blk false;
+        });
+
+        if (is_text) {
+            if (delta < 0) {
+                self.increaseFontSize();
+            } else {
+                self.decreaseFontSize();
+            }
+        } else {
+            if (delta < 0) {
+                self.increaseStrokeWidth();
+            } else {
+                self.decreaseStrokeWidth();
+            }
+        }
+    }
+
+    pub fn parseHexColor(raw: []const u8) ?Color {
+        var s = std.mem.trim(u8, raw, " \t\r\n;\"'");
+        if (s.len > 0 and s[0] == '#') s = s[1..];
+        if (s.len != 3 and s.len != 6 and s.len != 8) return null;
+        for (s) |ch| {
+            if (!std.ascii.isHex(ch)) return null;
+        }
+        return Color.fromHex(raw);
+    }
+
+    pub fn openColorDialog(self: *AnnotateApp) void {
+        self.color_dialog_open = !self.color_dialog_open;
+        if (self.color_dialog_open) {
+            self.font_dropdown_open = false;
+            // Check if clipboard contains a valid hex color
+            var loaded = false;
+            const pipe = c.popen("wl-paste --no-newline 2>/dev/null", "r");
+            if (pipe != null) {
+                defer _ = c.pclose(pipe);
+                var c_buf: [32]u8 = undefined;
+                const n_read = c.fread(&c_buf, 1, c_buf.len, pipe.?);
+                if (n_read >= 3 and n_read <= 9) {
+                    const trimmed = std.mem.trim(u8, c_buf[0..n_read], " \t\r\n;\"'");
+                    if (parseHexColor(trimmed) != null) {
+                        var out_buf: [16]u8 = undefined;
+                        const formatted = if (trimmed[0] == '#')
+                            trimmed
+                        else
+                            std.fmt.bufPrint(&out_buf, "#{s}", .{trimmed}) catch "";
+                        if (formatted.len >= 4 and formatted.len <= 9) {
+                            @memcpy(self.color_dialog_buf[0..formatted.len], formatted);
+                            self.color_dialog_len = formatted.len;
+                            self.color_dialog_cursor = formatted.len;
+                            loaded = true;
+                        }
+                    }
+                }
+            }
+
+            if (!loaded) {
+                var buf: [16]u8 = undefined;
+                const hex = std.fmt.bufPrint(&buf, "#{X:0>2}{X:0>2}{X:0>2}", .{
+                    self.current_color.r,
+                    self.current_color.g,
+                    self.current_color.b,
+                }) catch "#FFFFFF";
+                @memcpy(self.color_dialog_buf[0..hex.len], hex);
+                self.color_dialog_len = hex.len;
+                self.color_dialog_cursor = hex.len;
+            }
+        }
+        self.win.needs_redraw = true;
+    }
+
+    pub fn closeColorDialog(self: *AnnotateApp) void {
+        self.color_dialog_open = false;
+        self.win.needs_redraw = true;
+    }
+
+    pub fn applyColorDialog(self: *AnnotateApp) void {
+        const hex_slice = self.color_dialog_buf[0..self.color_dialog_len];
+        const parsed = parseHexColor(hex_slice) orelse return;
+        self.current_color = parsed;
+        for (self.selected_ids.items) |sid| {
+            if (self.findAnnotationById(sid)) |a| a.color = parsed;
+        }
+
+        // Format and copy to clipboard
+        var hex_fmt_buf: [16]u8 = undefined;
+        const hex_formatted = std.fmt.bufPrint(&hex_fmt_buf, "#{X:0>2}{X:0>2}{X:0>2}", .{ parsed.r, parsed.g, parsed.b }) catch "#000000";
+        var copy_cmd_buf: [128]u8 = undefined;
+        const copy_cmd = std.fmt.bufPrintSentinel(&copy_cmd_buf, "wl-copy '{s}' 2>/dev/null || true", .{hex_formatted}, 0) catch null;
+        if (copy_cmd) |cmd| _ = c.system(cmd.ptr);
+
+        var status_buf: [48]u8 = undefined;
+        self.setStatus(std.fmt.bufPrint(&status_buf, "Color set: {s} (copied)", .{hex_formatted}) catch "Color set");
+        self.color_dialog_open = false;
+        self.win.needs_redraw = true;
+    }
+
+    pub fn pasteHexFromClipboard(self: *AnnotateApp) void {
+        const pipe = c.popen("wl-paste --no-newline 2>/dev/null", "r");
+        if (pipe == null) return;
+        defer _ = c.pclose(pipe);
+        var buf: [32]u8 = undefined;
+        const n = c.fread(&buf, 1, buf.len, pipe.?);
+        if (n == 0) return;
+        const trimmed = std.mem.trim(u8, buf[0..n], " \t\r\n;\"'");
+        var clean_buf: [10]u8 = undefined;
+        var clean_len: usize = 0;
+        for (trimmed) |ch| {
+            if (clean_len >= 9) break;
+            if (ch == '#' or std.ascii.isHex(ch)) {
+                clean_buf[clean_len] = ch;
+                clean_len += 1;
+            }
+        }
+        if (clean_len > 0) {
+            @memcpy(self.color_dialog_buf[0..clean_len], clean_buf[0..clean_len]);
+            self.color_dialog_len = clean_len;
+            self.color_dialog_cursor = clean_len;
+            self.win.needs_redraw = true;
+        }
+    }
+
+    pub fn pickColorFromScreen(self: *AnnotateApp) void {
+        _ = c.system("mizu picker > /tmp/mizu_picker_hex.txt 2>/dev/null || true");
+        var picked_hex_buf: [16]u8 = undefined;
+        var picked_len: usize = 0;
+
+        const c_file = c.fopen("/tmp/mizu_picker_hex.txt", "r");
+        if (c_file != null) {
+            defer _ = c.fclose(c_file);
+            var c_buf: [32]u8 = undefined;
+            const n_read = c.fread(&c_buf, 1, c_buf.len, c_file.?);
+            if (n_read > 0) {
+                const hex_str = std.mem.trim(u8, c_buf[0..n_read], " \t\r\n;\"'");
+                if (hex_str.len >= 3 and hex_str.len <= 9) {
+                    @memcpy(picked_hex_buf[0..hex_str.len], hex_str);
+                    picked_len = hex_str.len;
+                }
+            }
+        }
+
+        if (picked_len == 0) {
+            const pipe = c.popen("wl-paste --no-newline 2>/dev/null", "r");
+            if (pipe != null) {
+                defer _ = c.pclose(pipe);
+                var p_buf: [32]u8 = undefined;
+                const n_read = c.fread(&p_buf, 1, p_buf.len, pipe.?);
+                if (n_read > 0) {
+                    const hex_str = std.mem.trim(u8, p_buf[0..n_read], " \t\r\n;\"'");
+                    if (hex_str.len >= 3 and hex_str.len <= 9) {
+                        @memcpy(picked_hex_buf[0..hex_str.len], hex_str);
+                        picked_len = hex_str.len;
+                    }
+                }
+            }
+        }
+
+        if (picked_len > 0) {
+            const raw_hex = picked_hex_buf[0..picked_len];
+            if (parseHexColor(raw_hex)) |col| {
+                self.current_color = col;
+                for (self.selected_ids.items) |sid| {
+                    if (self.findAnnotationById(sid)) |a| a.color = col;
+                }
+
+                // Ensure uppercase #RRGGBB is formatted and copied to clipboard
+                var hex_fmt_buf: [16]u8 = undefined;
+                const hex_formatted = std.fmt.bufPrint(&hex_fmt_buf, "#{X:0>2}{X:0>2}{X:0>2}", .{ col.r, col.g, col.b }) catch "#000000";
+                var copy_cmd_buf: [128]u8 = undefined;
+                const copy_cmd = std.fmt.bufPrintSentinel(&copy_cmd_buf, "wl-copy '{s}' 2>/dev/null || true", .{hex_formatted}, 0) catch null;
+                if (copy_cmd) |cmd| _ = c.system(cmd.ptr);
+
+                var status_buf: [48]u8 = undefined;
+                self.setStatus(std.fmt.bufPrint(&status_buf, "Picked & Copied: {s}", .{hex_formatted}) catch "Color picked");
+                self.win.needs_redraw = true;
+            }
         }
     }
 
@@ -1132,6 +1972,46 @@ pub const AnnotateApp = struct {
         const msg = std.fmt.bufPrint(&buf, "Deleted {d} annotation(s)", .{count}) catch "Deleted";
         self.setStatus(msg);
         self.win.needs_redraw = true;
+    }
+
+    pub fn deleteAnnotationById(self: *AnnotateApp, id: u32) void {
+        var i: usize = self.annotations.items.len;
+        while (i > 0) {
+            i -= 1;
+            if (self.annotations.items[i].id == id) {
+                var removed = self.annotations.orderedRemove(i);
+                removed.deinit(self.allocator);
+                break;
+            }
+        }
+        var s: usize = self.selected_ids.items.len;
+        while (s > 0) {
+            s -= 1;
+            if (self.selected_ids.items[s] == id) {
+                _ = self.selected_ids.orderedRemove(s);
+            }
+        }
+    }
+
+    pub fn eraseAnnotationAt(self: *AnnotateApp, img_x: i32, img_y: i32) bool {
+        var i: usize = self.annotations.items.len;
+        while (i > 0) {
+            i -= 1;
+            const ann = &self.annotations.items[i];
+            if (ann.hitTest(img_x, img_y)) {
+                if (!self.has_pushed_eraser_undo) {
+                    self.pushUndoState();
+                    self.has_pushed_eraser_undo = true;
+                }
+                var removed = self.annotations.orderedRemove(i);
+                removed.deinit(self.allocator);
+                self.deselectAll();
+                self.setStatus("Erased annotation");
+                self.win.needs_redraw = true;
+                return true;
+            }
+        }
+        return false;
     }
 
     pub fn duplicateSelected(self: *AnnotateApp) void {
@@ -1306,16 +2186,26 @@ pub const AnnotateApp = struct {
 
     // Save, Copy, Export, Screenshot Actions
     pub fn flattenImage(self: *AnnotateApp) !ImageBuffer {
-        var out_img = try self.base_image.img.clone(self.allocator);
+        const scale = exportScaleFor(self.base_image.img.width, self.base_image.img.height);
+        var out_img = if (scale > 1.0)
+            try self.base_image.img.resize(
+                self.allocator,
+                scaleSize(self.base_image.img.width, scale),
+                scaleSize(self.base_image.img.height, scale),
+                .bilinear,
+            )
+        else
+            try self.base_image.img.clone(self.allocator);
         errdefer out_img.deinit();
 
         for (self.annotations.items) |*ann| {
-            ann.renderToImage(&out_img, self.font);
+            ann.renderToImage(&out_img, self.font, scale);
         }
         return out_img;
     }
 
     pub fn save(self: *AnnotateApp) !void {
+        const scale = exportScaleFor(self.base_image.img.width, self.base_image.img.height);
         var flat = try self.flattenImage();
         defer flat.deinit();
 
@@ -1361,11 +2251,12 @@ pub const AnnotateApp = struct {
         }
 
         var feedback_buf: [128]u8 = undefined;
-        const feedback = std.fmt.bufPrint(&feedback_buf, "Saved to {s}", .{save_path}) catch "Saved successfully";
+        const feedback = std.fmt.bufPrint(&feedback_buf, "Saved {d:.1}x to {s}", .{ scale, save_path }) catch "Saved successfully";
         self.setStatus(feedback);
     }
 
     pub fn exportImage(self: *AnnotateApp, as_jpeg: bool) !void {
+        const scale = exportScaleFor(self.base_image.img.width, self.base_image.img.height);
         var flat = try self.flattenImage();
         defer flat.deinit();
 
@@ -1385,7 +2276,7 @@ pub const AnnotateApp = struct {
         }
 
         var feedback_buf: [128]u8 = undefined;
-        const feedback = std.fmt.bufPrint(&feedback_buf, "Exported to {s}", .{path}) catch "Exported";
+        const feedback = std.fmt.bufPrint(&feedback_buf, "Exported {d:.1}x to {s}", .{ scale, path }) catch "Exported";
         self.setStatus(feedback);
     }
 
@@ -1530,14 +2421,15 @@ pub const AnnotateApp = struct {
                     }
                     const new_id = self.next_annotation_id;
                     self.next_annotation_id += 1;
-                    var copy_buf: [128]u8 = @splat(0);
-                    @memcpy(copy_buf[0..@min(trimmed.len, 127)], trimmed);
+                    var copy_buf: [1024]u8 = @splat(0);
+                    const copy_len = @min(trimmed.len, 1023);
+                    @memcpy(copy_buf[0..copy_len], trimmed[0..copy_len]);
                     const new_ann = Annotation{
                         .id = new_id,
                         .kind = .text,
                         .rect = Rect{ .x = place_x, .y = place_y, .w = 120, .h = @as(u32, @intCast(self.current_font_size + 8)) },
                         .text_buf = copy_buf,
-                        .text_len = @min(trimmed.len, 127),
+                        .text_len = copy_len,
                         .font_size = self.current_font_size,
                         .color = self.current_color,
                         .text_align = .left,
@@ -1802,6 +2694,26 @@ pub const AnnotateApp = struct {
             return;
         }
 
+        if (self.text_editor) |*te| {
+            if (te.drag_active) {
+                if (self.findAnnotationById(te.annotation_id)) |ann| {
+                    const sx = self.imageToScreenX(ann.rect.x);
+                    const sy = self.imageToScreenY(ann.rect.y);
+                    const rel_x = x - sx;
+                    const rel_y = y - sy;
+                    const font_sz = ann.font_size;
+                    const line_h = font_sz + @max(4, @divTrunc(font_sz, 4));
+                    const new_idx = te.findCursorFromXY(self.font, font_sz, line_h, rel_x, rel_y);
+                    if (te.selection_anchor == null) {
+                        te.selection_anchor = te.cursor_idx;
+                    }
+                    te.cursor_idx = new_idx;
+                    self.win.needs_redraw = true;
+                    return;
+                }
+            }
+        }
+
         if (self.is_drawing) {
             self.drag_curr_x = img_x;
             self.drag_curr_y = img_y;
@@ -1810,9 +2722,7 @@ pub const AnnotateApp = struct {
                 const last_idx = self.annotations.items.len - 1;
                 self.annotations.items[last_idx].points.append(self.allocator, .{ .x = img_x, .y = img_y }) catch {};
             } else if (self.active_tool == .eraser) {
-                // Direct pixel erasure on base image (soft brush)
-                const r_erase = @max(4, @as(i32, @intCast(self.stroke_width)));
-                self.base_image.img.applyEraseRegion(img_x, img_y, r_erase);
+                _ = self.eraseAnnotationAt(img_x, img_y);
             }
             self.win.needs_redraw = true;
             return;
@@ -1858,6 +2768,48 @@ pub const AnnotateApp = struct {
         }
     }
 
+    fn handleColorDialogClick(self: *AnnotateApp, x: i32, y: i32) bool {
+        if (!self.color_dialog_open) return false;
+        const is_narrow = (self.win.width < 960);
+        const dlg_lx: i32 = if (is_narrow) 140 else @min(@as(i32, @intCast(self.win.width)) - 220, 680);
+        const dlg_ly: i32 = if (is_narrow) 76 else @as(i32, @intCast(self.toolbar_height)) + 2;
+        const dlg_lw: i32 = 210;
+        const dlg_lh: i32 = 72;
+
+        if (x < dlg_lx or x >= dlg_lx + dlg_lw or y < dlg_ly or y >= dlg_ly + dlg_lh) {
+            // Click outside dialog closes it
+            self.closeColorDialog();
+            return false;
+        }
+
+        // Close button: top right
+        if (x >= dlg_lx + dlg_lw - 28 and y <= dlg_ly + 28) {
+            self.closeColorDialog();
+            return true;
+        }
+
+        // Apply button "✓"
+        if (x >= dlg_lx + 160 and y >= dlg_ly + 24) {
+            self.applyColorDialog();
+            return true;
+        }
+
+        // Swatch preview click: apply if valid
+        if (x >= dlg_lx + 8 and x <= dlg_lx + 44 and y >= dlg_ly + 24) {
+            self.applyColorDialog();
+            return true;
+        }
+
+        // Input box click: position cursor at end
+        if (x >= dlg_lx + 44 and x < dlg_lx + 160 and y >= dlg_ly + 24) {
+            self.color_dialog_cursor = self.color_dialog_len;
+            self.win.needs_redraw = true;
+            return true;
+        }
+
+        return true;
+    }
+
     pub fn handlePointerButton(self: *AnnotateApp, x: i32, y: i32, button: u32, pressed: bool) void {
         const c_rect = self.canvasRect();
         const inside_canvas = (x >= c_rect.x and y >= c_rect.y and x < c_rect.x + @as(i32, @intCast(c_rect.w)) and y < c_rect.y + @as(i32, @intCast(c_rect.h)));
@@ -1893,6 +2845,13 @@ pub const AnnotateApp = struct {
                     return;
                 }
 
+                // Check color dialog clicks
+                if (self.color_dialog_open) {
+                    if (self.handleColorDialogClick(x, y)) {
+                        return;
+                    }
+                }
+
                 // Check toolbar clicks
                 if (y < @as(i32, @intCast(self.toolbar_height))) {
                     self.handleToolbarClick(x, y);
@@ -1901,16 +2860,15 @@ pub const AnnotateApp = struct {
 
                 // Check font dropdown clicks
                 if (self.font_dropdown_open) {
-                    const dx: i32 = 540;
+                    const dx: i32 = 282;
                     const dy: i32 = @as(i32, @intCast(self.toolbar_height)) + 2;
-                    const dw: i32 = 95;
+                    const dw: i32 = 90;
                     const dh: i32 = 195;
                     if (x >= dx and x < dx + dw and y >= dy and y < dy + dh) {
                         const row_idx = @divTrunc(y - dy - 8, 30);
                         const sizes = [_]u32{ 12, 16, 20, 24, 32, 48 };
                         if (row_idx >= 0 and @as(usize, @intCast(row_idx)) < sizes.len) {
                             self.current_font_size = sizes[@as(usize, @intCast(row_idx))];
-                            self.stroke_width = @max(2, @divTrunc(self.current_font_size, 4));
                             for (self.selected_ids.items) |sid| {
                                 if (self.findAnnotationById(sid)) |a| a.font_size = self.current_font_size;
                             }
@@ -1944,8 +2902,28 @@ pub const AnnotateApp = struct {
                     return;
                 }
 
-                // Commit active text editing if clicked away
-                if (self.editing_text_id != null) {
+                // Check if clicking inside active text editor
+                if (self.text_editor) |*te| {
+                    if (self.findAnnotationById(te.annotation_id)) |ann| {
+                        const sx = self.imageToScreenX(ann.rect.x);
+                        const sy = self.imageToScreenY(ann.rect.y);
+                        const sw = @as(i32, @intCast(ann.rect.w));
+                        const sh = @as(i32, @intCast(ann.rect.h));
+                        if (x >= sx - 4 and x <= sx + sw + 16 and y >= sy - 4 and y <= sy + sh + 8) {
+                            te.drag_active = true;
+                            const rel_x = x - sx;
+                            const rel_y = y - sy;
+                            const font_sz = ann.font_size;
+                            const line_h = font_sz + @max(4, @divTrunc(font_sz, 4));
+                            const new_idx = te.findCursorFromXY(self.font, font_sz, line_h, rel_x, rel_y);
+                            te.cursor_idx = new_idx;
+                            te.selection_anchor = null;
+                            self.win.needs_redraw = true;
+                            return;
+                        }
+                    }
+                    self.commitTextEditing();
+                } else if (self.editing_text_id != null) {
                     self.commitTextEditing();
                 }
                 if (self.editing_font_size) {
@@ -1997,9 +2975,8 @@ pub const AnnotateApp = struct {
                             } else if (!self.isSelected(cid)) {
                                 self.selectOnly(cid);
                             } else if (self.findAnnotationById(cid)) |ann| {
-                                if (ann.kind == .text and self.editing_text_id == null) {
-                                    self.editing_text_id = cid;
-                                    self.win.needs_redraw = true;
+                                if (ann.kind == .text) {
+                                    self.startTextEditing(cid);
                                     return;
                                 }
                             }
@@ -2025,8 +3002,24 @@ pub const AnnotateApp = struct {
                         return;
                     }
 
-                    // Text tool: click to create inline text annotation
+                    // Text tool: click to create inline text annotation or edit existing
                     if (self.active_tool == .text) {
+                        var clicked_text: ?u32 = null;
+                        var idx: usize = self.annotations.items.len;
+                        while (idx > 0) {
+                            idx -= 1;
+                            const ann = &self.annotations.items[idx];
+                            if (ann.kind == .text and ann.hitTest(img_x, img_y)) {
+                                clicked_text = ann.id;
+                                break;
+                            }
+                        }
+
+                        if (clicked_text) |tid| {
+                            self.startTextEditing(tid);
+                            return;
+                        }
+
                         self.pushUndoState();
                         const new_id = self.next_annotation_id;
                         self.next_annotation_id += 1;
@@ -2034,14 +3027,12 @@ pub const AnnotateApp = struct {
                         const new_ann = Annotation{
                             .id = new_id,
                             .kind = .text,
-                            .rect = Rect{ .x = img_x, .y = img_y, .w = 120, .h = @intCast(self.current_font_size + 8) },
+                            .rect = Rect{ .x = img_x, .y = img_y, .w = 40, .h = @intCast(self.current_font_size + 8) },
                             .font_size = self.current_font_size,
                             .color = self.current_color,
                         };
                         self.annotations.append(self.allocator, new_ann) catch return;
-                        self.selectOnly(new_id);
-                        self.editing_text_id = new_id;
-                        self.win.needs_redraw = true;
+                        self.startTextEditing(new_id);
                         return;
                     }
 
@@ -2065,6 +3056,14 @@ pub const AnnotateApp = struct {
                         return;
                     }
 
+                    // Eraser tool: vector eraser deletes touched annotations
+                    if (self.active_tool == .eraser) {
+                        self.is_drawing = true;
+                        self.has_pushed_eraser_undo = false;
+                        _ = self.eraseAnnotationAt(img_x, img_y);
+                        return;
+                    }
+
                     // Drawing creation tools: start drag
                     self.pushUndoState();
                     self.is_drawing = true;
@@ -2073,7 +3072,7 @@ pub const AnnotateApp = struct {
                     self.drag_curr_x = img_x;
                     self.drag_curr_y = img_y;
 
-                    if (self.active_tool == .freehand or self.active_tool == .eraser) {
+                    if (self.active_tool == .freehand) {
                         const new_id = self.next_annotation_id;
                         self.next_annotation_id += 1;
 
@@ -2090,6 +3089,18 @@ pub const AnnotateApp = struct {
                 }
             } else {
                 // Button released
+                if (self.text_editor) |*te| {
+                    te.drag_active = false;
+                    if (te.selection_anchor) |anchor| {
+                        if (anchor == te.cursor_idx) {
+                            te.selection_anchor = null;
+                        }
+                    }
+                }
+                if (self.active_tool == .eraser) {
+                    self.is_drawing = false;
+                    self.has_pushed_eraser_undo = false;
+                }
                 if (self.active_slider != null) self.active_slider = null;
 
                 if (self.is_crop_mode and self.is_cropping) {
@@ -2286,23 +3297,51 @@ pub const AnnotateApp = struct {
         }
     }
 
+    pub fn startTextEditing(self: *AnnotateApp, id: u32) void {
+        if (self.text_editor != null) {
+            self.commitTextEditing();
+        }
+        const ann = self.findAnnotationById(id) orelse return;
+        if (ann.kind != .text) return;
+
+        self.text_editor = TextEditState.init(self.allocator, id, ann.text_buf[0..ann.text_len]) catch return;
+        self.editing_text_id = id;
+        self.selectOnly(id);
+        self.win.needs_redraw = true;
+    }
+
     pub fn commitTextEditing(self: *AnnotateApp) void {
-        if (self.editing_text_id) |tid| {
+        if (self.text_editor) |*te| {
+            const ann_id = te.annotation_id;
+            const text_items = te.text.items;
+            if (self.findAnnotationById(ann_id)) |ann| {
+                if (text_items.len == 0) {
+                    self.deleteAnnotationById(ann_id);
+                } else {
+                    const copy_len = @min(text_items.len, ann.text_buf.len - 1);
+                    @memcpy(ann.text_buf[0..copy_len], text_items[0..copy_len]);
+                    ann.text_buf[copy_len] = 0;
+                    ann.text_len = copy_len;
+                    self.updateTextAnnotationBounds(ann);
+                }
+            }
+            var mut_te = te;
+            mut_te.deinit();
+            self.text_editor = null;
+            self.editing_text_id = null;
+            self.win.needs_redraw = true;
+        } else if (self.editing_text_id) |tid| {
             if (self.findAnnotationById(tid)) |ann| {
                 if (ann.text_len == 0) {
-                    // Empty text: remove it
-                    self.deleteSelected();
+                    self.deleteAnnotationById(tid);
                 } else {
-                    // Compute text bounding width
-                    const slice = ann.text_buf[0..ann.text_len];
-                    const w = self.font.measureTextWithSize(slice, ann.font_size);
-                    ann.rect.w = @intCast(@max(20, w + 12));
-                    ann.rect.h = @intCast(@max(16, ann.font_size + 8));
+                    self.updateTextAnnotationBounds(ann);
                 }
             }
             self.editing_text_id = null;
             self.win.needs_redraw = true;
         }
+
         if (self.editing_font_size) {
             if (self.font_size_len > 0) {
                 var num: u32 = 0;
@@ -2317,30 +3356,225 @@ pub const AnnotateApp = struct {
     }
 
     pub fn handleKey(self: *AnnotateApp, sym: u32, utf8: []const u8, is_ctrl: bool, is_shift: bool) void {
-        // Typing into active inline text annotation
-        if (self.editing_text_id) |tid| {
-            if (self.findAnnotationById(tid)) |ann| {
-                if (sym == c.XKB_KEY_Return or sym == c.XKB_KEY_KP_Enter) {
-                    self.commitTextEditing();
+        // Typing into active custom hex color dialog
+        if (self.color_dialog_open) {
+            switch (sym) {
+                c.XKB_KEY_Escape => {
+                    self.closeColorDialog();
                     return;
-                } else if (sym == c.XKB_KEY_Escape) {
-                    self.commitTextEditing();
-                    self.deselectAll();
-                    self.setActiveTool(.select);
+                },
+                c.XKB_KEY_Return, c.XKB_KEY_KP_Enter => {
+                    self.applyColorDialog();
                     return;
-                } else if (sym == c.XKB_KEY_BackSpace) {
-                    if (ann.text_len > 0) {
-                        ann.text_len -= 1;
+                },
+                c.XKB_KEY_BackSpace => {
+                    if (self.color_dialog_cursor > 0 and self.color_dialog_len > 0) {
+                        var i = self.color_dialog_cursor - 1;
+                        while (i + 1 < self.color_dialog_len) : (i += 1) {
+                            self.color_dialog_buf[i] = self.color_dialog_buf[i + 1];
+                        }
+                        self.color_dialog_len -= 1;
+                        self.color_dialog_cursor -= 1;
                         self.win.needs_redraw = true;
                     }
                     return;
-                } else if (utf8.len > 0 and ann.text_len + utf8.len < ann.text_buf.len) {
-                    @memcpy(ann.text_buf[ann.text_len .. ann.text_len + utf8.len], utf8);
-                    ann.text_len += utf8.len;
-                    self.win.needs_redraw = true;
+                },
+                c.XKB_KEY_Delete => {
+                    if (self.color_dialog_cursor < self.color_dialog_len) {
+                        var i = self.color_dialog_cursor;
+                        while (i + 1 < self.color_dialog_len) : (i += 1) {
+                            self.color_dialog_buf[i] = self.color_dialog_buf[i + 1];
+                        }
+                        self.color_dialog_len -= 1;
+                        self.win.needs_redraw = true;
+                    }
                     return;
+                },
+                c.XKB_KEY_Left => {
+                    if (self.color_dialog_cursor > 0) {
+                        self.color_dialog_cursor -= 1;
+                        self.win.needs_redraw = true;
+                    }
+                    return;
+                },
+                c.XKB_KEY_Right => {
+                    if (self.color_dialog_cursor < self.color_dialog_len) {
+                        self.color_dialog_cursor += 1;
+                        self.win.needs_redraw = true;
+                    }
+                    return;
+                },
+                else => {
+                    if (is_ctrl and (sym == c.XKB_KEY_v or sym == c.XKB_KEY_V)) {
+                        self.pasteHexFromClipboard();
+                        return;
+                    }
+                    if (utf8.len > 0) {
+                        const ch = utf8[0];
+                        if ((ch == '#' or std.ascii.isHex(ch)) and self.color_dialog_len < 9) {
+                            var i = self.color_dialog_len;
+                            while (i > self.color_dialog_cursor) : (i -= 1) {
+                                self.color_dialog_buf[i] = self.color_dialog_buf[i - 1];
+                            }
+                            self.color_dialog_buf[self.color_dialog_cursor] = ch;
+                            self.color_dialog_len += 1;
+                            self.color_dialog_cursor += 1;
+                            self.win.needs_redraw = true;
+                        }
+                    }
+                    return;
+                },
+            }
+        }
+
+        // Typing into active inline text editor
+        if (self.text_editor) |*te| {
+            if (is_ctrl) {
+                switch (sym) {
+                    c.XKB_KEY_Return, c.XKB_KEY_KP_Enter => {
+                        self.commitTextEditing();
+                        return;
+                    },
+                    c.XKB_KEY_a, c.XKB_KEY_A => {
+                        te.selectAll();
+                        self.win.needs_redraw = true;
+                        return;
+                    },
+                    c.XKB_KEY_c, c.XKB_KEY_C => {
+                        te.copyToClipboard();
+                        self.setStatus("Copied text");
+                        self.win.needs_redraw = true;
+                        return;
+                    },
+                    c.XKB_KEY_x, c.XKB_KEY_X => {
+                        te.cutToClipboard();
+                        if (self.findAnnotationById(te.annotation_id)) |ann| self.updateTextAnnotationBounds(ann);
+                        self.setStatus("Cut text");
+                        self.win.needs_redraw = true;
+                        return;
+                    },
+                    c.XKB_KEY_v, c.XKB_KEY_V => {
+                        te.pasteFromClipboard();
+                        if (self.findAnnotationById(te.annotation_id)) |ann| self.updateTextAnnotationBounds(ann);
+                        self.setStatus("Pasted text");
+                        self.win.needs_redraw = true;
+                        return;
+                    },
+                    c.XKB_KEY_z, c.XKB_KEY_Z => {
+                        te.undo();
+                        if (self.findAnnotationById(te.annotation_id)) |ann| self.updateTextAnnotationBounds(ann);
+                        self.win.needs_redraw = true;
+                        return;
+                    },
+                    c.XKB_KEY_y, c.XKB_KEY_Y => {
+                        te.redo();
+                        if (self.findAnnotationById(te.annotation_id)) |ann| self.updateTextAnnotationBounds(ann);
+                        self.win.needs_redraw = true;
+                        return;
+                    },
+                    c.XKB_KEY_BackSpace => {
+                        te.deleteWordBackward();
+                        if (self.findAnnotationById(te.annotation_id)) |ann| self.updateTextAnnotationBounds(ann);
+                        self.win.needs_redraw = true;
+                        return;
+                    },
+                    c.XKB_KEY_Delete => {
+                        te.deleteWordForward();
+                        if (self.findAnnotationById(te.annotation_id)) |ann| self.updateTextAnnotationBounds(ann);
+                        self.win.needs_redraw = true;
+                        return;
+                    },
+                    c.XKB_KEY_Left => {
+                        te.moveWordLeft(is_shift);
+                        self.win.needs_redraw = true;
+                        return;
+                    },
+                    c.XKB_KEY_Right => {
+                        te.moveWordRight(is_shift);
+                        self.win.needs_redraw = true;
+                        return;
+                    },
+                    c.XKB_KEY_Home => {
+                        te.moveHome(is_shift, true);
+                        self.win.needs_redraw = true;
+                        return;
+                    },
+                    c.XKB_KEY_End => {
+                        te.moveEnd(is_shift, true);
+                        self.win.needs_redraw = true;
+                        return;
+                    },
+                    else => {},
+                }
+            } else {
+                switch (sym) {
+                    c.XKB_KEY_Return, c.XKB_KEY_KP_Enter => {
+                        te.insertBytes("\n") catch {};
+                        if (self.findAnnotationById(te.annotation_id)) |ann| self.updateTextAnnotationBounds(ann);
+                        self.win.needs_redraw = true;
+                        return;
+                    },
+                    c.XKB_KEY_Escape => {
+                        self.commitTextEditing();
+                        return;
+                    },
+                    c.XKB_KEY_BackSpace => {
+                        te.deleteBackward();
+                        if (self.findAnnotationById(te.annotation_id)) |ann| self.updateTextAnnotationBounds(ann);
+                        self.win.needs_redraw = true;
+                        return;
+                    },
+                    c.XKB_KEY_Delete => {
+                        te.deleteForward();
+                        if (self.findAnnotationById(te.annotation_id)) |ann| self.updateTextAnnotationBounds(ann);
+                        self.win.needs_redraw = true;
+                        return;
+                    },
+                    c.XKB_KEY_Left => {
+                        te.moveLeft(is_shift);
+                        self.win.needs_redraw = true;
+                        return;
+                    },
+                    c.XKB_KEY_Right => {
+                        te.moveRight(is_shift);
+                        self.win.needs_redraw = true;
+                        return;
+                    },
+                    c.XKB_KEY_Up => {
+                        if (self.findAnnotationById(te.annotation_id)) |ann| {
+                            te.moveUp(is_shift, self.font, ann.font_size);
+                        }
+                        self.win.needs_redraw = true;
+                        return;
+                    },
+                    c.XKB_KEY_Down => {
+                        if (self.findAnnotationById(te.annotation_id)) |ann| {
+                            te.moveDown(is_shift, self.font, ann.font_size);
+                        }
+                        self.win.needs_redraw = true;
+                        return;
+                    },
+                    c.XKB_KEY_Home => {
+                        te.moveHome(is_shift, false);
+                        self.win.needs_redraw = true;
+                        return;
+                    },
+                    c.XKB_KEY_End => {
+                        te.moveEnd(is_shift, false);
+                        self.win.needs_redraw = true;
+                        return;
+                    },
+                    else => {
+                        if (utf8.len > 0) {
+                            te.insertBytes(utf8) catch {};
+                            if (self.findAnnotationById(te.annotation_id)) |ann| self.updateTextAnnotationBounds(ann);
+                            self.win.needs_redraw = true;
+                            return;
+                        }
+                    },
                 }
             }
+            return;
         }
 
         // Font size input box editing
@@ -2554,26 +3788,51 @@ pub const AnnotateApp = struct {
 
     fn handleToolbarClick(self: *AnnotateApp, x: i32, y: i32) void {
         const is_narrow = (self.win.width < 960);
-        const on_row2 = is_narrow and (y >= 40);
+        const on_row2 = is_narrow and (y >= 38);
 
         if (!on_row2) {
-            // Row 1: Tools, Fill, Crop, Rotate, Layers
-            var bx: i32 = 14;
+            // Row 1: Groups 1 through 10
+            var bx: i32 = 12;
             const btn_w: i32 = 28;
 
-            const tools = [_]Tool{ .select, .freehand, .arrow, .line, .rect, .circle, .text, .step_badge, .highlight, .blur, .pixelate, .eraser };
-            for (tools) |t| {
-                if (x >= bx and x < bx + btn_w) {
-                    self.setActiveTool(t);
-                    return;
-                }
-                bx += btn_w + 3;
+            // Group 1: Select
+            if (x >= bx and x < bx + btn_w) {
+                self.setActiveTool(.select);
+                return;
             }
+            bx += btn_w + 13;
 
-            bx += 6; // Separator gap
+            // Group 2: Freehand
+            if (x >= bx and x < bx + btn_w) {
+                self.setActiveTool(.freehand);
+                return;
+            }
+            bx += btn_w + 13;
 
-            // Fill toggle ()
-            if (x >= bx and x < bx + 30) {
+            // Group 3: Arrow & Line
+            if (x >= bx and x < bx + btn_w) {
+                self.setActiveTool(.arrow);
+                return;
+            }
+            bx += btn_w + 3;
+            if (x >= bx and x < bx + btn_w) {
+                self.setActiveTool(.line);
+                return;
+            }
+            bx += btn_w + 13;
+
+            // Group 4: Rectangle & Ellipse & Fill
+            if (x >= bx and x < bx + btn_w) {
+                self.setActiveTool(.rect);
+                return;
+            }
+            bx += btn_w + 3;
+            if (x >= bx and x < bx + btn_w) {
+                self.setActiveTool(.circle);
+                return;
+            }
+            bx += btn_w + 3;
+            if (x >= bx and x < bx + btn_w) {
                 self.fill_shape = !self.fill_shape;
                 for (self.selected_ids.items) |sid| {
                     if (self.findAnnotationById(sid)) |a| a.filled = self.fill_shape;
@@ -2582,63 +3841,73 @@ pub const AnnotateApp = struct {
                 self.win.needs_redraw = true;
                 return;
             }
-            bx += 34;
+            bx += btn_w + 13;
 
-            // Crop tool ()
-            if (x >= bx and x < bx + 30) {
-                self.startCrop();
+            // Group 5: Text Annotation & Font Size
+            if (x >= bx and x < bx + btn_w) {
+                self.setActiveTool(.text);
                 return;
             }
-            bx += 34;
-
-            // Rotate 90* left (󰚪)
-            if (x >= bx and x < bx + 30) {
-                self.rotate(false) catch {};
+            bx += btn_w + 4;
+            if (x >= bx and x < bx + 20) {
+                self.decreaseFontSize();
                 return;
             }
-            bx += 34;
-
-            // Layers panel toggle ()
-            if (x >= bx and x < bx + 30) {
-                self.show_layers = !self.show_layers;
+            bx += 20 + 2;
+            if (x >= bx and x < bx + 36) {
+                self.font_dropdown_open = !self.font_dropdown_open;
                 self.win.needs_redraw = true;
                 return;
             }
-            bx += 34;
+            bx += 36 + 2;
+            if (x >= bx and x < bx + 20) {
+                self.increaseFontSize();
+                return;
+            }
+            bx += 20 + 13;
+
+            // Group 6: Numbered Step Badge
+            if (x >= bx and x < bx + btn_w) {
+                self.setActiveTool(.step_badge);
+                return;
+            }
+            bx += btn_w + 13;
+
+            // Group 7: Blur & Pixelate
+            if (x >= bx and x < bx + btn_w) {
+                self.setActiveTool(.blur);
+                return;
+            }
+            bx += btn_w + 3;
+            if (x >= bx and x < bx + btn_w) {
+                self.setActiveTool(.pixelate);
+                return;
+            }
+            bx += btn_w + 13;
+
+            // Group 8: Highlight
+            if (x >= bx and x < bx + btn_w) {
+                self.setActiveTool(.highlight);
+                return;
+            }
+            bx += btn_w + 13;
+
+            // Group 9: Eraser
+            if (x >= bx and x < bx + btn_w) {
+                self.setActiveTool(.eraser);
+                return;
+            }
+            bx += btn_w + 13;
+
+            // Group 10: Crop
+            if (x >= bx and x < bx + btn_w) {
+                self.startCrop();
+                return;
+            }
+            bx += btn_w + 13;
 
             if (!is_narrow) {
-                bx += 6; // Separator gap
-                bx += 8; // Separator width
-
-                // Font size decrease (󰧳)
-                if (x >= bx and x < bx + 26) {
-                    self.decreaseFontSize();
-                    return;
-                }
-                bx += 28;
-
-                // Font size dropdown trigger (Text)
-                {
-                    const btn_w2: i32 = 40;
-                    if (x >= bx and x < bx + btn_w2) {
-                        self.font_dropdown_open = !self.font_dropdown_open;
-                        self.win.needs_redraw = true;
-                        return;
-                    }
-                    bx += btn_w2 + 6;
-                }
-
-                // Font size increase (󰧴)
-                if (x >= bx and x < bx + 26) {
-                    self.increaseFontSize();
-                    return;
-                }
-                bx += 28;
-
-                bx += 6; // Separator gap
-                bx += 8; // Separator width
-
-                // Palette swatches
+                // Group 11: Color Palette
                 for (Palette.colors) |col| {
                     if (x >= bx and x < bx + 16) {
                         self.current_color = col;
@@ -2651,70 +3920,48 @@ pub const AnnotateApp = struct {
                     bx += 18;
                 }
 
-                // Color picker () — spawn mizu picker
-                if (x >= bx and x < bx + 28) {
-                    _ = c.system("mizu picker > /tmp/mizu_picker_hex.txt 2>/dev/null || true");
-                    // Read picked hex and set current color
-                    const c_file = c.fopen("/tmp/mizu_picker_hex.txt", "r");
-                    if (c_file != null) {
-                        defer _ = c.fclose(c_file);
-                        var c_buf: [16]u8 = undefined;
-                        const n_read = c.fread(&c_buf, 1, c_buf.len, c_file.?);
-                        if (n_read > 6) {
-                            const hex_str = std.mem.trim(u8, c_buf[0..n_read], " \t\r\n");
-                        if (hex_str.len >= 7 and hex_str[0] == '#') {
-                            const r = std.fmt.parseInt(u8, hex_str[1..3], 16) catch self.current_color.r;
-                            const g = std.fmt.parseInt(u8, hex_str[3..5], 16) catch self.current_color.g;
-                            const b = std.fmt.parseInt(u8, hex_str[5..7], 16) catch self.current_color.b;
-                            self.current_color = Color.rgb(r, g, b);
-                            for (self.selected_ids.items) |sid| {
-                                if (self.findAnnotationById(sid)) |a| a.color = self.current_color;
-                            }
-                        }
-                        }
-                    }
-                    self.win.needs_redraw = true;
+                // Palette icon () -> open custom hex input
+                if (x >= bx and x < bx + 26) {
+                    self.openColorDialog();
                     return;
                 }
-                bx += 32;
+                bx += 29;
 
-                // Right side global buttons: Undo, Redo, Save, Copy
-                const rx_base: i32 = @as(i32, @intCast(self.win.width)) - 146;
+                // Color picker (󰈊) -> pick from screen, set color & copy to clipboard
+                if (x >= bx and x < bx + 26) {
+                    self.pickColorFromScreen();
+                    return;
+                }
+                bx += 29;
+
+                // Group 12: Right Actions: Undo, Redo, Save, Copy
+                const rx_base: i32 = @as(i32, @intCast(self.win.width)) - 138;
                 if (x >= rx_base) {
                     var rx = rx_base;
-                    // Undo ()
-                    if (x >= rx and x < rx + 30) {
+                    if (x >= rx and x < rx + 28) {
                         self.undo();
                         return;
                     }
-                    rx += 34;
-
-                    // Redo ()
-                    if (x >= rx and x < rx + 30) {
+                    rx += 31;
+                    if (x >= rx and x < rx + 28) {
                         self.redo();
                         return;
                     }
-                    rx += 34;
-
-                    // Save (󰆓)
-                    if (x >= rx and x < rx + 30) {
+                    rx += 33;
+                    if (x >= rx and x < rx + 28) {
                         self.save() catch {};
                         return;
                     }
-                    rx += 34;
-
-                    // Copy (󰆏)
-                    if (x >= rx and x < rx + 30) {
+                    rx += 31;
+                    if (x >= rx and x < rx + 32) {
                         self.copyClipboard() catch {};
                         return;
                     }
                 }
             }
         } else {
-            // Row 2 on narrow windows: Palette, Color picker, Actions
-            var bx2: i32 = 14;
-
-            // Palette swatches
+            // Row 2 on narrow windows: Palette, Picker, Actions
+            var bx2: i32 = 12;
             for (Palette.colors) |col| {
                 if (x >= bx2 and x < bx2 + 16) {
                     self.current_color = col;
@@ -2727,57 +3974,39 @@ pub const AnnotateApp = struct {
                 bx2 += 18;
             }
 
-            // Color picker () — spawn mizu picker
-            if (x >= bx2 and x < bx2 + 28) {
-                _ = c.system("mizu picker > /tmp/mizu_picker_hex.txt 2>/dev/null || true");
-                const c_file = c.fopen("/tmp/mizu_picker_hex.txt", "r");
-                if (c_file != null) {
-                    defer _ = c.fclose(c_file);
-                    var c_buf: [16]u8 = undefined;
-                    _ = c.fread(&c_buf, 1, c_buf.len, c_file.?);
-                    const hex_str = std.mem.trim(u8, c_buf[0..], " \t\r\n");
-                    if (hex_str.len >= 7 and hex_str[0] == '#') {
-                        const r = std.fmt.parseInt(u8, hex_str[1..3], 16) catch self.current_color.r;
-                        const g = std.fmt.parseInt(u8, hex_str[3..5], 16) catch self.current_color.g;
-                        const b = std.fmt.parseInt(u8, hex_str[5..7], 16) catch self.current_color.b;
-                        self.current_color = Color.rgb(r, g, b);
-                        for (self.selected_ids.items) |sid| {
-                            if (self.findAnnotationById(sid)) |a| a.color = self.current_color;
-                        }
-                    }
-                }
-                self.win.needs_redraw = true;
+            // Palette icon () -> open custom hex input
+            if (x >= bx2 and x < bx2 + 26) {
+                self.openColorDialog();
                 return;
             }
-            bx2 += 32;
+            bx2 += 29;
 
-            // Right side global buttons: Undo, Redo, Save, Copy
-            const rx_base: i32 = @as(i32, @intCast(self.win.width)) - 146;
+            // Color picker (󰈊) -> pick from screen, set color & copy to clipboard
+            if (x >= bx2 and x < bx2 + 26) {
+                self.pickColorFromScreen();
+                return;
+            }
+            bx2 += 29;
+
+            const rx_base: i32 = @as(i32, @intCast(self.win.width)) - 138;
             if (x >= rx_base) {
                 var rx = rx_base;
-                // Undo ()
-                if (x >= rx and x < rx + 30) {
+                if (x >= rx and x < rx + 28) {
                     self.undo();
                     return;
                 }
-                rx += 34;
-
-                // Redo ()
-                if (x >= rx and x < rx + 30) {
+                rx += 31;
+                if (x >= rx and x < rx + 28) {
                     self.redo();
                     return;
                 }
-                rx += 34;
-
-                // Save (󰆓)
-                if (x >= rx and x < rx + 30) {
+                rx += 33;
+                if (x >= rx and x < rx + 28) {
                     self.save() catch {};
                     return;
                 }
-                rx += 34;
-
-                // Copy (󰆏)
-                if (x >= rx and x < rx + 30) {
+                rx += 31;
+                if (x >= rx and x < rx + 32) {
                     self.copyClipboard() catch {};
                     return;
                 }
@@ -2925,25 +4154,25 @@ pub const AnnotateApp = struct {
 
         r.clear(th.base);
 
-        // Canvas Area
-        const c_rect = self.canvasRect();
+        // Canvas Area (clipped in physical framebuffer coordinates)
+        const c_rect = self.toPhysRect(self.canvasRect());
         var canvas_renderer = r.withClip(c_rect);
 
-        // Render Base Image
-        const dest_x = self.pan_x;
-        const dest_y = self.pan_y;
-        const dest_w = @as(f64, @floatFromInt(self.base_image.img.width)) * @as(f64, self.zoom);
-        const dest_h = @as(f64, @floatFromInt(self.base_image.img.height)) * @as(f64, self.zoom);
+        // Render Base Image in Physical Coordinates
+        const dest_px = self.imageToPhysX(0);
+        const dest_py = self.imageToPhysY(0);
+        const phys_w: f64 = @as(f64, @floatFromInt(self.base_image.img.width)) * @as(f64, self.zoom * self.effectiveScale());
+        const phys_h: f64 = @as(f64, @floatFromInt(self.base_image.img.height)) * @as(f64, self.zoom * self.effectiveScale());
 
         // Soft drop shadow behind canvas
         canvas_renderer.drawSoftShadow(
-            @intFromFloat(dest_x),
-            @intFromFloat(dest_y),
-            @intFromFloat(dest_w),
-            @intFromFloat(dest_h),
-            8,
-            16,
-            4,
+            dest_px,
+            dest_py,
+            @intFromFloat(phys_w),
+            @intFromFloat(phys_h),
+            self.toPhysSize(8),
+            self.toPhysSize(16),
+            @as(i32, @intCast(self.toPhysSize(4))),
             th.shadow_dark,
         );
 
@@ -2953,15 +4182,15 @@ pub const AnnotateApp = struct {
             .pixels = self.base_image.img.pixels,
             .allocator = self.allocator,
         };
-        canvas_renderer.drawImage(&r_img, dest_x, dest_y, dest_w, dest_h);
+        canvas_renderer.drawImage(&r_img, @floatFromInt(dest_px), @floatFromInt(dest_py), phys_w, phys_h);
 
         canvas_renderer.drawRoundedBorder(
-            @intFromFloat(dest_x),
-            @intFromFloat(dest_y),
-            @intFromFloat(dest_w),
-            @intFromFloat(dest_h),
-            2,
-            1,
+            dest_px,
+            dest_py,
+            @intFromFloat(phys_w),
+            @intFromFloat(phys_h),
+            self.toPhysSize(2),
+            self.toPhysSize(1),
             th.border,
         );
 
@@ -2972,7 +4201,7 @@ pub const AnnotateApp = struct {
         }
 
         // Render Active Drawing Preview
-        if (self.is_drawing and self.active_tool != .freehand) {
+        if (self.is_drawing and self.active_tool != .freehand and self.active_tool != .eraser) {
             self.renderDrawingPreview(canvas_renderer);
         }
 
@@ -2983,10 +4212,10 @@ pub const AnnotateApp = struct {
 
         // Render Marquee Selection Box
         if (self.is_marquee) {
-            const mx0 = self.imageToScreenX(self.drag_start_x);
-            const my0 = self.imageToScreenY(self.drag_start_y);
-            const mx1 = self.imageToScreenX(self.drag_curr_x);
-            const my1 = self.imageToScreenY(self.drag_curr_y);
+            const mx0 = self.imageToPhysX(self.drag_start_x);
+            const my0 = self.imageToPhysY(self.drag_start_y);
+            const mx1 = self.imageToPhysX(self.drag_curr_x);
+            const my1 = self.imageToPhysY(self.drag_curr_y);
             const rx = @min(mx0, mx1);
             const ry = @min(my0, my1);
             const rw: u32 = @intCast(@abs(mx1 - mx0));
@@ -2998,20 +4227,9 @@ pub const AnnotateApp = struct {
         // Render Selection Bounding Box & Handles
         self.renderSelectionHandles(canvas_renderer);
 
-        // Render Inline Text Editor
-        if (self.editing_text_id) |tid| {
-            if (self.findAnnotationById(tid)) |ann| {
-                const sx = self.imageToScreenX(ann.rect.x);
-                const sy = self.imageToScreenY(ann.rect.y);
-                const slice = ann.text_buf[0..ann.text_len];
-                const text_w = r.measureTextWithSize(self.font, slice, ann.font_size);
-
-                canvas_renderer.fillRoundedRect(sx - 4, sy - 4, @intCast(@max(40, text_w + 20)), @intCast(ann.font_size + 12), 4, Color.init(200, 24, 24, 37));
-                canvas_renderer.drawRoundedBorder(sx - 4, sy - 4, @intCast(@max(40, text_w + 20)), @intCast(ann.font_size + 12), 4, 1, th.accent);
-                canvas_renderer.drawTextWithSize(self.font, slice, sx, sy + @as(i32, @intCast(ann.font_size)), ann.font_size, ann.color);
-                // Blinking cursor
-                canvas_renderer.fillRect(sx + @as(i32, @intCast(text_w)) + 2, sy + 2, 2, ann.font_size, th.accent);
-            }
+        // Render Active Inline Text Editor
+        if (self.text_editor != null and self.editing_text_id != null) {
+            self.renderInlineTextEditor(canvas_renderer);
         }
 
         // Render Side Panels
@@ -3030,152 +4248,260 @@ pub const AnnotateApp = struct {
             self.renderFontDropdown(r);
         }
 
+        // Render Custom Hex Color Dialog
+        if (self.color_dialog_open) {
+            self.renderColorDialog(r);
+        }
+
         if (self.status_ticks > 0) {
             self.status_ticks -= 1;
             if (self.status_ticks == 0) self.status_len = 0;
         }
     }
 
+    fn renderInlineTextEditor(self: *AnnotateApp, r: renderer.Renderer) void {
+        const ed = self.text_editor orelse return;
+        const ann = self.findAnnotationById(ed.annotation_id) orelse return;
+        const th = self.cfg.theme;
+
+        const sx = self.imageToPhysX(ann.rect.x);
+        const sy = self.imageToPhysY(ann.rect.y);
+        const phys_fs = @max(10, @as(u32, @intFromFloat(@as(f32, @floatFromInt(ann.font_size)) * self.zoom * self.effectiveScale())));
+        const line_h = @as(i32, @intCast(phys_fs + @max(2, @divTrunc(phys_fs, 4))));
+
+        const phys_w = @max(self.toPhysSize(60), @as(u32, @intCast(@max(40, self.imageToPhysX(ann.rect.x + @as(i32, @intCast(ann.rect.w))) - sx))));
+        const phys_h = @max(self.toPhysSize(30), @as(u32, @intCast(@max(24, self.imageToPhysY(ann.rect.y + @as(i32, @intCast(ann.rect.h))) - sy))));
+        const pad_x = self.toPhysSize(4);
+        const pad_y = self.toPhysSize(4);
+        const pad_xi: i32 = @intCast(pad_x);
+        const pad_yi: i32 = @intCast(pad_y);
+
+        // Transparent background: NO background fill while typing!
+        // Subtle 1px accent border ONLY while editing
+        r.drawRoundedBorder(sx - pad_xi, sy - pad_yi, phys_w + pad_x * 2, phys_h + pad_y * 2, self.toPhysSize(2), 1, th.accent);
+
+        // Find selection range if any
+        const sel_range = ed.getSelectionRange();
+
+        // Render line by line
+        const slice = ed.text.items;
+        var line_it = std.mem.splitScalar(u8, slice, '\n');
+        var line_idx: usize = 0;
+        var byte_offset: usize = 0;
+
+        var caret_x: i32 = sx;
+        var caret_y: i32 = sy;
+
+        while (line_it.next()) |line| : (line_idx += 1) {
+            const line_start = byte_offset;
+            const line_end = byte_offset + line.len;
+            const line_y = sy + @as(i32, @intCast(line_idx)) * line_h;
+
+            // Render selection background for this line if selected
+            if (sel_range) |sr| {
+                if (sr.start < line_end and sr.end > line_start) {
+                    const sel_sub_start = @max(sr.start, line_start) - line_start;
+                    const sel_sub_end = @min(sr.end, line_end) - line_start;
+                    const pre_w = r.measureTextWithSize(self.font, line[0..sel_sub_start], phys_fs);
+                    const sel_w = r.measureTextWithSize(self.font, line[sel_sub_start..sel_sub_end], phys_fs);
+                    r.fillRect(sx + @as(i32, @intCast(pre_w)), line_y, sel_w, @intCast(line_h), Color.init(90, 97, 175, 239));
+                }
+            }
+
+            // Draw line text
+            r.drawTextWithSize(self.font, line, sx, line_y + @as(i32, @intCast(phys_fs)), phys_fs, ann.color);
+
+            // Check if cursor is on this line
+            if (ed.cursor_idx >= line_start and (ed.cursor_idx <= line_end or line_it.index == null)) {
+                const cursor_col = ed.cursor_idx - line_start;
+                const cw = r.measureTextWithSize(self.font, line[0..cursor_col], phys_fs);
+                caret_x = sx + @as(i32, @intCast(cw));
+                caret_y = line_y;
+            }
+
+            byte_offset = line_end + 1; // skip \n
+        }
+
+        // Draw cursor (2px wide)
+        r.fillRect(caret_x, caret_y, self.toPhysSize(2), phys_fs + 2, th.accent);
+    }
+
     fn renderAnnotationOnCanvas(self: *AnnotateApp, r: renderer.Renderer, ann: *const Annotation) void {
         const th = self.cfg.theme;
-        const scaled_sw = @max(1, @as(u32, @intFromFloat(@as(f32, @floatFromInt(ann.stroke_width)) * self.zoom)));
+        const scaled_sw = @max(1, @as(u32, @intFromFloat(@as(f32, @floatFromInt(ann.stroke_width)) * self.zoom * self.effectiveScale())));
 
         switch (ann.kind) {
             .arrow => {
-                const sx0 = self.imageToScreenX(ann.start_x);
-                const sy0 = self.imageToScreenY(ann.start_y);
-                const sx1 = self.imageToScreenX(ann.end_x);
-                const sy1 = self.imageToScreenY(ann.end_y);
+                const sx0 = self.imageToPhysX(ann.start_x);
+                const sy0 = self.imageToPhysY(ann.start_y);
+                const sx1 = self.imageToPhysX(ann.end_x);
+                const sy1 = self.imageToPhysY(ann.end_y);
                 r.drawArrow(sx0, sy0, sx1, sy1, scaled_sw, ann.color);
             },
             .line => {
-                const sx0 = self.imageToScreenX(ann.start_x);
-                const sy0 = self.imageToScreenY(ann.start_y);
-                const sx1 = self.imageToScreenX(ann.end_x);
-                const sy1 = self.imageToScreenY(ann.end_y);
+                const sx0 = self.imageToPhysX(ann.start_x);
+                const sy0 = self.imageToPhysY(ann.start_y);
+                const sx1 = self.imageToPhysX(ann.end_x);
+                const sy1 = self.imageToPhysY(ann.end_y);
                 r.drawStrokeLine(sx0, sy0, sx1, sy1, scaled_sw, ann.color);
             },
             .rect => {
                 const b = ann.getBounds();
-                const sx = self.imageToScreenX(b.x);
-                const sy = self.imageToScreenY(b.y);
-                const sw: u32 = @intFromFloat(@as(f32, @floatFromInt(b.w)) * self.zoom);
-                const sh: u32 = @intFromFloat(@as(f32, @floatFromInt(b.h)) * self.zoom);
+                const sx0 = self.imageToPhysX(b.x);
+                const sy0 = self.imageToPhysY(b.y);
+                const sx1 = self.imageToPhysX(b.x + @as(i32, @intCast(b.w)));
+                const sy1 = self.imageToPhysY(b.y + @as(i32, @intCast(b.h)));
+                const rx = @min(sx0, sx1);
+                const ry = @min(sy0, sy1);
+                const rw: u32 = @intCast(@abs(sx1 - sx0));
+                const rh: u32 = @intCast(@abs(sy1 - sy0));
+                const cr = self.toPhysSize(4);
                 if (ann.filled) {
-                    r.fillRoundedRect(sx, sy, sw, sh, 4, ann.color);
+                    r.fillRoundedRect(rx, ry, rw, rh, cr, ann.color);
                 } else {
-                    r.drawRoundedBorder(sx, sy, sw, sh, 4, scaled_sw, ann.color);
+                    r.drawRoundedBorder(rx, ry, rw, rh, cr, scaled_sw, ann.color);
                 }
             },
             .circle => {
                 const b = ann.getBounds();
-                const sx = self.imageToScreenX(b.x);
-                const sy = self.imageToScreenY(b.y);
-                const sw: f64 = @as(f64, @floatFromInt(b.w)) * @as(f64, self.zoom);
-                const sh: f64 = @as(f64, @floatFromInt(b.h)) * @as(f64, self.zoom);
-                const cx = @as(f64, @floatFromInt(sx)) + sw / 2.0;
-                const cy = @as(f64, @floatFromInt(sy)) + sh / 2.0;
-                const rad = @min(sw, sh) / 2.0;
+                const sx0 = self.imageToPhysX(b.x);
+                const sy0 = self.imageToPhysY(b.y);
+                const sx1 = self.imageToPhysX(b.x + @as(i32, @intCast(b.w)));
+                const sy1 = self.imageToPhysY(b.y + @as(i32, @intCast(b.h)));
+                const rx = @min(sx0, sx1);
+                const ry = @min(sy0, sy1);
+                const rw: u32 = @intCast(@abs(sx1 - sx0));
+                const rh: u32 = @intCast(@abs(sy1 - sy0));
+                const cx = rx + @as(i32, @intCast(@divTrunc(rw, 2)));
+                const cy = ry + @as(i32, @intCast(@divTrunc(rh, 2)));
+                const rad_x = @divTrunc(rw, 2);
+                const rad_y = @divTrunc(rh, 2);
                 if (ann.filled) {
-                    r.fillCircle(cx, cy, rad, ann.color);
+                    r.fillEllipse(cx, cy, rad_x, rad_y, ann.color);
                 } else {
-                    r.drawCircleBorder(cx, cy, rad, @floatFromInt(scaled_sw), ann.color);
+                    r.drawEllipseBorder(cx, cy, rad_x, rad_y, scaled_sw, ann.color);
                 }
             },
             .highlight => {
                 const b = ann.getBounds();
-                const sx = self.imageToScreenX(b.x);
-                const sy = self.imageToScreenY(b.y);
-                const sw: u32 = @intFromFloat(@as(f32, @floatFromInt(b.w)) * self.zoom);
-                const sh: u32 = @intFromFloat(@as(f32, @floatFromInt(b.h)) * self.zoom);
-                r.fillRect(sx, sy, sw, sh, Color.init(100, ann.color.r, ann.color.g, ann.color.b));
+                const sx0 = self.imageToPhysX(b.x);
+                const sy0 = self.imageToPhysY(b.y);
+                const sx1 = self.imageToPhysX(b.x + @as(i32, @intCast(b.w)));
+                const sy1 = self.imageToPhysY(b.y + @as(i32, @intCast(b.h)));
+                const rx = @min(sx0, sx1);
+                const ry = @min(sy0, sy1);
+                const rw: u32 = @intCast(@abs(sx1 - sx0));
+                const rh: u32 = @intCast(@abs(sy1 - sy0));
+                r.fillRect(rx, ry, rw, rh, Color.init(100, ann.color.r, ann.color.g, ann.color.b));
             },
             .blur => {
                 const b = ann.getBounds();
-                const sx = self.imageToScreenX(b.x);
-                const sy = self.imageToScreenY(b.y);
-                const sw: u32 = @intFromFloat(@as(f32, @floatFromInt(b.w)) * self.zoom);
-                const sh: u32 = @intFromFloat(@as(f32, @floatFromInt(b.h)) * self.zoom);
-                // Frosted blur mask representation on canvas
-                r.fillRect(sx, sy, sw, sh, Color.init(170, 180, 185, 200));
-                r.drawRoundedBorder(sx, sy, sw, sh, 0, 1, Color.init(120, 255, 255, 255));
-                r.drawTextWithSize(self.font, "󰈈 Blur", sx + 6, sy + 16, 11, th.surface);
+                const sx0 = self.imageToPhysX(b.x);
+                const sy0 = self.imageToPhysY(b.y);
+                const sx1 = self.imageToPhysX(b.x + @as(i32, @intCast(b.w)));
+                const sy1 = self.imageToPhysY(b.y + @as(i32, @intCast(b.h)));
+                const rx = @min(sx0, sx1);
+                const ry = @min(sy0, sy1);
+                const rw: u32 = @intCast(@abs(sx1 - sx0));
+                const rh: u32 = @intCast(@abs(sy1 - sy0));
+                r.fillRect(rx, ry, rw, rh, Color.init(170, 180, 185, 200));
+                r.drawRoundedBorder(rx, ry, rw, rh, 0, 1, Color.init(120, 255, 255, 255));
+                r.drawTextWithSize(self.font, "󰈈 Blur", rx + 6, ry + @as(i32, @intCast(self.toPhysSize(16))), self.toPhysSize(11), th.surface);
             },
             .pixelate => {
                 const b = ann.getBounds();
-                const sx = self.imageToScreenX(b.x);
-                const sy = self.imageToScreenY(b.y);
-                const sw: u32 = @intFromFloat(@as(f32, @floatFromInt(b.w)) * self.zoom);
-                const sh: u32 = @intFromFloat(@as(f32, @floatFromInt(b.h)) * self.zoom);
-                r.fillRect(sx, sy, sw, sh, Color.init(210, 40, 44, 52));
-                r.drawRoundedBorder(sx, sy, sw, sh, 0, 1, th.accent);
-                r.drawTextWithSize(self.font, "󰹑 Pixelate", sx + 6, sy + 16, 11, Color.rgb(255, 255, 255));
+                const sx0 = self.imageToPhysX(b.x);
+                const sy0 = self.imageToPhysY(b.y);
+                const sx1 = self.imageToPhysX(b.x + @as(i32, @intCast(b.w)));
+                const sy1 = self.imageToPhysY(b.y + @as(i32, @intCast(b.h)));
+                const rx = @min(sx0, sx1);
+                const ry = @min(sy0, sy1);
+                const rw: u32 = @intCast(@abs(sx1 - sx0));
+                const rh: u32 = @intCast(@abs(sy1 - sy0));
+                r.fillRect(rx, ry, rw, rh, Color.init(210, 40, 44, 52));
+                r.drawRoundedBorder(rx, ry, rw, rh, 0, 1, th.accent);
+                r.drawTextWithSize(self.font, "󰹑 Pixelate", rx + 6, ry + @as(i32, @intCast(self.toPhysSize(16))), self.toPhysSize(11), Color.rgb(255, 255, 255));
             },
             .image => {
                 if (ann.image_data) |*img| {
                     const b = ann.getBounds();
-                    const sx = @as(f64, @floatFromInt(self.imageToScreenX(b.x)));
-                    const sy = @as(f64, @floatFromInt(self.imageToScreenY(b.y)));
-                    const sw = @as(f64, @floatFromInt(b.w)) * @as(f64, self.zoom);
-                    const sh = @as(f64, @floatFromInt(b.h)) * @as(f64, self.zoom);
-                    if (sw > 0.0 and sh > 0.0) {
+                    const sx0 = self.imageToPhysX(b.x);
+                    const sy0 = self.imageToPhysY(b.y);
+                    const sx1 = self.imageToPhysX(b.x + @as(i32, @intCast(b.w)));
+                    const sy1 = self.imageToPhysY(b.y + @as(i32, @intCast(b.h)));
+                    const rx = @min(sx0, sx1);
+                    const ry = @min(sy0, sy1);
+                    const rw: f64 = @floatFromInt(@as(u32, @intCast(@abs(sx1 - sx0))));
+                    const rh: f64 = @floatFromInt(@as(u32, @intCast(@abs(sy1 - sy0))));
+                    if (rw > 0.0 and rh > 0.0) {
                         const r_img = renderer.Image{
                             .width = img.width,
                             .height = img.height,
                             .pixels = img.pixels,
                             .allocator = self.allocator,
                         };
-                        r.drawImage(&r_img, sx, sy, sw, sh);
+                        r.drawImage(&r_img, @floatFromInt(rx), @floatFromInt(ry), rw, rh);
                     }
                 }
             },
             .step_badge => {
-                const sx = self.imageToScreenX(ann.rect.x);
-                const sy = self.imageToScreenY(ann.rect.y);
-                const rad: f64 = 16.0 * @as(f64, self.zoom);
+                const sx = self.imageToPhysX(ann.rect.x);
+                const sy = self.imageToPhysY(ann.rect.y);
+                const rad: f64 = 16.0 * @as(f64, self.zoom * self.effectiveScale());
                 r.fillCircle(@floatFromInt(sx), @floatFromInt(sy), rad, ann.color);
-                r.drawCircleBorder(@floatFromInt(sx), @floatFromInt(sy), rad, 1.5, Color.rgb(255, 255, 255));
+                r.drawCircleBorder(@floatFromInt(sx), @floatFromInt(sy), rad, @max(1.0, 1.5 * self.effectiveScale()), Color.rgb(255, 255, 255));
 
                 var num_buf: [16]u8 = undefined;
                 const num_str = std.fmt.bufPrint(&num_buf, "{d}", .{ann.step_number}) catch "1";
-                const nw = r.measureTextWithSize(self.font, num_str, 12);
-                r.drawTextWithSize(self.font, num_str, sx - @divTrunc(@as(i32, @intCast(nw)), 2), sy + 4, 12, Color.rgb(255, 255, 255));
+                const badge_fs = @max(9, @as(u32, @intFromFloat(12.0 * self.zoom * self.effectiveScale())));
+                const nw = r.measureTextWithSize(self.font, num_str, badge_fs);
+                r.drawTextWithSize(self.font, num_str, sx - @divTrunc(@as(i32, @intCast(nw)), 2), sy + @as(i32, @intCast(@divTrunc(badge_fs, 3))), badge_fs, Color.rgb(255, 255, 255));
             },
             .text => {
                 if (self.editing_text_id == ann.id) return; // Drawn in inline editor
-                const sx = self.imageToScreenX(ann.rect.x);
-                const sy = self.imageToScreenY(ann.rect.y);
-                const slice = ann.text_buf[0..ann.text_len];
-                const sz: u32 = @intFromFloat(@as(f32, @floatFromInt(ann.font_size)) * self.zoom);
-                const text_w = r.measureTextWithSize(self.font, slice, sz);
-                var draw_x = sx;
-                switch (ann.text_align) {
-                    .center => draw_x = @as(i32, @intFromFloat(@as(f32, @floatFromInt(sx)) + @as(f32, @floatFromInt(ann.rect.w)) / 2.0 - @as(f32, @floatFromInt(text_w)) / 2.0)),
-                    .right => draw_x = sx + @as(i32, @intCast(ann.rect.w)) - @as(i32, @intFromFloat(@as(f32, @floatFromInt(text_w)))) - 4,
-                    else => draw_x = sx + 2,
+                const sx = self.imageToPhysX(ann.rect.x);
+                const sy = self.imageToPhysY(ann.rect.y);
+                const phys_fs = @max(10, @as(u32, @intFromFloat(@as(f32, @floatFromInt(ann.font_size)) * self.zoom * self.effectiveScale())));
+                const line_h = @as(i32, @intCast(phys_fs + @max(2, @divTrunc(phys_fs, 4))));
+                const full_slice = ann.text_buf[0..ann.text_len];
+
+                // Render finalized text directly over screenshot without background or border
+                var line_it = std.mem.splitScalar(u8, full_slice, '\n');
+                var cur_y = sy + @as(i32, @intCast(phys_fs));
+                while (line_it.next()) |line| {
+                    if (line.len > 0) {
+                        r.drawTextWithSize(self.font, line, sx, cur_y, phys_fs, ann.color);
+                    }
+                    cur_y += line_h;
                 }
-                r.drawTextWithSize(self.font, slice, draw_x, sy + @as(i32, @intCast(sz)), sz, ann.color);
             },
             .pen => {
                 if (ann.points.items.len < 2) return;
                 var i: usize = 0;
                 while (i + 1 < ann.points.items.len) : (i += 1) {
-                    const sx0 = self.imageToScreenX(ann.points.items[i].x);
-                    const sy0 = self.imageToScreenY(ann.points.items[i].y);
-                    const sx1 = self.imageToScreenX(ann.points.items[i + 1].x);
-                    const sy1 = self.imageToScreenY(ann.points.items[i + 1].y);
+                    const sx0 = self.imageToPhysX(ann.points.items[i].x);
+                    const sy0 = self.imageToPhysY(ann.points.items[i].y);
+                    const sx1 = self.imageToPhysX(ann.points.items[i + 1].x);
+                    const sy1 = self.imageToPhysY(ann.points.items[i + 1].y);
                     r.drawStrokeLine(sx0, sy0, sx1, sy1, scaled_sw, ann.color);
+                    if (scaled_sw > 2) {
+                        r.fillCircle(@floatFromInt(sx0), @floatFromInt(sy0), @as(f64, @floatFromInt(scaled_sw)) / 2.0, ann.color);
+                    }
+                }
+                if (ann.points.items.len > 0 and scaled_sw > 2) {
+                    const last_pt = ann.points.items[ann.points.items.len - 1];
+                    r.fillCircle(@floatFromInt(self.imageToPhysX(last_pt.x)), @floatFromInt(self.imageToPhysY(last_pt.y)), @as(f64, @floatFromInt(scaled_sw)) / 2.0, ann.color);
                 }
             },
         }
     }
 
     fn renderDrawingPreview(self: *AnnotateApp, r: renderer.Renderer) void {
-        const sx0 = self.imageToScreenX(self.drag_start_x);
-        const sy0 = self.imageToScreenY(self.drag_start_y);
-        const sx1 = self.imageToScreenX(self.drag_curr_x);
-        const sy1 = self.imageToScreenY(self.drag_curr_y);
-        const scaled_sw = @max(1, @as(u32, @intFromFloat(@as(f32, @floatFromInt(self.stroke_width)) * self.zoom)));
+        const sx0 = self.imageToPhysX(self.drag_start_x);
+        const sy0 = self.imageToPhysY(self.drag_start_y);
+        const sx1 = self.imageToPhysX(self.drag_curr_x);
+        const sy1 = self.imageToPhysY(self.drag_curr_y);
+        const scaled_sw = @max(1, @as(u32, @intFromFloat(@as(f32, @floatFromInt(self.stroke_width)) * self.zoom * self.effectiveScale())));
 
         switch (self.active_tool) {
             .arrow => r.drawArrow(sx0, sy0, sx1, sy1, scaled_sw, self.current_color),
@@ -3185,24 +4511,26 @@ pub const AnnotateApp = struct {
                 const ry = @min(sy0, sy1);
                 const rw: u32 = @intCast(@abs(sx1 - sx0));
                 const rh: u32 = @intCast(@abs(sy1 - sy0));
+                const cr = self.toPhysSize(4);
                 if (self.fill_shape) {
-                    r.fillRoundedRect(rx, ry, rw, rh, 4, self.current_color);
+                    r.fillRoundedRect(rx, ry, rw, rh, cr, self.current_color);
                 } else {
-                    r.drawRoundedBorder(rx, ry, rw, rh, 4, scaled_sw, self.current_color);
+                    r.drawRoundedBorder(rx, ry, rw, rh, cr, scaled_sw, self.current_color);
                 }
             },
             .circle => {
                 const rx = @min(sx0, sx1);
                 const ry = @min(sy0, sy1);
-                const rw: f64 = @floatFromInt(@as(u32, @intCast(@abs(sx1 - sx0))));
-                const rh: f64 = @floatFromInt(@as(u32, @intCast(@abs(sy1 - sy0))));
-                const cx = @as(f64, @floatFromInt(rx)) + rw / 2.0;
-                const cy = @as(f64, @floatFromInt(ry)) + rh / 2.0;
-                const rad = @min(rw, rh) / 2.0;
+                const rw: u32 = @intCast(@abs(sx1 - sx0));
+                const rh: u32 = @intCast(@abs(sy1 - sy0));
+                const cx = rx + @as(i32, @intCast(@divTrunc(rw, 2)));
+                const cy = ry + @as(i32, @intCast(@divTrunc(rh, 2)));
+                const rad_x = @divTrunc(rw, 2);
+                const rad_y = @divTrunc(rh, 2);
                 if (self.fill_shape) {
-                    r.fillCircle(cx, cy, rad, self.current_color);
+                    r.fillEllipse(cx, cy, rad_x, rad_y, self.current_color);
                 } else {
-                    r.drawCircleBorder(cx, cy, rad, @floatFromInt(scaled_sw), self.current_color);
+                    r.drawEllipseBorder(cx, cy, rad_x, rad_y, scaled_sw, self.current_color);
                 }
             },
             .highlight => {
@@ -3231,18 +4559,17 @@ pub const AnnotateApp = struct {
             const sid = self.selected_ids.items[0];
             for (self.annotations.items) |ann| {
                 if (ann.id == sid and (ann.kind == .arrow or ann.kind == .line)) {
-                    const s_sx = self.imageToScreenX(ann.start_x);
-                    const s_sy = self.imageToScreenY(ann.start_y);
-                    const e_sx = self.imageToScreenX(ann.end_x);
-                    const e_sy = self.imageToScreenY(ann.end_y);
+                    const s_sx = self.imageToPhysX(ann.start_x);
+                    const s_sy = self.imageToPhysY(ann.start_y);
+                    const e_sx = self.imageToPhysX(ann.end_x);
+                    const e_sy = self.imageToPhysY(ann.end_y);
 
-                    // Start handle: White circle with accent border
-                    r.fillCircle(@floatFromInt(s_sx), @floatFromInt(s_sy), 6, Color.rgb(255, 255, 255));
-                    r.drawCircleBorder(@floatFromInt(s_sx), @floatFromInt(s_sy), 6, 2, th.accent);
+                    const handle_rad = self.toPhysSize(6);
+                    r.fillCircle(@floatFromInt(s_sx), @floatFromInt(s_sy), handle_rad, Color.rgb(255, 255, 255));
+                    r.drawCircleBorder(@floatFromInt(s_sx), @floatFromInt(s_sy), handle_rad, self.toPhysSize(2), th.accent);
 
-                    // End handle
-                    r.fillCircle(@floatFromInt(e_sx), @floatFromInt(e_sy), 6, Color.rgb(255, 255, 255));
-                    r.drawCircleBorder(@floatFromInt(e_sx), @floatFromInt(e_sy), 6, 2, th.accent);
+                    r.fillCircle(@floatFromInt(e_sx), @floatFromInt(e_sy), handle_rad, Color.rgb(255, 255, 255));
+                    r.drawCircleBorder(@floatFromInt(e_sx), @floatFromInt(e_sy), handle_rad, self.toPhysSize(2), th.accent);
                     return;
                 }
             }
@@ -3251,15 +4578,15 @@ pub const AnnotateApp = struct {
         const maybe_bounds = self.getCombinedSelectionBounds() orelse return;
         const b = maybe_bounds;
 
-        const x0 = self.imageToScreenX(b.x);
-        const y0 = self.imageToScreenY(b.y);
-        const x1 = self.imageToScreenX(b.x + @as(i32, @intCast(b.w)));
-        const y1 = self.imageToScreenY(b.y + @as(i32, @intCast(b.h)));
+        const x0 = self.imageToPhysX(b.x);
+        const y0 = self.imageToPhysY(b.y);
+        const x1 = self.imageToPhysX(b.x + @as(i32, @intCast(b.w)));
+        const y1 = self.imageToPhysY(b.y + @as(i32, @intCast(b.h)));
         const w: u32 = @intCast(@max(4, x1 - x0));
         const h: u32 = @intCast(@max(4, y1 - y0));
 
         // Outer bounding box outline with accent glow
-        r.drawRoundedBorder(x0 - 2, y0 - 2, w + 4, h + 4, 2, 1, th.accent);
+        r.drawRoundedBorder(x0 - 2, y0 - 2, w + 4, h + 4, self.toPhysSize(2), 1, th.accent);
 
         // 8 Tensaku-style handles: White rounded squares with accent border
         const x_mid = @divTrunc(x0 + x1, 2);
@@ -3276,9 +4603,11 @@ pub const AnnotateApp = struct {
             .{ .x = x0, .y = y_mid },
         };
 
+        const hw = self.toPhysSize(8);
+        const h_rad = self.toPhysSize(2);
         for (handle_coords) |pt| {
-            r.fillRoundedRect(pt.x - 4, pt.y - 4, 8, 8, 2, Color.rgb(255, 255, 255));
-            r.drawRoundedBorder(pt.x - 4, pt.y - 4, 8, 8, 2, 1, th.accent);
+            r.fillRoundedRect(pt.x - @as(i32, @intCast(@divTrunc(hw, 2))), pt.y - @as(i32, @intCast(@divTrunc(hw, 2))), hw, hw, h_rad, Color.rgb(255, 255, 255));
+            r.drawRoundedBorder(pt.x - @as(i32, @intCast(@divTrunc(hw, 2))), pt.y - @as(i32, @intCast(@divTrunc(hw, 2))), hw, hw, h_rad, 1, th.accent);
         }
     }
 
@@ -3289,29 +4618,71 @@ pub const AnnotateApp = struct {
         const ix1 = @max(self.crop_x0, self.crop_x1);
         const iy1 = @max(self.crop_y0, self.crop_y1);
 
-        const sx0 = self.imageToScreenX(ix0);
-        const sy0 = self.imageToScreenY(iy0);
-        const sx1 = self.imageToScreenX(ix1);
-        const sy1 = self.imageToScreenY(iy1);
+        const sx0 = self.imageToPhysX(ix0);
+        const sy0 = self.imageToPhysY(iy0);
+        const sx1 = self.imageToPhysX(ix1);
+        const sy1 = self.imageToPhysY(iy1);
 
         const dim_col = Color.init(150, 0, 0, 0);
+        const pw = self.win.physicalWidth();
+        const ph = self.win.physicalHeight();
 
-        r.fillRect(0, 0, self.win.width, @intCast(@max(0, sy0)), dim_col);
-        r.fillRect(0, sy1, self.win.width, @intCast(@max(0, @as(i32, @intCast(self.win.height)) - sy1)), dim_col);
+        r.fillRect(0, 0, pw, @intCast(@max(0, sy0)), dim_col);
+        r.fillRect(0, sy1, pw, @intCast(@max(0, @as(i32, @intCast(ph)) - sy1)), dim_col);
         r.fillRect(0, sy0, @intCast(@max(0, sx0)), @intCast(@max(0, sy1 - sy0)), dim_col);
-        r.fillRect(sx1, sy0, @intCast(@max(0, @as(i32, @intCast(self.win.width)) - sx1)), @intCast(@max(0, sy1 - sy0)), dim_col);
+        r.fillRect(sx1, sy0, @intCast(@max(0, @as(i32, @intCast(pw)) - sx1)), @intCast(@max(0, sy1 - sy0)), dim_col);
 
         const cw: u32 = @intCast(@max(0, sx1 - sx0));
         const ch: u32 = @intCast(@max(0, sy1 - sy0));
         if (cw > 0 and ch > 0) {
-            r.drawRoundedBorder(sx0, sy0, cw, ch, 0, 2, th.accent);
+            r.drawRoundedBorder(sx0, sy0, cw, ch, 0, self.toPhysSize(2), th.accent);
 
             var dim_buf: [48]u8 = undefined;
             const crop_w_px = @as(u32, @intCast(@abs(ix1 - ix0)));
             const crop_h_px = @as(u32, @intCast(@abs(iy1 - iy0)));
             const dim_txt = std.fmt.bufPrint(&dim_buf, "{d}×{d} px", .{ crop_w_px, crop_h_px }) catch "";
-            r.fillRoundedRect(sx0 + 6, sy0 + 6, 88, 20, 4, Color.init(190, 0, 0, 0));
-            r.drawTextWithSize(self.font, dim_txt, sx0 + 10, sy0 + 19, 10, Color.rgb(255, 255, 255));
+            const bw = self.toPhysSize(88);
+            const bh = self.toPhysSize(20);
+            r.fillRoundedRect(sx0 + 6, sy0 + 6, bw, bh, self.toPhysSize(4), Color.init(190, 0, 0, 0));
+            r.drawTextWithSize(self.font, dim_txt, sx0 + 10, sy0 + @as(i32, @intCast(self.toPhysSize(19))), self.ui_font_size, Color.rgb(255, 255, 255));
+        }
+    }
+
+    fn renderToolButton(
+        self: *AnnotateApp,
+        r: renderer.Renderer,
+        lx: i32,
+        ly: i32,
+        lw: u32,
+        lh: u32,
+        icon: []const u8,
+        active: bool,
+        enabled: bool,
+        fg_override: ?Color,
+    ) void {
+        const th = self.cfg.theme;
+        const px = self.toPhysX(lx);
+        const py = self.toPhysY(ly);
+        const pw = self.toPhysSize(lw);
+        const ph = self.toPhysSize(lh);
+        const rad = self.toPhysSize(6);
+
+        const bg = if (active) th.accent else th.btn_raised_bg;
+        const border_col = if (active) th.accent else th.glass_border;
+        const default_fg = if (!enabled)
+            th.text_muted
+        else if (active)
+            th.accent_fg
+        else
+            th.text_main;
+        const fg = fg_override orelse default_fg;
+
+        r.fillRoundedRect(px, py, pw, ph, rad, bg);
+        r.drawRoundedBorder(px, py, pw, ph, rad, 1, border_col);
+
+        if (icon.len > 0) {
+            const icon_y = py + @as(i32, @intCast(@divTrunc(ph * 3, 4))) - 1;
+            r.drawIconCentered(self.font, icon, px + @as(i32, @intCast(@divTrunc(pw, 2))), icon_y, self.ui_font_size, fg);
         }
     }
 
@@ -3319,198 +4690,197 @@ pub const AnnotateApp = struct {
         const th = self.cfg.theme;
         const w = self.win.width;
         const is_narrow = (w < 960);
-        self.toolbar_height = if (is_narrow) 84 else 48;
-        const h = self.toolbar_height;
+        self.toolbar_height = if (is_narrow) 80 else 44;
 
-        r.fillRect(0, 0, w, h, th.surface);
-        r.fillRect(0, @intCast(h - 1), w, 1, th.glass_border);
+        const pw = self.win.physicalWidth();
+        const ph = self.toPhysSize(self.toolbar_height);
 
-        // Ink SVG Logo (only icon, no label)
-        icons.drawSvgIcon(r, self.allocator, "mizu", 14, 12, 24, 24, th.accent);
+        r.fillRect(0, 0, pw, ph, th.surface);
+        r.fillRect(0, @as(i32, @intCast(ph)) - 1, pw, 1, th.glass_border);
 
-        const btn_y: i32 = 8;
-        const btn_h: i32 = 32;
-        var bx: i32 = 14;
-        const btn_w: i32 = 28;
+        const btn_y: i32 = 7;
+        const btn_h: u32 = 30;
+        const btn_w: u32 = 28;
 
-        // Tool buttons with Nerd Font icons
-        const tools = [_]Tool{ .select, .freehand, .arrow, .line, .rect, .circle, .text, .step_badge, .highlight, .blur, .pixelate, .eraser };
-        for (tools) |t| {
-            const active = (self.active_tool == t);
-            const bg = if (active) th.accent else th.btn_raised_bg;
-            const fg = if (active) th.accent_fg else th.text_main;
+        // Group 1: Selection / Move
+        var bx: i32 = 12;
+        self.renderToolButton(r, bx, btn_y, btn_w, btn_h, Tool.select.icon(), self.active_tool == .select, true, null);
+        bx += @as(i32, @intCast(btn_w)) + 6;
 
-            r.fillRoundedRect(bx, btn_y, @intCast(btn_w), @intCast(btn_h), 6, bg);
-            r.drawRoundedBorder(bx, btn_y, @intCast(btn_w), @intCast(btn_h), 6, 1, if (active) th.accent else th.glass_border);
+        // Separator 1
+        r.fillRect(self.toPhysX(bx), self.toPhysY(11), 1, self.toPhysSize(22), th.glass_border);
+        bx += 7;
 
-            r.drawIconCentered(self.font, t.icon(), bx + @divTrunc(btn_w, 2), btn_y + 21, 14, fg);
-            bx += btn_w + 3;
-        }
+        // Group 2: Freehand drawing
+        self.renderToolButton(r, bx, btn_y, btn_w, btn_h, Tool.freehand.icon(), self.active_tool == .freehand, true, null);
+        bx += @as(i32, @intCast(btn_w)) + 6;
 
-        // Separator
-        bx += 6;
-        r.fillRect(bx, 13, 1, 22, th.glass_border);
-        bx += 8;
+        // Separator 2
+        r.fillRect(self.toPhysX(bx), self.toPhysY(11), 1, self.toPhysSize(22), th.glass_border);
+        bx += 7;
 
-        // Fill toggle ()
+        // Group 3: Arrow and line
+        self.renderToolButton(r, bx, btn_y, btn_w, btn_h, Tool.arrow.icon(), self.active_tool == .arrow, true, null);
+        bx += @as(i32, @intCast(btn_w)) + 3;
+        self.renderToolButton(r, bx, btn_y, btn_w, btn_h, Tool.line.icon(), self.active_tool == .line, true, null);
+        bx += @as(i32, @intCast(btn_w)) + 6;
+
+        // Separator 3
+        r.fillRect(self.toPhysX(bx), self.toPhysY(11), 1, self.toPhysSize(22), th.glass_border);
+        bx += 7;
+
+        // Group 4: Rectangle, Ellipse and Fill toggle
+        self.renderToolButton(r, bx, btn_y, btn_w, btn_h, Tool.rect.icon(), self.active_tool == .rect, true, null);
+        bx += @as(i32, @intCast(btn_w)) + 3;
+        self.renderToolButton(r, bx, btn_y, btn_w, btn_h, Tool.circle.icon(), self.active_tool == .circle, true, null);
+        bx += @as(i32, @intCast(btn_w)) + 3;
+        self.renderToolButton(r, bx, btn_y, btn_w, btn_h, "", self.fill_shape, true, null);
+        bx += @as(i32, @intCast(btn_w)) + 6;
+
+        // Separator 4
+        r.fillRect(self.toPhysX(bx), self.toPhysY(11), 1, self.toPhysSize(22), th.glass_border);
+        bx += 7;
+
+        // Group 5: Text annotation & Font size badge
+        self.renderToolButton(r, bx, btn_y, btn_w, btn_h, Tool.text.icon(), self.active_tool == .text, true, null);
+        bx += @as(i32, @intCast(btn_w)) + 4;
+
+        // Font size decrease [-]
+        self.renderToolButton(r, bx, btn_y, 20, btn_h, "󰧳", false, true, null);
+        bx += 20 + 2;
+
+        // Font size badge / dropdown trigger
         {
-            r.fillRoundedRect(bx, btn_y, 30, @intCast(btn_h), 6, if (self.fill_shape) th.accent else th.btn_raised_bg);
-            r.drawRoundedBorder(bx, btn_y, 30, @intCast(btn_h), 6, 1, if (self.fill_shape) th.accent else th.glass_border);
-            r.drawIconCentered(self.font, "", bx + 15, btn_y + 21, 14, if (self.fill_shape) th.accent_fg else th.text_main);
-            bx += 34;
+            const f_px = self.toPhysX(bx);
+            const f_py = self.toPhysY(btn_y);
+            const f_pw = self.toPhysSize(36);
+            const f_ph = self.toPhysSize(btn_h);
+            const f_bg = if (self.font_dropdown_open) th.accent else th.btn_raised_bg;
+            const f_fg = if (self.font_dropdown_open) th.accent_fg else th.text_main;
+            r.fillRoundedRect(f_px, f_py, f_pw, f_ph, self.toPhysSize(6), f_bg);
+            r.drawRoundedBorder(f_px, f_py, f_pw, f_ph, self.toPhysSize(6), 1, if (self.font_dropdown_open) th.accent else th.glass_border);
+
+            var sz_buf: [8]u8 = undefined;
+            const sz_str = std.fmt.bufPrint(&sz_buf, "{d}", .{self.current_font_size}) catch "18";
+            const sz_lw = r.measureTextWithSize(self.font, sz_str, self.ui_font_size);
+            const sz_lx = f_px + @divTrunc(@as(i32, @intCast(f_pw)) - @as(i32, @intCast(sz_lw)), 2);
+            r.drawTextWithSize(self.font, sz_str, sz_lx, f_py + @as(i32, @intCast(@divTrunc(f_ph * 3, 4))) - 1, self.ui_font_size, f_fg);
+            bx += 36 + 2;
         }
 
-        // Crop Tool button ()
-        {
-            r.fillRoundedRect(bx, btn_y, 30, @intCast(btn_h), 6, if (self.is_crop_mode) th.accent else th.btn_raised_bg);
-            r.drawRoundedBorder(bx, btn_y, 30, @intCast(btn_h), 6, 1, if (self.is_crop_mode) th.accent else th.glass_border);
-            r.drawIconCentered(self.font, "", bx + 15, btn_y + 21, 14, if (self.is_crop_mode) th.accent_fg else th.text_main);
-            bx += 34;
-        }
+        // Font size increase [+]
+        self.renderToolButton(r, bx, btn_y, 20, btn_h, "󰧴", false, true, null);
+        bx += 20 + 6;
 
-        // Rotate 90* left button (󰚪)
-        {
-            r.fillRoundedRect(bx, btn_y, 30, @intCast(btn_h), 6, th.btn_raised_bg);
-            r.drawRoundedBorder(bx, btn_y, 30, @intCast(btn_h), 6, 1, th.glass_border);
-            r.drawIconCentered(self.font, "󰚪", bx + 15, btn_y + 21, 14, th.text_main);
-            bx += 34;
-        }
+        // Separator 5
+        r.fillRect(self.toPhysX(bx), self.toPhysY(11), 1, self.toPhysSize(22), th.glass_border);
+        bx += 7;
 
-        // Layers Panel Toggle button ()
-        {
-            r.fillRoundedRect(bx, btn_y, 30, @intCast(btn_h), 6, if (self.show_layers) th.accent else th.btn_raised_bg);
-            r.drawRoundedBorder(bx, btn_y, 30, @intCast(btn_h), 6, 1, if (self.show_layers) th.accent else th.glass_border);
-            r.drawIconCentered(self.font, "", bx + 15, btn_y + 21, 14, if (self.show_layers) th.accent_fg else th.text_main);
-            bx += 34;
-        }
+        // Group 6: Numbered badge
+        self.renderToolButton(r, bx, btn_y, btn_w, btn_h, Tool.step_badge.icon(), self.active_tool == .step_badge, true, null);
+        bx += @as(i32, @intCast(btn_w)) + 6;
+
+        // Separator 6
+        r.fillRect(self.toPhysX(bx), self.toPhysY(11), 1, self.toPhysSize(22), th.glass_border);
+        bx += 7;
+
+        // Group 7: Blur & Pixelate
+        self.renderToolButton(r, bx, btn_y, btn_w, btn_h, Tool.blur.icon(), self.active_tool == .blur, true, null);
+        bx += @as(i32, @intCast(btn_w)) + 3;
+        self.renderToolButton(r, bx, btn_y, btn_w, btn_h, Tool.pixelate.icon(), self.active_tool == .pixelate, true, null);
+        bx += @as(i32, @intCast(btn_w)) + 6;
+
+        // Separator 7
+        r.fillRect(self.toPhysX(bx), self.toPhysY(11), 1, self.toPhysSize(22), th.glass_border);
+        bx += 7;
+
+        // Group 8: Highlight
+        self.renderToolButton(r, bx, btn_y, btn_w, btn_h, Tool.highlight.icon(), self.active_tool == .highlight, true, null);
+        bx += @as(i32, @intCast(btn_w)) + 6;
+
+        // Separator 8
+        r.fillRect(self.toPhysX(bx), self.toPhysY(11), 1, self.toPhysSize(22), th.glass_border);
+        bx += 7;
+
+        // Group 9: Eraser
+        self.renderToolButton(r, bx, btn_y, btn_w, btn_h, Tool.eraser.icon(), self.active_tool == .eraser, true, null);
+        bx += @as(i32, @intCast(btn_w)) + 6;
+
+        // Separator 9
+        r.fillRect(self.toPhysX(bx), self.toPhysY(11), 1, self.toPhysSize(22), th.glass_border);
+        bx += 7;
+
+        // Group 10: Crop
+        self.renderToolButton(r, bx, btn_y, btn_w, btn_h, "", self.is_crop_mode, true, null);
+        bx += @as(i32, @intCast(btn_w)) + 6;
+
+        // Separator 10
+        r.fillRect(self.toPhysX(bx), self.toPhysY(11), 1, self.toPhysSize(22), th.glass_border);
+        bx += 7;
 
         if (!is_narrow) {
-            // Wide Window: All elements continue on Row 1
-            bx += 6;
-            r.fillRect(bx, 13, 1, 22, th.glass_border);
-            bx += 8;
-
-            // Font size decrease (󰧳)
-            r.fillRoundedRect(bx, btn_y, 26, @intCast(btn_h), 6, th.btn_raised_bg);
-            r.drawRoundedBorder(bx, btn_y, 26, @intCast(btn_h), 6, 1, th.glass_border);
-            r.drawIconCentered(self.font, "󰧳", bx + 13, btn_y + 21, 14, th.text_main);
-            bx += 28;
-
-            // Font size label / dropdown trigger (Text)
-            {
-                const btn_w2: i32 = 40;
-                r.fillRoundedRect(bx, btn_y, btn_w2, @intCast(btn_h), 6, if (self.font_dropdown_open) th.accent else th.btn_raised_bg);
-                r.drawRoundedBorder(bx, btn_y, btn_w2, @intCast(btn_h), 6, 1, if (self.font_dropdown_open) th.accent else th.glass_border);
-                var sz_buf: [8]u8 = undefined;
-                const sz_str = std.fmt.bufPrint(&sz_buf, "{d}px", .{self.current_font_size}) catch "18";
-                const sz_lw = r.measureTextWithSize(self.font, sz_str, 11);
-                const sz_lx = bx + @divTrunc(btn_w2 - @as(i32, @intCast(sz_lw)), 2);
-                r.drawTextWithSize(self.font, sz_str, sz_lx, btn_y + 21, 11, if (self.font_dropdown_open) th.accent_fg else th.text_main);
-                bx += btn_w2 + 6;
-            }
-
-            // Font size increase (󰧴)
-            r.fillRoundedRect(bx, btn_y, 26, @intCast(btn_h), 6, th.btn_raised_bg);
-            r.drawRoundedBorder(bx, btn_y, 26, @intCast(btn_h), 6, 1, th.glass_border);
-            r.drawIconCentered(self.font, "󰧴", bx + 13, btn_y + 21, 14, th.text_main);
-            bx += 28;
-
-            // Separator
-            bx += 6;
-            r.fillRect(bx, 13, 1, 22, th.glass_border);
-            bx += 8;
-
-            // Color palette swatches
+            // Group 11: Color swatches, palette & picker
+            const c_rad = self.toPhysSize(7);
+            const c_border_rad = self.toPhysSize(9);
             for (Palette.colors) |col| {
                 const active = (self.current_color.toArgb() == col.toArgb());
-                r.fillCircle(@floatFromInt(bx + 8), @floatFromInt(btn_y + 16), 7, col);
+                const c_cx = self.toPhysX(bx + 8);
+                const c_cy = self.toPhysY(btn_y + 15);
+                r.fillCircle(@floatFromInt(c_cx), @floatFromInt(c_cy), c_rad, col);
                 if (active) {
-                    r.drawCircleBorder(@floatFromInt(bx + 8), @floatFromInt(btn_y + 16), 9, 2, th.accent);
+                    r.drawCircleBorder(@floatFromInt(c_cx), @floatFromInt(c_cy), c_border_rad, self.toPhysSize(2), th.accent);
                 }
                 bx += 18;
             }
 
-            // Color picker (mizu picker) with  icon
-            {
-                r.fillRoundedRect(bx, btn_y, 28, @intCast(btn_h), 6, th.btn_raised_bg);
-                r.drawRoundedBorder(bx, btn_y, 28, @intCast(btn_h), 6, 1, th.glass_border);
-                r.drawIconCentered(self.font, "", bx + 14, btn_y + 21, 14, th.accent);
-                bx += 32;
-            }
+            // Palette icon () - opens custom hex input dialog
+            self.renderToolButton(r, bx, btn_y, 26, btn_h, "", self.color_dialog_open, true, if (self.color_dialog_open) th.accent_fg else th.accent);
+            bx += 29;
 
-            // Right-aligned Global Actions: Undo, Redo, Save, Copy (Capture removed)
-            var rx = @as(i32, @intCast(w)) - 146;
+            // Picker icon (󰈊) - picks from screen and copies to clipboard
+            self.renderToolButton(r, bx, btn_y, 26, btn_h, "󰈊", false, true, th.accent);
+            bx += 29;
 
-            // Undo ()
-            r.fillRoundedRect(rx, btn_y, 30, @intCast(btn_h), 6, th.btn_raised_bg);
-            r.drawRoundedBorder(rx, btn_y, 30, @intCast(btn_h), 6, 1, th.glass_border);
-            r.drawIconCentered(self.font, "", rx + 15, btn_y + 21, 14, if (self.undo_mgr.canUndo()) th.text_main else th.text_muted);
-            rx += 34;
-
-            // Redo ()
-            r.fillRoundedRect(rx, btn_y, 30, @intCast(btn_h), 6, th.btn_raised_bg);
-            r.drawRoundedBorder(rx, btn_y, 30, @intCast(btn_h), 6, 1, th.glass_border);
-            r.drawIconCentered(self.font, "", rx + 15, btn_y + 21, 14, if (self.undo_mgr.canRedo()) th.text_main else th.text_muted);
-            rx += 34;
-
-            // Save (󰆓)
-            r.fillRoundedRect(rx, btn_y, 30, @intCast(btn_h), 6, th.btn_raised_bg);
-            r.drawRoundedBorder(rx, btn_y, 30, @intCast(btn_h), 6, 1, th.glass_border);
-            r.drawIconCentered(self.font, "󰆓", rx + 15, btn_y + 21, 14, th.text_main);
-            rx += 34;
-
-            // Copy (󰆏)
-            r.fillRoundedRect(rx, btn_y, 30, @intCast(btn_h), 6, th.accent);
-            r.drawRoundedBorder(rx, btn_y, 30, @intCast(btn_h), 6, 1, th.accent);
-            r.drawIconCentered(self.font, "󰆏", rx + 15, btn_y + 21, 14, th.accent_fg);
+            // Group 12: Right Actions: Undo, Redo, Save, Copy
+            var rx = @as(i32, @intCast(w)) - 138;
+            self.renderToolButton(r, rx, btn_y, 28, btn_h, "", false, self.undo_mgr.canUndo(), null);
+            rx += 31;
+            self.renderToolButton(r, rx, btn_y, 28, btn_h, "", false, self.undo_mgr.canRedo(), null);
+            rx += 33;
+            self.renderToolButton(r, rx, btn_y, 28, btn_h, "󰆓", false, true, null);
+            rx += 31;
+            self.renderToolButton(r, rx, btn_y, 32, btn_h, "󰆏", false, true, th.accent);
         } else {
-            // Narrow Window: Secondary Bar (Row 2)
-            const btn_y2: i32 = 44;
-            var bx2: i32 = 14;
-
-            // Color palette swatches
+            // Narrow Window: Row 2 Palette and Actions
+            const btn_y2: i32 = 42;
+            var bx2: i32 = 12;
+            const c_rad = self.toPhysSize(7);
+            const c_border_rad = self.toPhysSize(9);
             for (Palette.colors) |col| {
                 const active = (self.current_color.toArgb() == col.toArgb());
-                r.fillCircle(@floatFromInt(bx2 + 8), @floatFromInt(btn_y2 + 16), 7, col);
+                const c_cx = self.toPhysX(bx2 + 8);
+                const c_cy = self.toPhysY(btn_y2 + 15);
+                r.fillCircle(@floatFromInt(c_cx), @floatFromInt(c_cy), c_rad, col);
                 if (active) {
-                    r.drawCircleBorder(@floatFromInt(bx2 + 8), @floatFromInt(btn_y2 + 16), 9, 2, th.accent);
+                    r.drawCircleBorder(@floatFromInt(c_cx), @floatFromInt(c_cy), c_border_rad, self.toPhysSize(2), th.accent);
                 }
                 bx2 += 18;
             }
 
-            // Color picker (mizu picker) with  icon
-            {
-                r.fillRoundedRect(bx2, btn_y2, 28, @intCast(btn_h), 6, th.btn_raised_bg);
-                r.drawRoundedBorder(bx2, btn_y2, 28, @intCast(btn_h), 6, 1, th.glass_border);
-                r.drawIconCentered(self.font, "", bx2 + 14, btn_y2 + 21, 14, th.accent);
-                bx2 += 32;
-            }
+            self.renderToolButton(r, bx2, btn_y2, 26, btn_h, "", self.color_dialog_open, true, if (self.color_dialog_open) th.accent_fg else th.accent);
+            bx2 += 29;
 
-            // Right-aligned Global Actions on Row 2: Undo, Redo, Save, Copy
-            var rx = @as(i32, @intCast(w)) - 146;
+            self.renderToolButton(r, bx2, btn_y2, 26, btn_h, "󰈊", false, true, th.accent);
+            bx2 += 29;
 
-            // Undo ()
-            r.fillRoundedRect(rx, btn_y2, 30, @intCast(btn_h), 6, th.btn_raised_bg);
-            r.drawRoundedBorder(rx, btn_y2, 30, @intCast(btn_h), 6, 1, th.glass_border);
-            r.drawIconCentered(self.font, "", rx + 15, btn_y2 + 21, 14, if (self.undo_mgr.canUndo()) th.text_main else th.text_muted);
-            rx += 34;
-
-            // Redo ()
-            r.fillRoundedRect(rx, btn_y2, 30, @intCast(btn_h), 6, th.btn_raised_bg);
-            r.drawRoundedBorder(rx, btn_y2, 30, @intCast(btn_h), 6, 1, th.glass_border);
-            r.drawIconCentered(self.font, "", rx + 15, btn_y2 + 21, 14, if (self.undo_mgr.canRedo()) th.text_main else th.text_muted);
-            rx += 34;
-
-            // Save (󰆓)
-            r.fillRoundedRect(rx, btn_y2, 30, @intCast(btn_h), 6, th.btn_raised_bg);
-            r.drawRoundedBorder(rx, btn_y2, 30, @intCast(btn_h), 6, 1, th.glass_border);
-            r.drawIconCentered(self.font, "󰆓", rx + 15, btn_y2 + 21, 14, th.text_main);
-            rx += 34;
-
-            // Copy (󰆏)
-            r.fillRoundedRect(rx, btn_y2, 30, @intCast(btn_h), 6, th.accent);
-            r.drawRoundedBorder(rx, btn_y2, 30, @intCast(btn_h), 6, 1, th.accent);
-            r.drawIconCentered(self.font, "󰆏", rx + 15, btn_y2 + 21, 14, th.accent_fg);
+            var rx2 = @as(i32, @intCast(w)) - 138;
+            self.renderToolButton(r, rx2, btn_y2, 28, btn_h, "", false, self.undo_mgr.canUndo(), null);
+            rx2 += 31;
+            self.renderToolButton(r, rx2, btn_y2, 28, btn_h, "", false, self.undo_mgr.canRedo(), null);
+            rx2 += 33;
+            self.renderToolButton(r, rx2, btn_y2, 28, btn_h, "󰆓", false, true, null);
+            rx2 += 31;
+            self.renderToolButton(r, rx2, btn_y2, 32, btn_h, "󰆏", false, true, th.accent);
         }
     }
 
@@ -3524,34 +4894,39 @@ pub const AnnotateApp = struct {
         else
             0;
 
-        r.fillRect(panel_x, panel_y, panel_w, panel_h, th.surface);
-        r.fillRect(panel_x, panel_y, 1, panel_h, th.glass_border);
+        const px = self.toPhysX(panel_x);
+        const py = self.toPhysY(panel_y);
+        const pw = self.toPhysSize(panel_w);
+        const ph = self.toPhysSize(panel_h);
+
+        r.fillRect(px, py, pw, ph, th.surface);
+        r.fillRect(px, py, 1, ph, th.glass_border);
 
         // Header
         var h_buf: [48]u8 = undefined;
         const header_txt = std.fmt.bufPrint(&h_buf, "Layers ({d})", .{self.annotations.items.len}) catch "Layers";
-        r.drawTextWithSize(self.font, header_txt, panel_x + 14, panel_y + 24, 13, th.accent);
+        r.drawTextWithSize(self.font, header_txt, px + @as(i32, @intCast(self.toPhysSize(14))), py + @as(i32, @intCast(self.toPhysSize(24))), self.ui_font_size, th.accent);
 
         // Close button
-        r.drawTextWithSize(self.font, "✕", panel_x + @as(i32, @intCast(panel_w)) - 22, panel_y + 24, 13, th.text_muted);
+        r.drawTextWithSize(self.font, "✕", px + @as(i32, @intCast(pw)) - @as(i32, @intCast(self.toPhysSize(22))), py + @as(i32, @intCast(self.toPhysSize(24))), self.ui_font_size, th.text_muted);
 
-        r.fillRect(panel_x + 10, panel_y + 36, panel_w - 20, 1, th.glass_border);
+        r.fillRect(px + @as(i32, @intCast(self.toPhysSize(10))), py + @as(i32, @intCast(self.toPhysSize(36))), pw - self.toPhysSize(20), 1, th.glass_border);
 
         // Layers list (reverse order: top to bottom)
-        var cur_y = panel_y + 44;
-        const row_h: i32 = 32;
+        var cur_y = py + @as(i32, @intCast(self.toPhysSize(44)));
+        const row_h: i32 = @intCast(self.toPhysSize(32));
         const total = self.annotations.items.len;
 
         var i: usize = 0;
-        while (i < total and cur_y + row_h < panel_y + @as(i32, @intCast(panel_h))) : (i += 1) {
+        while (i < total and cur_y + row_h < py + @as(i32, @intCast(ph))) : (i += 1) {
             const ann_idx = total - 1 - i;
             const ann = &self.annotations.items[ann_idx];
             const sel = self.isSelected(ann.id);
 
             // Row background
             if (sel) {
-                r.fillRoundedRect(panel_x + 6, cur_y, panel_w - 12, @intCast(row_h - 2), 4, Color.init(60, 97, 175, 239));
-                r.fillRect(panel_x + 6, cur_y, 3, @intCast(row_h - 2), th.accent);
+                r.fillRoundedRect(px + @as(i32, @intCast(self.toPhysSize(6))), cur_y, pw - self.toPhysSize(12), @intCast(row_h - 2), self.toPhysSize(4), Color.init(60, 97, 175, 239));
+                r.fillRect(px + @as(i32, @intCast(self.toPhysSize(6))), cur_y, self.toPhysSize(3), @intCast(row_h - 2), th.accent);
             }
 
             // Annotation Name / Label
@@ -3563,18 +4938,18 @@ pub const AnnotateApp = struct {
             else
                 ann.kind.name();
 
-            r.drawTextWithSize(self.font, label, panel_x + 16, cur_y + 20, 11, if (sel) th.accent else th.text_main);
+            r.drawTextWithSize(self.font, label, px + @as(i32, @intCast(self.toPhysSize(16))), cur_y + @as(i32, @intCast(self.toPhysSize(20))), self.ui_font_size, if (sel) th.accent else th.text_main);
 
             // Visibility Eye Icon
             const eye_txt = if (ann.visible) "👁" else "󰈈";
-            r.drawTextWithSize(self.font, eye_txt, panel_x + 132, cur_y + 20, 11, if (ann.visible) th.text_main else th.text_muted);
+            r.drawTextWithSize(self.font, eye_txt, px + @as(i32, @intCast(self.toPhysSize(132))), cur_y + @as(i32, @intCast(self.toPhysSize(20))), self.ui_font_size, if (ann.visible) th.text_main else th.text_muted);
 
             // Lock Icon
             const lock_txt = if (ann.locked) "🔒" else "🔓";
-            r.drawTextWithSize(self.font, lock_txt, panel_x + 154, cur_y + 20, 11, if (ann.locked) th.accent else th.text_muted);
+            r.drawTextWithSize(self.font, lock_txt, px + @as(i32, @intCast(self.toPhysSize(154))), cur_y + @as(i32, @intCast(self.toPhysSize(20))), self.ui_font_size, if (ann.locked) th.accent else th.text_muted);
 
             // Delete button
-            r.drawTextWithSize(self.font, "✕", panel_x + 202, cur_y + 20, 11, th.text_muted);
+            r.drawTextWithSize(self.font, "✕", px + @as(i32, @intCast(self.toPhysSize(202))), cur_y + @as(i32, @intCast(self.toPhysSize(20))), self.ui_font_size, th.text_muted);
 
             cur_y += row_h;
         }
@@ -3590,12 +4965,17 @@ pub const AnnotateApp = struct {
         else
             0;
 
-        r.fillRect(panel_x, panel_y, panel_w, panel_h, th.surface);
-        r.fillRect(panel_x, panel_y, 1, panel_h, th.glass_border);
+        const px = self.toPhysX(panel_x);
+        const py = self.toPhysY(panel_y);
+        const pw = self.toPhysSize(panel_w);
+        const ph = self.toPhysSize(panel_h);
 
-        var cur_y: i32 = panel_y + 20;
-        r.drawTextWithSize(self.font, "Color Adjustments", panel_x + 16, cur_y + 4, 13, th.accent);
-        cur_y += 30;
+        r.fillRect(px, py, pw, ph, th.surface);
+        r.fillRect(px, py, 1, ph, th.glass_border);
+
+        var cur_y: i32 = py + @as(i32, @intCast(self.toPhysSize(20)));
+        r.drawTextWithSize(self.font, "Color Adjustments", px + @as(i32, @intCast(self.toPhysSize(16))), cur_y + @as(i32, @intCast(self.toPhysSize(4))), self.ui_font_size, th.accent);
+        cur_y += @intCast(self.toPhysSize(30));
 
         // Brightness
         {
@@ -3605,70 +4985,74 @@ pub const AnnotateApp = struct {
                 std.fmt.bufPrint(&buf, "Brightness: +{d}%", .{pct}) catch ""
             else
                 std.fmt.bufPrint(&buf, "Brightness: {d}%", .{pct}) catch "";
-            r.drawTextWithSize(self.font, val_txt, panel_x + 16, cur_y, 11, th.text_main);
-            cur_y += 10;
+            r.drawTextWithSize(self.font, val_txt, px + @as(i32, @intCast(self.toPhysSize(16))), cur_y, self.ui_font_size, th.text_main);
+            cur_y += @intCast(self.toPhysSize(10));
 
-            const slider_w: i32 = 208;
-            r.fillRoundedRect(panel_x + 16, cur_y, @intCast(slider_w), 6, 3, th.btn_raised_bg);
+            const slider_w: i32 = @intCast(self.toPhysSize(208));
+            r.fillRoundedRect(px + @as(i32, @intCast(self.toPhysSize(16))), cur_y, @intCast(slider_w), self.toPhysSize(6), self.toPhysSize(3), th.btn_raised_bg);
             const frac = (self.adjustments.brightness / 2.0) + 0.5;
-            const knob_x = panel_x + 16 + @as(i32, @intFromFloat(@as(f32, @floatFromInt(slider_w)) * frac));
-            r.fillCircle(@floatFromInt(knob_x), @floatFromInt(cur_y + 3), 7, th.accent);
-            cur_y += 30;
+            const knob_x = px + @as(i32, @intCast(self.toPhysSize(16))) + @as(i32, @intFromFloat(@as(f32, @floatFromInt(slider_w)) * frac));
+            r.fillCircle(@floatFromInt(knob_x), @floatFromInt(cur_y + @as(i32, @intCast(self.toPhysSize(3)))), self.toPhysSize(7), th.accent);
+            cur_y += @intCast(self.toPhysSize(30));
         }
 
         // Contrast
         {
             var buf: [32]u8 = undefined;
             const val_txt = std.fmt.bufPrint(&buf, "Contrast: {d:.2}x", .{self.adjustments.contrast}) catch "";
-            r.drawTextWithSize(self.font, val_txt, panel_x + 16, cur_y, 11, th.text_main);
-            cur_y += 10;
+            r.drawTextWithSize(self.font, val_txt, px + @as(i32, @intCast(self.toPhysSize(16))), cur_y, self.ui_font_size, th.text_main);
+            cur_y += @intCast(self.toPhysSize(10));
 
-            const slider_w: i32 = 208;
-            r.fillRoundedRect(panel_x + 16, cur_y, @intCast(slider_w), 6, 3, th.btn_raised_bg);
+            const slider_w: i32 = @intCast(self.toPhysSize(208));
+            r.fillRoundedRect(px + @as(i32, @intCast(self.toPhysSize(16))), cur_y, @intCast(slider_w), self.toPhysSize(6), self.toPhysSize(3), th.btn_raised_bg);
             const frac = self.adjustments.contrast / 2.0;
-            const knob_x = panel_x + 16 + @as(i32, @intFromFloat(@as(f32, @floatFromInt(slider_w)) * frac));
-            r.fillCircle(@floatFromInt(knob_x), @floatFromInt(cur_y + 3), 7, th.accent);
-            cur_y += 30;
+            const knob_x = px + @as(i32, @intCast(self.toPhysSize(16))) + @as(i32, @intFromFloat(@as(f32, @floatFromInt(slider_w)) * frac));
+            r.fillCircle(@floatFromInt(knob_x), @floatFromInt(cur_y + @as(i32, @intCast(self.toPhysSize(3)))), self.toPhysSize(7), th.accent);
+            cur_y += @intCast(self.toPhysSize(30));
         }
 
         // Saturation
         {
             var buf: [32]u8 = undefined;
             const val_txt = std.fmt.bufPrint(&buf, "Saturation: {d:.2}x", .{self.adjustments.saturation}) catch "";
-            r.drawTextWithSize(self.font, val_txt, panel_x + 16, cur_y, 11, th.text_main);
-            cur_y += 10;
+            r.drawTextWithSize(self.font, val_txt, px + @as(i32, @intCast(self.toPhysSize(16))), cur_y, self.ui_font_size, th.text_main);
+            cur_y += @intCast(self.toPhysSize(10));
 
-            const slider_w: i32 = 208;
-            r.fillRoundedRect(panel_x + 16, cur_y, @intCast(slider_w), 6, 3, th.btn_raised_bg);
+            const slider_w: i32 = @intCast(self.toPhysSize(208));
+            r.fillRoundedRect(px + @as(i32, @intCast(self.toPhysSize(16))), cur_y, @intCast(slider_w), self.toPhysSize(6), self.toPhysSize(3), th.btn_raised_bg);
             const frac = self.adjustments.saturation / 2.0;
-            const knob_x = panel_x + 16 + @as(i32, @intFromFloat(@as(f32, @floatFromInt(slider_w)) * frac));
-            r.fillCircle(@floatFromInt(knob_x), @floatFromInt(cur_y + 3), 7, th.accent);
-            cur_y += 30;
+            const knob_x = px + @as(i32, @intCast(self.toPhysSize(16))) + @as(i32, @intFromFloat(@as(f32, @floatFromInt(slider_w)) * frac));
+            r.fillCircle(@floatFromInt(knob_x), @floatFromInt(cur_y + @as(i32, @intCast(self.toPhysSize(3)))), self.toPhysSize(7), th.accent);
+            cur_y += @intCast(self.toPhysSize(30));
         }
 
         // Grayscale toggle
         {
-            r.fillRoundedRect(panel_x + 16, cur_y, 208, 26, 4, if (self.adjustments.grayscale) th.accent else th.btn_raised_bg);
-            r.drawRoundedBorder(panel_x + 16, cur_y, 208, 26, 4, 1, th.glass_border);
+            const gw = self.toPhysSize(208);
+            const gh = self.toPhysSize(26);
+            r.fillRoundedRect(px + @as(i32, @intCast(self.toPhysSize(16))), cur_y, gw, gh, self.toPhysSize(4), if (self.adjustments.grayscale) th.accent else th.btn_raised_bg);
+            r.drawRoundedBorder(px + @as(i32, @intCast(self.toPhysSize(16))), cur_y, gw, gh, self.toPhysSize(4), 1, th.glass_border);
             const g_txt = if (self.adjustments.grayscale) "✓ Grayscale Enabled" else "Enable Grayscale";
-            r.drawTextWithSize(self.font, g_txt, panel_x + 50, cur_y + 17, 11, if (self.adjustments.grayscale) th.accent_fg else th.text_main);
-            cur_y += 38;
+            r.drawTextWithSize(self.font, g_txt, px + @as(i32, @intCast(self.toPhysSize(50))), cur_y + @as(i32, @intCast(self.toPhysSize(17))), self.ui_font_size, if (self.adjustments.grayscale) th.accent_fg else th.text_main);
+            cur_y += @intCast(self.toPhysSize(38));
         }
 
         // Close
-        r.fillRoundedRect(panel_x + 16, cur_y, 208, 28, 6, th.accent);
-        r.drawTextWithSize(self.font, "Close Panel", panel_x + 76, cur_y + 18, 11, th.accent_fg);
+        const cw = self.toPhysSize(208);
+        const ch = self.toPhysSize(28);
+        r.fillRoundedRect(px + @as(i32, @intCast(self.toPhysSize(16))), cur_y, cw, ch, self.toPhysSize(6), th.accent);
+        r.drawTextWithSize(self.font, "Close Panel", px + @as(i32, @intCast(self.toPhysSize(76))), cur_y + @as(i32, @intCast(self.toPhysSize(18))), self.ui_font_size, th.accent_fg);
     }
 
     fn renderStatusbar(self: *AnnotateApp, r: renderer.Renderer) void {
         const th = self.cfg.theme;
-        const w = self.win.width;
-        const h = self.statusbar_height;
-        const s = self.win.effectiveScale();
-        const y: i32 = @as(i32, @intFromFloat(@as(f32, @floatFromInt(self.win.height)) * s)) - @as(i32, @intFromFloat(@as(f32, @floatFromInt(h)) * s));
+        const ly: i32 = @as(i32, @intCast(self.win.height)) - @as(i32, @intCast(self.statusbar_height));
+        const py = self.toPhysY(ly);
+        const pw = self.win.physicalWidth();
+        const ph = self.toPhysSize(self.statusbar_height);
 
-        r.fillRect(0, y, w, h, th.surface);
-        r.fillRect(0, y, w, 1, th.glass_border);
+        r.fillRect(0, py, pw, ph, th.surface);
+        r.fillRect(0, py, pw, 1, th.glass_border);
 
         // Minimal left info: dimensions & active state
         var info_buf: [96]u8 = undefined;
@@ -3679,79 +5063,150 @@ pub const AnnotateApp = struct {
         else
             std.fmt.bufPrint(&info_buf, "{s}  •  {d}×{d} px", .{ self.active_tool.name(), self.base_image.img.width, self.base_image.img.height }) catch "";
 
-        r.drawTextWithSize(self.font, info, 14, y + 18, 11, if (self.is_crop_mode or self.selected_ids.items.len > 0) th.accent else th.text_muted);
+        r.drawTextWithSize(self.font, info, self.toPhysX(14), py + @as(i32, @intCast(self.toPhysSize(18))), self.ui_font_size, if (self.is_crop_mode or self.selected_ids.items.len > 0) th.accent else th.text_muted);
 
         if (self.is_crop_mode) {
-            r.fillRoundedRect(120, y + 3, 75, 22, 4, th.accent);
-            r.drawTextWithSize(self.font, "Apply", 140, y + 17, 11, th.accent_fg);
+            const apply_x = self.toPhysX(120);
+            const apply_y = py + @as(i32, @intCast(self.toPhysSize(3)));
+            const apply_w = self.toPhysSize(75);
+            const apply_h = self.toPhysSize(22);
+            r.fillRoundedRect(apply_x, apply_y, apply_w, apply_h, self.toPhysSize(4), th.accent);
+            r.drawTextWithSize(self.font, "Apply", apply_x + @as(i32, @intCast(self.toPhysSize(20))), apply_y + @as(i32, @intCast(self.toPhysSize(14))), self.ui_font_size, th.accent_fg);
 
-            r.fillRoundedRect(205, y + 3, 65, 22, 4, th.btn_raised_bg);
-            r.drawRoundedBorder(205, y + 3, 65, 22, 4, 1, th.glass_border);
-            r.drawTextWithSize(self.font, "Cancel", 218, y + 17, 11, th.text_main);
+            const cancel_x = self.toPhysX(205);
+            const cancel_y = py + @as(i32, @intCast(self.toPhysSize(3)));
+            const cancel_w = self.toPhysSize(65);
+            const cancel_h = self.toPhysSize(22);
+            r.fillRoundedRect(cancel_x, cancel_y, cancel_w, cancel_h, self.toPhysSize(4), th.btn_raised_bg);
+            r.drawRoundedBorder(cancel_x, cancel_y, cancel_w, cancel_h, self.toPhysSize(4), 1, th.glass_border);
+            r.drawTextWithSize(self.font, "Cancel", cancel_x + @as(i32, @intCast(self.toPhysSize(13))), cancel_y + @as(i32, @intCast(self.toPhysSize(14))), self.ui_font_size, th.text_main);
         }
 
         // Notification Message centered
         if (self.status_ticks > 0 and self.status_len > 0) {
             const msg = self.status_msg[0..self.status_len];
-            const mw = r.measureTextWithSize(self.font, msg, 11);
-            const mx = @divTrunc(@as(i32, @intCast(w)) - @as(i32, @intCast(mw)), 2);
-            r.drawTextWithSize(self.font, msg, mx, y + 18, 11, th.success_color);
+            const mw = r.measureTextWithSize(self.font, msg, self.ui_font_size);
+            const mx = @divTrunc(@as(i32, @intCast(pw)) - @as(i32, @intCast(mw)), 2);
+            r.drawTextWithSize(self.font, msg, mx, py + @as(i32, @intCast(self.toPhysSize(18))), self.ui_font_size, th.success_color);
         }
 
         // Right Corner Minimal Zoom Controls: [-] [100%] [+]
         const right_margin: i32 = 12;
-        const btn_h: u32 = 20;
-        const btn_y: i32 = y + 4;
         const total_zoom_w: i32 = 110;
-        const zoom_x: i32 = @as(i32, @intCast(w)) - total_zoom_w - right_margin;
+        const zoom_x: i32 = @as(i32, @intCast(self.win.width)) - total_zoom_w - right_margin;
+        const btn_y: i32 = ly + 4;
+        const z_btn_h: u32 = 20;
 
-        // Minus button (󰍴 / )
-        r.fillRoundedRect(zoom_x, btn_y, 24, btn_h, 4, th.btn_raised_bg);
-        r.drawRoundedBorder(zoom_x, btn_y, 24, btn_h, 4, 1, th.glass_border);
-        r.drawIconCentered(self.font, "󰍴", zoom_x + 12, btn_y + 15, 12, th.text_main);
+        // Minus button (󰍴)
+        self.renderToolButton(r, zoom_x, btn_y, 24, z_btn_h, "󰍴", false, true, null);
 
-        // Zoom percentage button with percent icon (󰚌)
-        r.fillRoundedRect(zoom_x + 28, btn_y, 54, btn_h, 4, th.btn_raised_bg);
-        r.drawRoundedBorder(zoom_x + 28, btn_y, 54, btn_h, 4, 1, th.glass_border);
-        var zoom_buf: [24]u8 = undefined;
-        const zoom_pct = @as(u32, @intFromFloat(self.zoom * 100.0));
-        const zoom_txt = std.fmt.bufPrint(&zoom_buf, "{d}%", .{zoom_pct}) catch "100%";
-        const zw = r.measureTextWithSize(self.font, zoom_txt, 10);
-        const zx = zoom_x + 28 + @divTrunc(54 - @as(i32, @intCast(zw)), 2);
-        r.drawTextWithSize(self.font, zoom_txt, zx, btn_y + 14, 10, th.text_main);
+        // Zoom percentage button
+        {
+            const f_px = self.toPhysX(zoom_x + 28);
+            const f_py = self.toPhysY(btn_y);
+            const f_pw = self.toPhysSize(54);
+            const f_ph = self.toPhysSize(z_btn_h);
+            r.fillRoundedRect(f_px, f_py, f_pw, f_ph, self.toPhysSize(4), th.btn_raised_bg);
+            r.drawRoundedBorder(f_px, f_py, f_pw, f_ph, self.toPhysSize(4), 1, th.glass_border);
 
-        // Plus button (󰐕 / )
-        r.fillRoundedRect(zoom_x + 86, btn_y, 24, btn_h, 4, th.btn_raised_bg);
-        r.drawRoundedBorder(zoom_x + 86, btn_y, 24, btn_h, 4, 1, th.glass_border);
-        r.drawIconCentered(self.font, "󰐕", zoom_x + 86 + 12, btn_y + 15, 12, th.text_main);
+            var zoom_buf: [24]u8 = undefined;
+            const zoom_pct = @as(u32, @intFromFloat(self.zoom * 100.0));
+            const zoom_txt = std.fmt.bufPrint(&zoom_buf, "{d}%", .{zoom_pct}) catch "100%";
+            const zw = r.measureTextWithSize(self.font, zoom_txt, self.ui_font_size);
+            const zx = f_px + @divTrunc(@as(i32, @intCast(f_pw)) - @as(i32, @intCast(zw)), 2);
+            r.drawTextWithSize(self.font, zoom_txt, zx, f_py + @as(i32, @intCast(self.toPhysSize(14))), self.ui_font_size, th.text_main);
+        }
+
+        // Plus button (󰐕)
+        self.renderToolButton(r, zoom_x + 86, btn_y, 24, z_btn_h, "󰐕", false, true, null);
     }
 
     fn renderFontDropdown(self: *AnnotateApp, r: renderer.Renderer) void {
         const th = self.cfg.theme;
-        const w = 95;
-        const h = 195;
-        const x: i32 = 540;
-        const y: i32 = @as(i32, @intCast(self.toolbar_height)) + 2;
-        const row_h: i32 = 30;
+        const x: i32 = self.toPhysX(282);
+        const y: i32 = self.toPhysY(@as(i32, @intCast(self.toolbar_height)) + 2);
+        const w = self.toPhysSize(90);
+        const h = self.toPhysSize(195);
+        const row_h: i32 = @intCast(self.toPhysSize(30));
 
-        r.fillRoundedRect(x, y, w, h, 6, th.surface);
-        r.drawRoundedBorder(x, y, w, h, 6, 1, th.glass_border);
-        r.fillRect(x, y, w, 1, th.glass_border);
+        r.fillRoundedRect(x, y, w, h, self.toPhysSize(6), th.surface);
+        r.drawRoundedBorder(x, y, w, h, self.toPhysSize(6), 1, th.glass_border);
 
         const sizes = [_]u32{ 12, 16, 20, 24, 32, 48 };
-        var cur_y = y + 8;
+        var cur_y = y + @as(i32, @intCast(self.toPhysSize(8)));
         for (sizes) |sz| {
             const active = (self.current_font_size == sz);
             const bg = if (active) th.accent else th.btn_raised_bg;
             const fg = if (active) th.accent_fg else th.text_main;
-            r.fillRoundedRect(x + 4, cur_y, w - 8, row_h - 4, 4, bg);
+            r.fillRoundedRect(x + 4, cur_y, w - 8, @intCast(row_h - 4), self.toPhysSize(4), bg);
             var label_buf: [8]u8 = undefined;
             const label = std.fmt.bufPrint(&label_buf, "{d}px", .{sz}) catch "";
-            const lw = r.measureTextWithSize(self.font, label, 12);
-            const lx = x + @divTrunc(w - @as(i32, @intCast(lw)), 2);
-            r.drawTextWithSize(self.font, label, lx, cur_y + 19, 12, fg);
+            const lw = r.measureTextWithSize(self.font, label, self.ui_font_size);
+            const lx = x + @divTrunc(@as(i32, @intCast(w)) - @as(i32, @intCast(lw)), 2);
+            r.drawTextWithSize(self.font, label, lx, cur_y + @as(i32, @intCast(self.toPhysSize(19))), self.ui_font_size, fg);
             cur_y += row_h;
         }
+    }
+
+    fn renderColorDialog(self: *AnnotateApp, r: renderer.Renderer) void {
+        const th = self.cfg.theme;
+        const is_narrow = (self.win.width < 960);
+        const dlg_lx: i32 = if (is_narrow) 140 else @min(@as(i32, @intCast(self.win.width)) - 220, 680);
+        const dlg_ly: i32 = if (is_narrow) 76 else @as(i32, @intCast(self.toolbar_height)) + 2;
+        const dlg_lw: u32 = 210;
+        const dlg_lh: u32 = 72;
+
+        const px = self.toPhysX(dlg_lx);
+        const py = self.toPhysY(dlg_ly);
+        const pw = self.toPhysSize(dlg_lw);
+        const ph = self.toPhysSize(dlg_lh);
+
+        // Soft drop shadow
+        r.drawSoftShadow(px, py, pw, ph, self.toPhysSize(6), self.toPhysSize(12), @as(i32, @intCast(self.toPhysSize(3))), th.shadow_dark);
+
+        // Dialog background & border
+        r.fillRoundedRect(px, py, pw, ph, self.toPhysSize(6), th.surface);
+        r.drawRoundedBorder(px, py, pw, ph, self.toPhysSize(6), 1, th.glass_border);
+
+        // Header: "Custom Hex Color" and Close "✕"
+        r.drawTextWithSize(self.font, "Custom Hex Color", px + @as(i32, @intCast(self.toPhysSize(12))), py + @as(i32, @intCast(self.toPhysSize(18))), self.ui_font_size, th.text_muted);
+        r.drawTextWithSize(self.font, "✕", px + @as(i32, @intCast(pw)) - @as(i32, @intCast(self.toPhysSize(18))), py + @as(i32, @intCast(self.toPhysSize(18))), self.ui_font_size, th.text_muted);
+
+        // Content row Y
+        const row_py = py + @as(i32, @intCast(self.toPhysSize(28)));
+
+        // 1. Swatch preview box: 28x28
+        const sw_px = px + @as(i32, @intCast(self.toPhysSize(12)));
+        const sw_size = self.toPhysSize(28);
+        const hex_slice = self.color_dialog_buf[0..self.color_dialog_len];
+        const maybe_col = parseHexColor(hex_slice);
+        const preview_col = maybe_col orelse self.current_color;
+
+        r.fillRoundedRect(sw_px, row_py, sw_size, sw_size, self.toPhysSize(4), preview_col);
+        r.drawRoundedBorder(sw_px, row_py, sw_size, sw_size, self.toPhysSize(4), 1, if (maybe_col != null) th.accent else th.error_color);
+
+        // 2. Input box: 112x28
+        const in_px = sw_px + @as(i32, @intCast(sw_size)) + @as(i32, @intCast(self.toPhysSize(8)));
+        const in_pw = self.toPhysSize(112);
+        r.fillRoundedRect(in_px, row_py, in_pw, sw_size, self.toPhysSize(4), th.btn_raised_bg);
+        r.drawRoundedBorder(in_px, row_py, in_pw, sw_size, self.toPhysSize(4), 1, th.accent);
+
+        // Text inside input
+        const txt_x = in_px + @as(i32, @intCast(self.toPhysSize(8)));
+        const txt_y = row_py + @as(i32, @intCast(self.toPhysSize(19)));
+        r.drawTextWithSize(self.font, hex_slice, txt_x, txt_y, self.ui_font_size, th.text_main);
+
+        // Caret in input box
+        const cursor_slice = self.color_dialog_buf[0..self.color_dialog_cursor];
+        const cw = r.measureTextWithSize(self.font, cursor_slice, self.ui_font_size);
+        r.fillRect(txt_x + @as(i32, @intCast(cw)), row_py + @as(i32, @intCast(self.toPhysSize(4))), self.toPhysSize(2), self.toPhysSize(20), th.accent);
+
+        // 3. Apply button "✓": 32x28
+        const btn_px = in_px + @as(i32, @intCast(in_pw)) + @as(i32, @intCast(self.toPhysSize(6)));
+        const btn_pw = self.toPhysSize(32);
+        r.fillRoundedRect(btn_px, row_py, btn_pw, sw_size, self.toPhysSize(4), th.accent);
+        r.drawRoundedBorder(btn_px, row_py, btn_pw, sw_size, self.toPhysSize(4), 1, th.accent);
+        r.drawIconCentered(self.font, "✓", btn_px + @as(i32, @intCast(@divTrunc(btn_pw, 2))), row_py + @as(i32, @intCast(self.toPhysSize(20))), self.ui_font_size, th.accent_fg);
     }
 };
 
@@ -3836,6 +5291,14 @@ pub fn run(allocator: std.mem.Allocator, cfg: config.Config, file_to_open: ?[]co
         }
         _ = c.wl_display_dispatch_pending(app.win.display.?);
 
+        if (poll_fds[1].revents & c.POLLIN != 0) {
+            app.win.handleRepeatTimer();
+        }
+
+        while (app.win.popKeyEvent()) |ev| {
+            app.handleKey(ev.sym, ev.utf8_buf[0..ev.utf8_len], ev.is_ctrl, ev.is_shift);
+        }
+
         app.reloadScale();
 
         const cur_px = app.win.pointer_x;
@@ -3853,7 +5316,7 @@ pub fn run(allocator: std.mem.Allocator, cfg: config.Config, file_to_open: ?[]co
             prev_pdown = cur_down;
         }
 
-        // Ctrl + Mouse wheel zooming centered at cursor
+        // Ctrl + Mouse wheel zooming centered at cursor, Shift + scroll for font size / stroke thickness
         if (app.win.scroll_delta_y != 0.0) {
             const scroll = app.win.scroll_delta_y;
             app.win.scroll_delta_y = 0.0;
@@ -3862,6 +5325,8 @@ pub fn run(allocator: std.mem.Allocator, cfg: config.Config, file_to_open: ?[]co
                 const cy = @as(f32, @floatFromInt(@max(0, cur_py)));
                 const factor: f32 = if (scroll < 0) 1.15 else (1.0 / 1.15);
                 app.zoomAt(cx, cy, factor);
+            } else if (app.win.is_shift) {
+                app.handleShiftScroll(scroll);
             } else {
                 app.pan_y -= @as(f32, @floatCast(scroll * 24.0));
                 app.win.needs_redraw = true;
@@ -3871,16 +5336,12 @@ pub fn run(allocator: std.mem.Allocator, cfg: config.Config, file_to_open: ?[]co
         if (app.win.scroll_delta_x != 0.0) {
             const scroll_x = app.win.scroll_delta_x;
             app.win.scroll_delta_x = 0.0;
-            app.pan_x -= @as(f32, @floatCast(scroll_x * 24.0));
-            app.win.needs_redraw = true;
-        }
-
-        if (app.win.repeat_sym != 0) {
-            const sym = app.win.repeat_sym;
-            const slice = app.win.repeat_utf8_buf[0..app.win.repeat_utf8_len];
-            app.handleKey(sym, slice, app.win.is_ctrl, app.win.is_shift);
-            app.win.repeat_sym = 0;
-            app.win.repeat_utf8_len = 0;
+            if (app.win.is_shift) {
+                app.handleShiftScroll(scroll_x);
+            } else {
+                app.pan_x -= @as(f32, @floatCast(scroll_x * 24.0));
+                app.win.needs_redraw = true;
+            }
         }
 
         if (app.win.needs_redraw and app.win.configured) {
@@ -4069,3 +5530,198 @@ test "Pasted image annotation kind" {
     try std.testing.expectEqualStrings("", AnnotationKind.image.icon());
 }
 
+test "Export scale stays sharp without blowing up memory" {
+    try std.testing.expectApproxEqAbs(@as(f32, 1920.0 / 944.0), exportScaleFor(944, 346), 0.0001);
+    try std.testing.expectApproxEqAbs(@as(f32, 1.5), exportScaleFor(1280, 720), 0.0001);
+    try std.testing.expectApproxEqAbs(@as(f32, 1.0), exportScaleFor(1920, 1080), 0.0001);
+    try std.testing.expectApproxEqAbs(@as(f32, 1.0), exportScaleFor(3840, 2160), 0.0001);
+    try std.testing.expectApproxEqAbs(@as(f32, 4.0), exportScaleFor(400, 200), 0.0001);
+}
+
+test "Scaled annotation rendering" {
+    const alloc = std.testing.allocator;
+    var img = try ImageBuffer.init(alloc, 40, 20, Color.rgb(0, 0, 0));
+    defer img.deinit();
+
+    var font = try Font.init(alloc, "monospace", 12);
+    defer font.deinit();
+
+    var ann = Annotation{
+        .id = 1,
+        .kind = .rect,
+        .rect = Rect{ .x = 5, .y = 5, .w = 6, .h = 4 },
+        .stroke_width = 2,
+        .color = Color.rgb(255, 0, 0),
+    };
+    defer ann.deinit(alloc);
+
+    ann.renderToImage(&img, &font, 2);
+
+    const drawn = img.getPixel(10, 10).?;
+    try std.testing.expect(drawn.r > 200 and drawn.g < 50);
+    const untouched = img.getPixel(3, 3).?;
+    try std.testing.expect(untouched.r == 0 and untouched.g == 0);
+}
+
+test "TextEditState text editing, multiline and cursor navigation" {
+    const alloc = std.testing.allocator;
+    var te = try TextEditState.init(alloc, 42, "Hello World");
+    defer te.deinit();
+
+    try std.testing.expectEqualStrings("Hello World", te.text.items);
+    try std.testing.expectEqual(@as(usize, 11), te.cursor_idx);
+
+    // Left navigation
+    te.moveCursorLeft(false);
+    try std.testing.expectEqual(@as(usize, 10), te.cursor_idx);
+
+    // Home navigation
+    te.moveCursorHome(false);
+    try std.testing.expectEqual(@as(usize, 0), te.cursor_idx);
+
+    // Word right navigation
+    te.moveCursorWordRight(false);
+    try std.testing.expectEqual(@as(usize, 5), te.cursor_idx); // After "Hello"
+
+    // Word left navigation
+    te.moveCursorWordLeft(false);
+    try std.testing.expectEqual(@as(usize, 0), te.cursor_idx);
+
+    // End navigation
+    te.moveCursorEnd(false);
+    try std.testing.expectEqual(@as(usize, 11), te.cursor_idx);
+
+    // Enter / newline insertion (multiline)
+    te.insertText("\nNew Line");
+    try std.testing.expectEqualStrings("Hello World\nNew Line", te.text.items);
+
+    // Backspace
+    te.backspace();
+    try std.testing.expectEqualStrings("Hello World\nNew Lin", te.text.items);
+
+    // Undo
+    te.undo();
+    try std.testing.expectEqualStrings("Hello World\nNew Line", te.text.items);
+
+    // Redo
+    te.redo();
+    try std.testing.expectEqualStrings("Hello World\nNew Lin", te.text.items);
+
+    // Ctrl + A (Select all)
+    te.selectAll();
+    try std.testing.expect(te.hasSelection());
+    if (te.getSelectionRange()) |r| {
+        try std.testing.expectEqual(@as(usize, 0), r.start);
+        try std.testing.expectEqual(te.text.items.len, r.end);
+    } else {
+        return error.TestUnexpectedResult;
+    }
+
+    // Type over selection replaces all text
+    te.insertText("Fresh Text");
+    try std.testing.expectEqualStrings("Fresh Text", te.text.items);
+    try std.testing.expect(!te.hasSelection());
+
+    // Word deletion
+    te.deleteWordBackward();
+    try std.testing.expectEqualStrings("Fresh ", te.text.items);
+}
+
+test "HiDPI Display Scaling coordinate transformations" {
+    // Test logical to physical framebuffer conversion across standard scale factors
+    const scales = [_]f32{ 1.0, 1.25, 1.5, 1.75, 2.0 };
+    for (scales) |scale| {
+        const lx: i32 = 120;
+        const ly: i32 = 80;
+        const px = @as(i32, @intFromFloat(@round(@as(f32, @floatFromInt(lx)) * scale)));
+        const py = @as(i32, @intFromFloat(@round(@as(f32, @floatFromInt(ly)) * scale)));
+
+        // Framebuffer physical dimensions must match rounded scaling exactly
+        try std.testing.expectEqual(px, @as(i32, @intFromFloat(@round(@as(f32, @floatFromInt(lx)) * scale))));
+        try std.testing.expectEqual(py, @as(i32, @intFromFloat(@round(@as(f32, @floatFromInt(ly)) * scale))));
+
+        // Fractional scaling (1.25, 1.75) preserves consistency without coordinate drift
+        const roundtrip_x = @as(f32, @floatFromInt(px)) / scale;
+        try std.testing.expectApproxEqAbs(@as(f32, @floatFromInt(lx)), roundtrip_x, 0.5);
+    }
+}
+
+test "Vector Eraser deletes touched vector annotations" {
+    const alloc = std.testing.allocator;
+    var ann_list = std.ArrayListUnmanaged(Annotation).empty;
+    defer {
+        for (ann_list.items) |*a| a.deinit(alloc);
+        ann_list.deinit(alloc);
+    }
+
+    // Annotation 1: Rectangle at (10, 10, 40, 40)
+    try ann_list.append(alloc, Annotation{
+        .id = 101,
+        .kind = .rect,
+        .rect = Rect{ .x = 10, .y = 10, .w = 40, .h = 40 },
+        .stroke_width = 4,
+    });
+
+    // Annotation 2: Line from (100, 100) to (200, 100)
+    try ann_list.append(alloc, Annotation{
+        .id = 102,
+        .kind = .line,
+        .start_x = 100,
+        .start_y = 100,
+        .end_x = 200,
+        .end_y = 100,
+        .stroke_width = 4,
+    });
+
+    try std.testing.expectEqual(@as(usize, 2), ann_list.items.len);
+
+    // Hit test erasing line 102 at (150, 100)
+    var erased_id: ?u32 = null;
+    var i = ann_list.items.len;
+    while (i > 0) {
+        i -= 1;
+        if (ann_list.items[i].hitTest(150, 100)) {
+            erased_id = ann_list.items[i].id;
+            var removed = ann_list.orderedRemove(i);
+            removed.deinit(alloc);
+            break;
+        }
+    }
+
+    try std.testing.expectEqual(@as(?u32, 102), erased_id);
+    try std.testing.expectEqual(@as(usize, 1), ann_list.items.len);
+    try std.testing.expectEqual(@as(u32, 101), ann_list.items[0].id);
+}
+
+test "parseHexColor parses 3, 6, 8 hex and rejects invalid" {
+    // 6-digit hex
+    const red = AnnotateApp.parseHexColor("#FF0000").?;
+    try std.testing.expectEqual(@as(u8, 255), red.r);
+    try std.testing.expectEqual(@as(u8, 0), red.g);
+    try std.testing.expectEqual(@as(u8, 0), red.b);
+    try std.testing.expectEqual(@as(u8, 255), red.a);
+
+    // 3-digit hex (#0F0 -> #00FF00)
+    const green = AnnotateApp.parseHexColor("#0F0").?;
+    try std.testing.expectEqual(@as(u8, 0), green.r);
+    try std.testing.expectEqual(@as(u8, 255), green.g);
+    try std.testing.expectEqual(@as(u8, 0), green.b);
+
+    // Without '#' prefix
+    const blue = AnnotateApp.parseHexColor("0000FF").?;
+    try std.testing.expectEqual(@as(u8, 0), blue.r);
+    try std.testing.expectEqual(@as(u8, 0), blue.g);
+    try std.testing.expectEqual(@as(u8, 255), blue.b);
+
+    // 8-digit hex with alpha
+    const transparent_yellow = AnnotateApp.parseHexColor("#FFFF0080").?;
+    try std.testing.expectEqual(@as(u8, 255), transparent_yellow.r);
+    try std.testing.expectEqual(@as(u8, 255), transparent_yellow.g);
+    try std.testing.expectEqual(@as(u8, 0), transparent_yellow.b);
+    try std.testing.expectEqual(@as(u8, 128), transparent_yellow.a);
+
+    // Invalid inputs
+    try std.testing.expect(AnnotateApp.parseHexColor("") == null);
+    try std.testing.expect(AnnotateApp.parseHexColor("#GG0000") == null);
+    try std.testing.expect(AnnotateApp.parseHexColor("1234") == null);
+}

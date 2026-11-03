@@ -1807,9 +1807,30 @@ pub const Renderer = struct {
         }
     }
 
-    pub fn drawArrow(self: Renderer, x0: i32, y0: i32, x1: i32, y1: i32, stroke_width: u32, col: Color) void {
-        self.drawStrokeLine(x0, y0, x1, y1, stroke_width, col);
+    pub fn fillTriangle(self: Renderer, x0: i32, y0: i32, x1: i32, y1: i32, x2: i32, y2: i32, col: Color) void {
+        const min_x = @max(0, @min(x0, @min(x1, x2)));
+        const max_x = @min(@as(i32, @intCast(self.width - 1)), @max(x0, @max(x1, x2)));
+        const min_y = @max(0, @min(y0, @min(y1, y2)));
+        const max_y = @min(@as(i32, @intCast(self.height - 1)), @max(y0, @max(y1, y2)));
+        if (min_x > max_x or min_y > max_y) return;
 
+        var y = min_y;
+        while (y <= max_y) : (y += 1) {
+            var x = min_x;
+            while (x <= max_x) : (x += 1) {
+                const d1 = (x - x1) * (y0 - y1) - (x0 - x1) * (y - y1);
+                const d2 = (x - x2) * (y1 - y2) - (x1 - x2) * (y - y2);
+                const d3 = (x - x0) * (y2 - y0) - (x2 - x0) * (y - y0);
+                const has_neg = (d1 < 0) or (d2 < 0) or (d3 < 0);
+                const has_pos = (d1 > 0) or (d2 > 0) or (d3 > 0);
+                if (!(has_neg and has_pos)) {
+                    self.setPixelCoverage(x, y, col, 255);
+                }
+            }
+        }
+    }
+
+    pub fn drawArrow(self: Renderer, x0: i32, y0: i32, x1: i32, y1: i32, stroke_width: u32, col: Color) void {
         const dx = @as(f32, @floatFromInt(x1 - x0));
         const dy = @as(f32, @floatFromInt(y1 - y0));
         const len = std.math.sqrt(dx * dx + dy * dy);
@@ -1832,9 +1853,75 @@ pub const Renderer = struct {
         const right_x: i32 = @intFromFloat(bx - nx * head_width);
         const right_y: i32 = @intFromFloat(by - ny * head_width);
 
-        self.drawStrokeLine(x1, y1, left_x, left_y, stroke_width, col);
-        self.drawStrokeLine(x1, y1, right_x, right_y, stroke_width, col);
-        self.drawStrokeLine(left_x, left_y, right_x, right_y, stroke_width, col);
+        // Draw stem stopping at base of arrowhead
+        self.drawStrokeLine(x0, y0, @intFromFloat(bx + ux * 2.0), @intFromFloat(by + uy * 2.0), stroke_width, col);
+
+        // Draw solid filled arrowhead
+        self.fillTriangle(x1, y1, left_x, left_y, right_x, right_y, col);
+    }
+
+    pub fn fillEllipse(self: Renderer, cx: i32, cy: i32, rx_in: u32, ry_in: u32, col: Color) void {
+        if (rx_in == 0 or ry_in == 0) return;
+        const rx = @as(f32, @floatFromInt(rx_in));
+        const ry = @as(f32, @floatFromInt(ry_in));
+        const ry_i = @as(i32, @intCast(ry_in));
+
+        var dy: i32 = -ry_i;
+        while (dy <= ry_i) : (dy += 1) {
+            const y = cy + dy;
+            if (y < 0 or y >= self.height) continue;
+            const dy_f = @as(f32, @floatFromInt(dy));
+            const val = 1.0 - (dy_f * dy_f) / (ry * ry);
+            if (val < 0.0) continue;
+            const dx = @as(i32, @intFromFloat(@round(rx * @sqrt(val))));
+            const x_start = @max(0, cx - dx);
+            const x_end = @min(@as(i32, @intCast(self.width - 1)), cx + dx);
+            if (x_start <= x_end) {
+                self.fillRect(x_start, y, @intCast(x_end - x_start + 1), 1, col);
+            }
+        }
+    }
+
+    pub fn drawEllipseBorder(self: Renderer, cx: i32, cy: i32, rx_in: u32, ry_in: u32, sw_in: u32, col: Color) void {
+        if (rx_in == 0 or ry_in == 0) return;
+        const sw = @max(1, sw_in);
+        if (sw >= rx_in or sw >= ry_in) {
+            self.fillEllipse(cx, cy, rx_in, ry_in, col);
+            return;
+        }
+        const rx_out = @as(f32, @floatFromInt(rx_in));
+        const ry_out = @as(f32, @floatFromInt(ry_in));
+        const rx_in_f = @as(f32, @floatFromInt(rx_in - sw));
+        const ry_in_f = @as(f32, @floatFromInt(ry_in - sw));
+        const ry_i = @as(i32, @intCast(ry_in));
+
+        var dy: i32 = -ry_i;
+        while (dy <= ry_i) : (dy += 1) {
+            const y = cy + dy;
+            if (y < 0 or y >= self.height) continue;
+            const dy_f = @as(f32, @floatFromInt(dy));
+            const val_out = 1.0 - (dy_f * dy_f) / (ry_out * ry_out);
+            if (val_out < 0.0) continue;
+            const dx_out = @as(i32, @intFromFloat(@round(rx_out * @sqrt(val_out))));
+
+            const val_in = 1.0 - (dy_f * dy_f) / (ry_in_f * ry_in_f);
+            if (val_in <= 0.0) {
+                const x_start = @max(0, cx - dx_out);
+                const x_end = @min(@as(i32, @intCast(self.width - 1)), cx + dx_out);
+                if (x_start <= x_end) {
+                    self.fillRect(x_start, y, @intCast(x_end - x_start + 1), 1, col);
+                }
+            } else {
+                const dx_in = @as(i32, @intFromFloat(@round(rx_in_f * @sqrt(val_in))));
+                const x0 = @max(0, cx - dx_out);
+                const x1 = @min(@as(i32, @intCast(self.width - 1)), cx - dx_in);
+                if (x0 <= x1) self.fillRect(x0, y, @intCast(x1 - x0 + 1), 1, col);
+
+                const x2 = @max(0, cx + dx_in);
+                const x3 = @min(@as(i32, @intCast(self.width - 1)), cx + dx_out);
+                if (x2 <= x3) self.fillRect(x2, y, @intCast(x3 - x2 + 1), 1, col);
+            }
+        }
     }
 
     pub fn drawText(self: Renderer, font: *Font, text: []const u8, x: i32, baseline_y: i32, color: Color) void {

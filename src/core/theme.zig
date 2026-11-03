@@ -164,19 +164,16 @@ pub fn firstFamily(family: []const u8) []const u8 {
 }
 
 pub const ThemeKind = enum(u8) {
-    frosted_neumorphic = 0,
-    nord = 1,
-    catppuccin = 2,
-    tokyo_night = 3,
-    rose_pine = 4,
-    dracula = 5,
+    nord = 0,
+    catppuccin = 1,
+    tokyo_night = 2,
+    rose_pine = 3,
+    dracula = 4,
 
     pub const default_theme = ThemeKind.nord;
-    pub const count: u8 = 6;
+    pub const count: u8 = 5;
 
     // Backward compatibility aliases
-    pub const mizu = ThemeKind.frosted_neumorphic;
-    pub const pastel = ThemeKind.frosted_neumorphic;
     pub const frost = ThemeKind.nord;
     pub const noctalia = ThemeKind.tokyo_night;
     pub const material_you = ThemeKind.catppuccin;
@@ -184,7 +181,6 @@ pub const ThemeKind = enum(u8) {
 
     pub fn name(self: ThemeKind) []const u8 {
         return switch (self) {
-            .frosted_neumorphic => "Frosted Neumorphic",
             .nord => "Nord Frost",
             .catppuccin => "Catppuccin Mocha",
             .tokyo_night => "Tokyo Night",
@@ -195,7 +191,6 @@ pub const ThemeKind = enum(u8) {
 
     pub fn id(self: ThemeKind) []const u8 {
         return switch (self) {
-            .frosted_neumorphic => "frosted-neumorphic",
             .nord => "nord",
             .catppuccin => "catppuccin",
             .tokyo_night => "tokyo-night",
@@ -206,7 +201,6 @@ pub const ThemeKind = enum(u8) {
 
     pub fn icon(self: ThemeKind) []const u8 {
         return switch (self) {
-            .frosted_neumorphic => "󰖔",
             .nord => "󰜗",
             .catppuccin => "󰄛",
             .tokyo_night => "󰛓",
@@ -229,23 +223,13 @@ pub const ThemeKind = enum(u8) {
 
     pub fn fromString(str: []const u8) ?ThemeKind {
         const s = std.mem.trim(u8, str, " \t\r\n;\"'");
-        if (std.ascii.eqlIgnoreCase(s, "frosted") or
-            std.ascii.eqlIgnoreCase(s, "neumorphic") or
-            std.ascii.eqlIgnoreCase(s, "frosted_neumorphic") or
-            std.ascii.eqlIgnoreCase(s, "frosted-neumorphic") or
-            std.ascii.eqlIgnoreCase(s, "frosted neumorphic") or
-            std.ascii.eqlIgnoreCase(s, "pastel") or
-            std.ascii.eqlIgnoreCase(s, "mizu") or
-            std.ascii.eqlIgnoreCase(s, "default"))
-        {
-            return .frosted_neumorphic;
-        }
         if (std.ascii.eqlIgnoreCase(s, "nord") or
             std.ascii.eqlIgnoreCase(s, "nord frost") or
             std.ascii.eqlIgnoreCase(s, "nord_frost") or
             std.ascii.eqlIgnoreCase(s, "nord-frost") or
             std.ascii.eqlIgnoreCase(s, "frost_nord") or
-            std.ascii.eqlIgnoreCase(s, "frost"))
+            std.ascii.eqlIgnoreCase(s, "frost") or
+            std.ascii.eqlIgnoreCase(s, "default"))
         {
             return .nord;
         }
@@ -294,7 +278,6 @@ pub const ThemeKind = enum(u8) {
 
     pub fn toTheme(self: ThemeKind) Theme {
         return switch (self) {
-            .frosted_neumorphic => frostedNeumorphicTheme(),
             .nord => nordTheme(),
             .catppuccin => catppuccinTheme(),
             .tokyo_night => tokyoNightTheme(),
@@ -305,7 +288,7 @@ pub const ThemeKind = enum(u8) {
 };
 
 pub const Theme = struct {
-    kind: ThemeKind = .frosted_neumorphic,
+    kind: ThemeKind = .nord,
 
     // Centralized Core Tokens
     base: Color,
@@ -541,61 +524,6 @@ fn makeTheme(
         .panel_bg = base,
         .panel_border = Color.init(50, elevated.r, elevated.g, elevated.b),
     };
-}
-
-// Frosted Neumorphic theme.
-pub fn frostedNeumorphicTheme() Theme {
-    const base = Color.init(220, 240, 244, 252);
-    const surface = Color.init(235, 255, 255, 255);
-    const elevated = Color.hex(0xFFFFFF);
-    const accent = Color.hex(0x4361EE); // Vibrant Blue (Wi-Fi, Bluetooth, Sliders)
-    const accent_fg = Color.hex(0xFFFFFF);
-    const secondary = Color.hex(0x8B5CF6);
-    const text_main = Color.hex(0x1E293B); // Slate 800 - crisp high-contrast
-    const text_muted = Color.hex(0x64748B); // Slate 500 - crisp subtitles
-    const err = Color.hex(0xEF4444);
-    const warn = Color.hex(0xF59E0B);
-    const succ = Color.hex(0x10B981); // Emerald Green (Battery Bar)
-
-    var th = makeTheme(
-        .frosted_neumorphic,
-        base,
-        surface,
-        elevated,
-        accent,
-        accent_fg,
-        secondary,
-        text_main,
-        text_muted,
-        err,
-        warn,
-        succ,
-    );
-
-    th.gradient_start = Color.init(240, 219, 234, 254); // cool blue #DBEAFE
-    th.gradient_mid = Color.init(240, 237, 233, 254); // lavender #EDE9FE
-    th.gradient_end = Color.init(240, 252, 231, 243); // pale pink #FCE7F3
-    th.glass_highlight = Color.init(220, 255, 255, 255);
-    th.glass_border = Color.init(130, 255, 255, 255);
-    th.shadow_dark = Color.init(35, 80, 95, 130);
-    th.shadow_light = Color.init(180, 255, 255, 255);
-    th.slider_track = Color.init(35, 140, 155, 185);
-    th.slider_thumb = Color.hex(0xFFFFFF);
-    th.slider_thumb_shadow = Color.init(60, 50, 65, 100);
-    th.toggle_on = Color.hex(0x4361EE);
-    th.toggle_off = Color.init(130, 203, 213, 225);
-    th.btn_raised_bg = Color.init(245, 255, 255, 255);
-    th.btn_raised_hover = Color.hex(0xFFFFFF);
-
-    th.bar_bg = Color.init(210, 243, 246, 253);
-    th.bar_border = Color.init(130, 255, 255, 255);
-    th.pill_bg = Color.init(180, 255, 255, 255);
-    th.pill_hover = Color.init(235, 255, 255, 255);
-    th.pill_border = Color.init(100, 255, 255, 255);
-    th.card_bg = Color.init(225, 45, 50, 70);
-    th.panel_bg = Color.init(220, 242, 245, 252);
-    th.panel_border = Color.init(130, 255, 255, 255);
-    return th;
 }
 
 // Nord Frost theme.
@@ -2563,14 +2491,8 @@ test "ThemeKind cycle and parse" {
     try std.testing.expectEqual(ThemeKind.tokyo_night, ThemeKind.catppuccin.next());
     try std.testing.expectEqual(ThemeKind.rose_pine, ThemeKind.tokyo_night.next());
     try std.testing.expectEqual(ThemeKind.dracula, ThemeKind.rose_pine.next());
-    try std.testing.expectEqual(ThemeKind.frosted_neumorphic, ThemeKind.dracula.next());
-    try std.testing.expectEqual(ThemeKind.nord, ThemeKind.frosted_neumorphic.next());
-
-    try std.testing.expectEqual(ThemeKind.frosted_neumorphic, ThemeKind.fromString("frosted").?);
-    try std.testing.expectEqual(ThemeKind.frosted_neumorphic, ThemeKind.fromString("neumorphic").?);
-    try std.testing.expectEqual(ThemeKind.frosted_neumorphic, ThemeKind.fromString("Frosted Neumorphic").?);
-    try std.testing.expectEqual(ThemeKind.frosted_neumorphic, ThemeKind.fromString("mizu").?);
-    try std.testing.expectEqual(ThemeKind.frosted_neumorphic, ThemeKind.fromString("default").?);
+    try std.testing.expectEqual(ThemeKind.nord, ThemeKind.dracula.next());
+    try std.testing.expectEqual(ThemeKind.catppuccin, ThemeKind.nord.next());
 
     try std.testing.expectEqual(ThemeKind.nord, ThemeKind.fromString("nord").?);
     try std.testing.expectEqual(ThemeKind.nord, ThemeKind.fromString("nord_frost").?);
@@ -2586,10 +2508,6 @@ test "ThemeKind cycle and parse" {
     try std.testing.expectEqual(ThemeKind.dracula, ThemeKind.fromString("dracula").?);
     try std.testing.expectEqual(ThemeKind.dracula, ThemeKind.fromString("Ant Dracula").?);
     try std.testing.expectEqual(ThemeKind.dracula, ThemeKind.fromString("ant-dracula").?);
-
-    const frosted = ThemeKind.frosted_neumorphic.toTheme();
-    try std.testing.expectEqual(ThemeKind.frosted_neumorphic, frosted.kind);
-    try std.testing.expectEqual(Color.hex(0x4361EE).toArgb(), frosted.accent.toArgb());
 
     const nord = ThemeKind.nord.toTheme();
     try std.testing.expectEqual(ThemeKind.nord, nord.kind);
@@ -2653,7 +2571,7 @@ test "Color luminance and contrasting text colors" {
 }
 
 test "generateMizuCss produces valid stylesheet" {
-    const test_th = ThemeKind.frosted_neumorphic.toTheme();
+    const test_th = ThemeKind.nord.toTheme();
     generateMizuCss(test_th);
 
     const home_opt = c.getenv("HOME");

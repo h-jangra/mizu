@@ -320,6 +320,7 @@ pub const Bar = struct {
                 if (has_workspaces) try workspaces.render(ctx, ui);
             },
             .keymaps => try keymaps.render(ctx, ui),
+            .recorder => try recorder.render(ctx, ui),
             .separator => try separator.render(ctx, ui),
             else => {},
         }
@@ -427,8 +428,8 @@ pub const Bar = struct {
                 try self.renderLeftModule(mod, &ctx, &ui);
             }
         } else {
-            try self.renderLeftModule(.launcher, &ctx, &ui);
             try self.renderLeftModule(.keymaps, &ctx, &ui);
+            try self.renderLeftModule(.recorder, &ctx, &ui);
             try self.renderLeftModule(.buttons, &ctx, &ui);
             try self.renderLeftModule(.workspaces, &ctx, &ui);
         }
@@ -464,7 +465,6 @@ pub const Bar = struct {
             }
         } else {
             try self.renderRightModule(.theme_switch, &ctx, &ui);
-            try self.renderRightModule(.recorder, &ctx, &ui);
             try self.renderRightModule(.memory, &ctx, &ui);
             try self.renderRightModule(.quicksettings, &ctx, &ui);
             try self.renderRightModule(.tray, &ctx, &ui);

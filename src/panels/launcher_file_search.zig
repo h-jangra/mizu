@@ -14,7 +14,7 @@ pub const FileEntry = struct {
 };
 
 pub fn getFileIcon(name: []const u8, is_dir: bool) []const u8 {
-    if (is_dir) return "  ";
+    if (is_dir) return "folder";
 
     const ext = std.fs.path.extension(name);
     if (ext.len > 0) {
@@ -26,7 +26,7 @@ pub fn getFileIcon(name: []const u8, is_dir: bool) []const u8 {
             std.ascii.eqlIgnoreCase(ext, ".gif") or
             std.ascii.eqlIgnoreCase(ext, ".bmp"))
         {
-            return " 󰈟 ";
+            return "image-x-generic";
         }
         if (std.ascii.eqlIgnoreCase(ext, ".mp4") or
             std.ascii.eqlIgnoreCase(ext, ".mkv") or
@@ -34,7 +34,7 @@ pub fn getFileIcon(name: []const u8, is_dir: bool) []const u8 {
             std.ascii.eqlIgnoreCase(ext, ".avi") or
             std.ascii.eqlIgnoreCase(ext, ".mov"))
         {
-            return " 󰈫 ";
+            return "video-x-generic";
         }
         if (std.ascii.eqlIgnoreCase(ext, ".mp3") or
             std.ascii.eqlIgnoreCase(ext, ".flac") or
@@ -43,29 +43,14 @@ pub fn getFileIcon(name: []const u8, is_dir: bool) []const u8 {
             std.ascii.eqlIgnoreCase(ext, ".m4a") or
             std.ascii.eqlIgnoreCase(ext, ".opus"))
         {
-            return " 󰈣 ";
+            return "audio-x-generic";
         }
         if (std.ascii.eqlIgnoreCase(ext, ".pdf") or
             std.ascii.eqlIgnoreCase(ext, ".epub") or
             std.ascii.eqlIgnoreCase(ext, ".doc") or
             std.ascii.eqlIgnoreCase(ext, ".docx"))
         {
-            return " 󰈔 ";
-        }
-        if (std.ascii.eqlIgnoreCase(ext, ".zig") or
-            std.ascii.eqlIgnoreCase(ext, ".c") or
-            std.ascii.eqlIgnoreCase(ext, ".h") or
-            std.ascii.eqlIgnoreCase(ext, ".cpp") or
-            std.ascii.eqlIgnoreCase(ext, ".rs") or
-            std.ascii.eqlIgnoreCase(ext, ".py") or
-            std.ascii.eqlIgnoreCase(ext, ".sh") or
-            std.ascii.eqlIgnoreCase(ext, ".txt") or
-            std.ascii.eqlIgnoreCase(ext, ".md") or
-            std.ascii.eqlIgnoreCase(ext, ".json") or
-            std.ascii.eqlIgnoreCase(ext, ".toml") or
-            std.ascii.eqlIgnoreCase(ext, ".ini"))
-        {
-            return " 󰅩 ";
+            return "application-pdf";
         }
         if (std.ascii.eqlIgnoreCase(ext, ".zip") or
             std.ascii.eqlIgnoreCase(ext, ".tar") or
@@ -73,10 +58,10 @@ pub fn getFileIcon(name: []const u8, is_dir: bool) []const u8 {
             std.ascii.eqlIgnoreCase(ext, ".xz") or
             std.ascii.eqlIgnoreCase(ext, ".7z"))
         {
-            return " 󰛫 ";
+            return "package-x-generic";
         }
     }
-    return " 󰈔 ";
+    return "text-x-generic";
 }
 
 pub fn matchPattern(pattern: []const u8, text: []const u8) bool {
@@ -316,4 +301,14 @@ test "matchGlob pattern" {
     try std.testing.expect(matchGlob("*.zig", "main.zig"));
     try std.testing.expect(!matchGlob("*.zig", "main.c"));
     try std.testing.expect(matchPattern("test", "MyTestFile.txt"));
+}
+
+test "file icons use freedesktop names" {
+    try std.testing.expectEqualStrings("folder", getFileIcon("src", true));
+    try std.testing.expectEqualStrings("image-x-generic", getFileIcon("photo.PNG", false));
+    try std.testing.expectEqualStrings("video-x-generic", getFileIcon("clip.mkv", false));
+    try std.testing.expectEqualStrings("audio-x-generic", getFileIcon("song.flac", false));
+    try std.testing.expectEqualStrings("application-pdf", getFileIcon("book.pdf", false));
+    try std.testing.expectEqualStrings("package-x-generic", getFileIcon("archive.tar.gz", false));
+    try std.testing.expectEqualStrings("text-x-generic", getFileIcon("main.zig", false));
 }

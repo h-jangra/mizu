@@ -18,7 +18,7 @@ pub const QsLayout = struct {
     pub const radius: u32 = 16;
 };
 
-pub const display_scales = [_]u32{ 100, 125, 150, 200 };
+pub const display_scales = [_]u32{ 100, 125, 150, 175, 200 };
 pub const display_refresh_rates = [_]u32{ 60, 120, 144, 165 };
 pub const display_resolutions = [_][]const u8{
     "1920x1080",

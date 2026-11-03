@@ -52,8 +52,8 @@ clock_format = %a %b %d  %H:%M
 
 # 3. Active Theme Preset
 
-# Presets: frosted_neumorphic, nord, catppuccin, tokyo_night, gruvbox, rose_pine
-# Aliases: mizu, pastel, frost -> frosted_neumorphic; noctalia -> tokyo_night; material_you -> catppuccin
+# Presets: nord, catppuccin, tokyo_night, gruvbox, rose_pine
+# Aliases: frost -> nord; noctalia -> tokyo_night; material_you -> catppuccin
 theme = nord
 
 # 3b. Calendar Holidays

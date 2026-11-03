@@ -79,6 +79,8 @@ Unlike legacy screenshot markup tools that immediately burn shapes permanently i
 | **Commit Text / Crop** | `Enter` |
 | **Cancel Mode / Close** | `Escape` |
 
+Save, copy and export enlarge small images to fit a 1080p frame (up to 4×) and redraw annotations at that scale, so screenshots stay sharp when enlarged in video editors such as Kdenlive.
+
 ---
 
 ## CLI Usage

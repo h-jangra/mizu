@@ -25,7 +25,7 @@ Logical pixel font sizes (clamped to 8–96):
 
 ### 3. Themes & Theme System
 * `theme`: Active theme name (default: `nord`).
-  * Built-in themes: `nord`, `dracula`, `catppuccin`, `tokyo-night`, `rose-pine`, `frosted-neumorphic`.
+  * Built-in themes: `nord`, `dracula`, `catppuccin`, `tokyo-night`, `rose-pine`.
   * **Built-in Location**: Shipped in `/usr/share/mizu/themes/`.
   * **User Overrides**: When a theme is selected, its files are copied to `~/.config/mizu/themes/<theme_name>/` and loaded from the user copy. User modifications are preserved and never overwritten on theme changes.
   * **CSS-based Colors & Styling**: Each theme directory includes a `theme.css` file defining CSS variables (`--mizu-base`, `--mizu-accent`, `--mizu-radius-bar`, etc.) and GTK `@define-color` rules.

@@ -38,7 +38,7 @@ pub fn renderHeader(panel: anytype, ui: *ui_mod.Ui, scale: u32) void {
     const is_charging = panel.sys.bat_status == .charging;
     const is_full = panel.sys.bat_status == .full;
     const bat_color = if (plugged or is_full) panel.cfg.theme.success_color else if (bat_pct <= 20) panel.cfg.theme.error_color else panel.cfg.theme.text_bright;
-    const bat_svg = if (plugged or is_charging) "battery-charging" else if (is_full) "battery-full" else if (bat_pct <= 20) "battery-empty" else if (bat_pct <= 50) "battery-low" else if (bat_pct <= 80) "battery-middle" else "battery-high";
+    const bat_svg = if (!panel.sys.has_battery) "plug" else if (is_charging) "battery-charging" else if (is_full or bat_pct >= 90) "battery-full" else if (bat_pct <= 20) "battery-empty" else if (bat_pct <= 50) "battery-low" else if (bat_pct <= 80) "battery-middle" else "battery-high";
 
     // Battery icon
     _ = ui.open(.{ .width = .{ .fixed = ui.s(48) }, .height = .{ .fixed = ui.s(48) }, .align_x = .center, .align_y = .center });
@@ -54,36 +54,20 @@ pub fn renderHeader(panel: anytype, ui: *ui_mod.Ui, scale: u32) void {
     ui.text(pct_str, .{ .size = 22 * scale, .color = panel.cfg.theme.text_bright, .line_height = @intCast(24 * scale) });
 
     // Battery status
-    var status_buf: [64]u8 = undefined;
-    const status_str = blk: {
-        if (!panel.sys.has_battery) break :blk "Power";
-        switch (panel.sys.bat_status) {
-            .charging => {
-                if (panel.sys.bat_seconds_remaining) |secs| {
-                    const mins = @divTrunc(@rem(secs, 3600), 60);
-                    if (mins > 0) break :blk std.fmt.bufPrint(&status_buf, "Charging · {d}m to full", .{mins}) catch "Charging";
-                }
-                break :blk "Charging";
-            },
-            .discharging => {
-                if (panel.sys.bat_seconds_remaining) |secs| {
-                    const hrs = @divTrunc(secs, 3600);
-                    const mins = @divTrunc(@rem(secs, 3600), 60);
-                    if (hrs > 0) break :blk std.fmt.bufPrint(&status_buf, "{d}h {d}m remaining", .{ hrs, mins }) catch "Discharging";
-                    break :blk std.fmt.bufPrint(&status_buf, "{d}m remaining", .{mins}) catch "Discharging";
-                }
-                break :blk "On battery";
-            },
-            .full => break :blk "Full",
-            else => break :blk "Battery",
-        }
+    const status_str = if (!panel.sys.has_battery)
+        "AC Power"
+    else switch (panel.sys.bat_status) {
+        .charging => "Charging",
+        .discharging => "On Battery",
+        .full => "Fully Charged",
+        else => if (plugged) "Plugged In" else "On Battery",
     };
     ui.text(status_str, .{ .size = 13 * scale, .color = panel.cfg.theme.text_muted });
 
     // Spacer between battery and buttons
     ui.spacerSized(.{ .grow = .{} }, .{ .fixed = 0 });
 
-    // Lock and power buttons (right-aligned, no settings duplicate)
+    // Lock and power buttons
     const lock_hov = ui.hovered("qs-header-btn", 0);
     const pwr_hov = ui.hovered("qs-header-btn", 1);
     for ([_]struct { icon: []const u8, act: Action, idx: u32, hov: bool }{

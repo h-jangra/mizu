@@ -41,7 +41,7 @@ keymap_text = 16
 # wallpaper = /path/to/wallpaper.jpg
 
 # Theme System
-# Built-in themes: nord, dracula, catppuccin, tokyo-night, rose-pine, frosted-neumorphic
+# Built-in themes: nord, dracula, catppuccin, tokyo-night, rose-pine
 # Built-in themes ship in /usr/share/mizu/themes/ (or <prefix>/share/mizu/themes/).
 # When selected, the theme is copied to ~/.config/mizu/themes/<theme_name>/ and loaded
 # from your user copy, preserving your local modifications.
