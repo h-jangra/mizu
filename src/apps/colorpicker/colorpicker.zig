@@ -100,7 +100,12 @@ fn frameHandleDamage(
     width: u32,
     height: u32,
 ) callconv(.c) void {
-    _ = data; _ = frame; _ = x; _ = y; _ = width; _ = height;
+    _ = data;
+    _ = frame;
+    _ = x;
+    _ = y;
+    _ = width;
+    _ = height;
 }
 
 fn frameHandleLinuxDmabuf(
@@ -110,7 +115,11 @@ fn frameHandleLinuxDmabuf(
     width: u32,
     height: u32,
 ) callconv(.c) void {
-    _ = data; _ = frame; _ = format; _ = width; _ = height;
+    _ = data;
+    _ = frame;
+    _ = format;
+    _ = width;
+    _ = height;
 }
 
 fn frameHandleBufferDone(
@@ -191,7 +200,9 @@ fn screencopyRegistryGlobal(
 }
 
 fn screencopyRegistryGlobalRemove(data: ?*anyopaque, registry: ?*c.wl_registry, name: u32) callconv(.c) void {
-    _ = data; _ = registry; _ = name;
+    _ = data;
+    _ = registry;
+    _ = name;
 }
 
 const screencopy_registry_listener = c.struct_wl_registry_listener{
@@ -262,11 +273,17 @@ pub fn captureScreenNative(allocator: std.mem.Allocator) !ImageBuffer {
             var b: u8 = 0;
 
             if (is_xbgr or is_rgba) {
-                r = b0; g = b1; b = b2;
+                r = b0;
+                g = b1;
+                b = b2;
             } else if (is_bgra) {
-                b = b0; g = b1; r = b2;
+                b = b0;
+                g = b1;
+                r = b2;
             } else {
-                b = b0; g = b1; r = b2;
+                b = b0;
+                g = b1;
+                r = b2;
             }
 
             const argb: u32 = (@as(u32, 255) << 24) | (@as(u32, r) << 16) | (@as(u32, g) << 8) | @as(u32, b);
@@ -466,13 +483,10 @@ fn redrawOverlay(
         return;
     }
 
-    // Window matches screenshot size for 1:1 tracking
-
     const sx_center = std.math.clamp(cursor_x, 0, @as(i32, @intCast(screenshot.width)) - 1);
     const sy_center = std.math.clamp(cursor_y, 0, @as(i32, @intCast(screenshot.height)) - 1);
     const center_pixel = screenshot.getPixel(sx_center, sy_center) orelse Color.rgb(0, 0, 0);
 
-    // Minimal magnified circular pixel grid (loupe) centered near cursor
     const grid_cells: u32 = 21;
     const cell_size: u32 = 8;
     const grid_size: u32 = grid_cells * cell_size; // 168px
@@ -482,8 +496,6 @@ fn redrawOverlay(
     const half = @as(i32, @intCast(@divTrunc(grid_size, 2)));
     const loupe_x = cursor_x - half;
     const loupe_y = cursor_y - half;
-
-    // Minimal: hex directly below the circle, no card
 
     // Draw magnified pixel grid in a circle
     for (0..grid_cells) |gy_raw| {
@@ -500,8 +512,6 @@ fn redrawOverlay(
             target.fillRect(cx, cy_p, cell_size, cell_size, col);
         }
     }
-
-
 
     // HEX value below magnifier - minimal, clean text
     var hex_buf: [32]u8 = undefined;

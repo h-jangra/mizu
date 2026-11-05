@@ -3,29 +3,6 @@ const renderer = @import("../core/renderer.zig");
 const theme = @import("../core/theme.zig");
 const c = @import("c");
 
-/// Nerd Font glyphs kept only as fallback symbols for assets that have no SVG
-/// equivalent. These are not used as primary icons anymore.
-pub const glyphs = struct {
-    pub const chevron_right = "";
-    pub const chevron_left = "";
-    pub const chevron_up = "";
-    pub const chevron_down = "";
-    pub const power = "";
-    pub const lock = "";
-    pub const close = "󰅖";
-    pub const check = "";
-    pub const calendar = "󰸗";
-    pub const screen = "󰄄";
-    pub const memory = "󰍛";
-    pub const cpu = "󰘚";
-    pub const palette = "󰏘";
-    pub const search = "\u{f002}";
-    pub const filter = "\u{f0b0}";
-    pub const bluetooth_off = "󰂲";
-};
-
-/// Vector-drawn native icons kept as crisp fallbacks when an SVG asset is
-/// unavailable.
 pub const IconKind = enum {
     wifi_full,
     wifi_medium,
@@ -82,7 +59,7 @@ pub fn drawIcon(target: renderer.Renderer, kind: IconKind, x: i32, y: i32, size:
     }
 }
 
-// Vector icon primitives (crisp native fallbacks)
+// Vector icon primitives
 pub fn drawLine(
     target: renderer.Renderer,
     x0: f32,
@@ -663,7 +640,8 @@ fn iconDirScore(dir: []const u8, target: u16) u16 {
     return 100 + (target - size);
 }
 
-fn tryIndexTheme(allocator: std.mem.Allocator, base: []const u8, content: []const u8, name: []const u8, target: u16) ?[]u8 {
+fn tryIndexTheme(allocator: std.mem.Allocator, base: []const u8, content: []const u8, name: []const u8, target: u16, app_icon: bool) ?[]u8 {
+    _ = app_icon;
     var dirs_buf: [16384]u8 = undefined;
     const dirs = indexValue(content, "Directories", &dirs_buf) orelse return null;
 
@@ -794,35 +772,227 @@ fn gtkIconThemeName(buf: []u8) ?[]const u8 {
     return null;
 }
 
-fn tryThemeRecursive(allocator: std.mem.Allocator, theme_name: []const u8, name: []const u8, target: u16, depth: u8) ?[]u8 {
-    if (depth > 8) return null;
-    var base_buf: [512]u8 = undefined;
-    const base = findThemeDir(&base_buf, theme_name) orelse return null;
+fn fileExistsIndexTheme(base: []const u8) bool {
+    var buf: [512]u8 = undefined;
+    const path = std.fmt.bufPrint(&buf, "{s}/index.theme", .{base}) catch return false;
+    return fileExists(path);
+}
 
+fn tryBaseTheme(allocator: std.mem.Allocator, base: []const u8, theme_name: []const u8, name: []const u8, target: u16, depth: u8, app_icon: bool) ?[]u8 {
+    _ = theme_name;
     var index_path_buf: [512]u8 = undefined;
     const index_path = std.fmt.bufPrint(&index_path_buf, "{s}/index.theme", .{base}) catch return null;
     var content_buf: [65536]u8 = undefined;
-    const content = readFileInto(index_path, &content_buf) orelse return null;
+    if (readFileInto(index_path, &content_buf)) |content| {
+        if (tryIndexTheme(allocator, base, content, name, target, app_icon)) |p| return p;
+        var inherits_buf: [1024]u8 = undefined;
+        if (indexValue(content, "Inherits", &inherits_buf)) |inherits| {
+            var it = std.mem.splitScalar(u8, inherits, ',');
+            while (it.next()) |raw| {
+                const parent = std.mem.trim(u8, raw, " \t\r");
+                if (parent.len == 0) continue;
+                if (tryThemeRecursive(allocator, parent, name, target, depth + 1, app_icon)) |p| return p;
+            }
+        }
+        return null;
+    }
+    // No index.theme: handled by the second pass in tryThemeRecursive.
+    return null;
+}
 
-    if (tryIndexTheme(allocator, base, content, name, target)) |p| return p;
+fn tryThemeRecursive(allocator: std.mem.Allocator, theme_name: []const u8, name: []const u8, target: u16, depth: u8, app_icon: bool) ?[]u8 {
+    if (depth > 8) return null;
 
-    var inherits_buf: [1024]u8 = undefined;
-    const inherits = indexValue(content, "Inherits", &inherits_buf) orelse return null;
-    var it = std.mem.splitScalar(u8, inherits, ',');
-    while (it.next()) |raw| {
-        const parent = std.mem.trim(u8, raw, " \t\r");
-        if (parent.len == 0) continue;
-        if (tryThemeRecursive(allocator, parent, name, target, depth + 1)) |p| return p;
+    // Search every root where this theme may be installed, so partial user
+    // themes (e.g. ~/.local/share/icons/hicolor without index.theme) do not
+    // shadow complete system themes.
+    if (c.getenv("XDG_DATA_HOME")) |raw| {
+        var buf: [512]u8 = undefined;
+        if (std.fmt.bufPrint(&buf, "{s}/icons/{s}", .{ std.mem.span(raw), theme_name })) |base| {
+            if (fileExists(base)) {
+                if (tryBaseTheme(allocator, base, theme_name, name, target, depth, app_icon)) |p| return p;
+            }
+        } else |_| {}
+    }
+
+    if (c.getenv("HOME")) |raw| {
+        const home = std.mem.span(raw);
+        const subs = [_][]const u8{ ".local/share/icons", ".icons" };
+        for (subs) |sub| {
+            var buf: [512]u8 = undefined;
+            if (std.fmt.bufPrint(&buf, "{s}/{s}/{s}", .{ home, sub, theme_name })) |base| {
+                if (fileExists(base)) {
+                    if (tryBaseTheme(allocator, base, theme_name, name, target, depth, app_icon)) |p| return p;
+                }
+            } else |_| {}
+        }
+    }
+
+    if (c.getenv("XDG_DATA_DIRS")) |raw| {
+        var it = std.mem.splitScalar(u8, std.mem.span(raw), ':');
+        while (it.next()) |root| {
+            if (root.len == 0) continue;
+            var buf: [512]u8 = undefined;
+            if (std.fmt.bufPrint(&buf, "{s}/icons/{s}", .{ root, theme_name })) |base| {
+                if (fileExists(base)) {
+                    if (tryBaseTheme(allocator, base, theme_name, name, target, depth, app_icon)) |p| return p;
+                }
+            } else |_| {}
+        }
+    } else {
+        for ([_][]const u8{ "/usr/local/share", "/usr/share" }) |root| {
+            var buf: [512]u8 = undefined;
+            if (std.fmt.bufPrint(&buf, "{s}/icons/{s}", .{ root, theme_name })) |base| {
+                if (fileExists(base)) {
+                    if (tryBaseTheme(allocator, base, theme_name, name, target, depth, app_icon)) |p| return p;
+                }
+            } else |_| {}
+        }
+    }
+
+    // Second pass: partial themes (no index.theme) such as a user hicolor that
+    // only supplements the system theme. Scan their directories directly.
+    if (c.getenv("XDG_DATA_HOME")) |raw| {
+        var buf: [512]u8 = undefined;
+        if (std.fmt.bufPrint(&buf, "{s}/icons/{s}", .{ std.mem.span(raw), theme_name })) |base| {
+            if (fileExists(base) and !fileExistsIndexTheme(base)) {
+                if (tryDirRecursive(allocator, base, name, 0)) |p| return p;
+            }
+        } else |_| {}
+    }
+    if (c.getenv("HOME")) |raw| {
+        const home = std.mem.span(raw);
+        const subs = [_][]const u8{ ".local/share/icons", ".icons" };
+        for (subs) |sub| {
+            var buf: [512]u8 = undefined;
+            if (std.fmt.bufPrint(&buf, "{s}/{s}/{s}", .{ home, sub, theme_name })) |base| {
+                if (fileExists(base) and !fileExistsIndexTheme(base)) {
+                    if (tryDirRecursive(allocator, base, name, 0)) |p| return p;
+                }
+            } else |_| {}
+        }
+    }
+    if (c.getenv("XDG_DATA_DIRS")) |raw| {
+        var it = std.mem.splitScalar(u8, std.mem.span(raw), ':');
+        while (it.next()) |root| {
+            if (root.len == 0) continue;
+            var buf: [512]u8 = undefined;
+            if (std.fmt.bufPrint(&buf, "{s}/icons/{s}", .{ root, theme_name })) |base| {
+                if (fileExists(base) and !fileExistsIndexTheme(base)) {
+                    if (tryDirRecursive(allocator, base, name, 0)) |p| return p;
+                }
+            } else |_| {}
+        }
+    } else {
+        for ([_][]const u8{ "/usr/local/share", "/usr/share" }) |root| {
+            var buf: [512]u8 = undefined;
+            if (std.fmt.bufPrint(&buf, "{s}/icons/{s}", .{ root, theme_name })) |base| {
+                if (fileExists(base) and !fileExistsIndexTheme(base)) {
+                    if (tryDirRecursive(allocator, base, name, 0)) |p| return p;
+                }
+            } else |_| {}
+        }
+    }
+
+    return null;
+}
+
+fn tryGtkIconPath(allocator: std.mem.Allocator, name: []const u8, target: u16, app_icon: bool) ?[]u8 {
+    var theme_buf: [128]u8 = undefined;
+    const theme_name = gtkIconThemeName(&theme_buf) orelse "hicolor";
+    if (tryThemeRecursive(allocator, theme_name, name, target, 0, app_icon)) |p| return p;
+    if (!std.ascii.eqlIgnoreCase(theme_name, "hicolor")) {
+        if (tryThemeRecursive(allocator, "hicolor", name, target, 0, app_icon)) |p| return p;
     }
     return null;
 }
 
-fn tryGtkIconPath(allocator: std.mem.Allocator, name: []const u8, target: u16) ?[]u8 {
+fn tryAppIconFastPath(allocator: std.mem.Allocator, name: []const u8) ?[]u8 {
     var theme_buf: [128]u8 = undefined;
-    const theme_name = gtkIconThemeName(&theme_buf) orelse "hicolor";
-    if (tryThemeRecursive(allocator, theme_name, name, target, 0)) |p| return p;
-    if (!std.ascii.eqlIgnoreCase(theme_name, "hicolor")) {
-        if (tryThemeRecursive(allocator, "hicolor", name, target, 0)) |p| return p;
+    const gtk_theme = gtkIconThemeName(&theme_buf) orelse "hicolor";
+    const themes = [_][]const u8{ gtk_theme, "hicolor" };
+
+    const common_dirs = [_][]const u8{
+        "scalable/apps",
+        "scalable/places",
+        "16x16/apps",
+        "22x22/apps",
+        "24x24/apps",
+        "32x32/apps",
+        "48x48/apps",
+        "64x64/apps",
+        "96x96/apps",
+        "128x128/apps",
+        "256x256/apps",
+        "512x512/apps",
+    };
+
+    // Collect candidate theme bases across roots.
+    for (themes) |theme_name| {
+        // XDG_DATA_HOME
+        if (c.getenv("XDG_DATA_HOME")) |raw| {
+            var buf: [512]u8 = undefined;
+            if (std.fmt.bufPrint(&buf, "{s}/icons/{s}", .{ std.mem.span(raw), theme_name })) |base| {
+                if (fileExists(base)) {
+                    for (common_dirs) |cd| {
+                        var dbuf: [512]u8 = undefined;
+                        if (std.fmt.bufPrint(&dbuf, "{s}/{s}", .{ base, cd })) |dir| {
+                            if (tryDirWithAliases(allocator, dir, name)) |p| return p;
+                        } else |_| {}
+                    }
+                }
+            } else |_| {}
+        }
+        // HOME
+        if (c.getenv("HOME")) |raw| {
+            const home = std.mem.span(raw);
+            const subs = [_][]const u8{ ".local/share/icons", ".icons" };
+            for (subs) |sub| {
+                var buf: [512]u8 = undefined;
+                if (std.fmt.bufPrint(&buf, "{s}/{s}/{s}", .{ home, sub, theme_name })) |base| {
+                    if (fileExists(base)) {
+                        for (common_dirs) |cd| {
+                            var dbuf: [512]u8 = undefined;
+                            if (std.fmt.bufPrint(&dbuf, "{s}/{s}", .{ base, cd })) |dir| {
+                                if (tryDirWithAliases(allocator, dir, name)) |p| return p;
+                            } else |_| {}
+                        }
+                    }
+                } else |_| {}
+            }
+        }
+        // XDG_DATA_DIRS / system
+        if (c.getenv("XDG_DATA_DIRS")) |raw| {
+            var it = std.mem.splitScalar(u8, std.mem.span(raw), ':');
+            while (it.next()) |root| {
+                if (root.len == 0) continue;
+                var buf: [512]u8 = undefined;
+                if (std.fmt.bufPrint(&buf, "{s}/icons/{s}", .{ root, theme_name })) |base| {
+                    if (fileExists(base)) {
+                        for (common_dirs) |cd| {
+                            var dbuf: [512]u8 = undefined;
+                            if (std.fmt.bufPrint(&dbuf, "{s}/{s}", .{ base, cd })) |dir| {
+                                if (tryDirWithAliases(allocator, dir, name)) |p| return p;
+                            } else |_| {}
+                        }
+                    }
+                } else |_| {}
+            }
+        } else {
+            for ([_][]const u8{ "/usr/local/share", "/usr/share" }) |root| {
+                var buf: [512]u8 = undefined;
+                if (std.fmt.bufPrint(&buf, "{s}/icons/{s}", .{ root, theme_name })) |base| {
+                    if (fileExists(base)) {
+                        for (common_dirs) |cd| {
+                            var dbuf: [512]u8 = undefined;
+                            if (std.fmt.bufPrint(&dbuf, "{s}/{s}", .{ base, cd })) |dir| {
+                                if (tryDirWithAliases(allocator, dir, name)) |p| return p;
+                            } else |_| {}
+                        }
+                    }
+                } else |_| {}
+            }
+        }
     }
     return null;
 }
@@ -906,24 +1076,24 @@ fn tryMizuAssets(allocator: std.mem.Allocator, name: []const u8) ?[]u8 {
 }
 
 /// Resolve a UI icon path for `name` (caller frees). Bundled assets win so
-/// launcher chrome keeps its crisp SVGs.
+/// launcher chrome keeps its SVGs.
 pub fn resolveIconPath(allocator: std.mem.Allocator, name: []const u8, target_size: u16) ![]u8 {
     if (name.len == 0) return error.NotFound;
     const target = if (target_size == 0) 1 else target_size;
     if (directIconPath(allocator, name)) |p| return p;
     const base = stripIconExt(name);
     if (tryMizuAssets(allocator, base)) |p| return p;
-    if (tryGtkIconPath(allocator, base, target)) |p| return p;
+    if (tryGtkIconPath(allocator, base, target, false)) |p| return p;
     return error.NotFound;
 }
 
-/// Resolve an application icon path (caller frees). Icon themes win, like rofi.
+/// Resolve an application icon path (caller frees).
 pub fn resolveAppIconPath(allocator: std.mem.Allocator, name: []const u8, target_size: u16) ![]u8 {
+    _ = target_size;
     if (name.len == 0) return error.NotFound;
-    const target = if (target_size == 0) 1 else target_size;
     if (directIconPath(allocator, name)) |p| return p;
     const base = stripIconExt(name);
-    if (tryGtkIconPath(allocator, base, target)) |p| return p;
+    if (tryAppIconFastPath(allocator, base)) |p| return p;
     if (tryPixmap(allocator, base)) |p| return p;
     if (tryMizuAssets(allocator, base)) |p| return p;
     return error.NotFound;
@@ -1075,8 +1245,6 @@ fn rasterFromImage(allocator: std.mem.Allocator, name: []const u8, size_px: u32,
     };
 }
 
-/// Load an icon from the resolved path as a rasterized icon. SVGs are
-/// recolored and rasterized; PNG/JPEG files are decoded directly.
 pub fn loadSvgIcon(allocator: std.mem.Allocator, name: []const u8, size_px: u32, scale: u32) ?RasterIcon {
     if (size_px == 0) return null;
     const target: u16 = @intCast(@min(size_px, 512));
@@ -1209,8 +1377,6 @@ fn imageFromRaster(allocator: std.mem.Allocator, raster: *const RasterIcon) ?*re
     return img;
 }
 
-/// Load an application icon as a renderer image. SVGs are rasterized; PNG and
-/// JPEG files are decoded directly.
 pub fn loadImage(allocator: std.mem.Allocator, name: []const u8, size_px: u32, scale: u32) ?*renderer.Image {
     if (size_px == 0) return null;
     const target: u16 = @intCast(@min(size_px, 512));
@@ -1267,8 +1433,6 @@ fn storeCached(name: []const u8, size_px: u32, scale: u32, icon: RasterIcon) *Ra
     return &entry.icon.?;
 }
 
-/// Get a rasterized icon, loading it on demand. The returned pointer is
-/// borrowed from the bounded icon cache; do not deinit it.
 pub fn getIcon(allocator: std.mem.Allocator, name: []const u8, size_px: u32, scale: u32) ?*RasterIcon {
     _ = allocator;
     if (name.len > max_icon_name) return null;
@@ -1410,7 +1574,7 @@ pub fn drawIconRasterRotated(
     }
 }
 
-/// blendOver helper for icon rotation (copied from renderer)
+/// blendOver helper for icon rotation
 fn div255(v: u32) u32 {
     return (v * 257 + 32896) >> 16;
 }

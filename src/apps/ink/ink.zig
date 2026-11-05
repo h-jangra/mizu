@@ -187,9 +187,6 @@ pub const Adjustments = struct {
     }
 };
 
-/// Enlarge saved images to fit a 1080p frame so video editors do not have to
-/// scale small screenshot crops up (which looks blocky). Never downscales.
-/// shortcut: assumes a 1080p video target, 4K projects still upscale.
 fn exportScaleFor(width: u32, height: u32) f32 {
     if (width == 0 or height == 0) return 1.0;
     const target_w: f32 = 1920.0;
@@ -1201,7 +1198,6 @@ pub const TextEditState = struct {
     }
 };
 
-/// The main Tensaku-inspired vector Annotator & Image Editor Application
 pub const InkApp = AnnotateApp;
 pub const AnnotateApp = struct {
     allocator: std.mem.Allocator,
@@ -2264,8 +2260,8 @@ pub const AnnotateApp = struct {
         while (idx < flat.pixels.len) : (idx += 1) {
             const px = flat.pixels[idx];
             rgba_buf[idx * 4 + 0] = @intCast((px >> 16) & 0xFF); // R
-            rgba_buf[idx * 4 + 1] = @intCast((px >> 8) & 0xFF);  // G
-            rgba_buf[idx * 4 + 2] = @intCast(px & 0xFF);        // B
+            rgba_buf[idx * 4 + 1] = @intCast((px >> 8) & 0xFF); // G
+            rgba_buf[idx * 4 + 2] = @intCast(px & 0xFF); // B
             rgba_buf[idx * 4 + 3] = @intCast((px >> 24) & 0xFF); // A
         }
         if (c.export_webp(path.ptr, rgba_buf.ptr, @intCast(flat.width), @intCast(flat.height)) == 0) {
@@ -2293,47 +2289,51 @@ pub const AnnotateApp = struct {
             const hex_str = ann.color.formatHexRgb(&hex_buf);
             switch (ann.kind) {
                 .arrow => {
-        const _part_1417 = std.fmt.bufPrint(buf[pos..], "  <line x1=\"{d}\" y1=\"{d}\" x2=\"{d}\" y2=\"{d}\" stroke=\"{s}\" stroke-width=\"{d}\" stroke-linecap=\"round\"/>\n", .{ ann.start_x, ann.start_y, ann.end_x, ann.end_y, hex_str, ann.stroke_width }) catch return error.BufOverflow;
-        pos += _part_1417.len;
+                    const _part_1417 = std.fmt.bufPrint(buf[pos..], "  <line x1=\"{d}\" y1=\"{d}\" x2=\"{d}\" y2=\"{d}\" stroke=\"{s}\" stroke-width=\"{d}\" stroke-linecap=\"round\"/>\n", .{ ann.start_x, ann.start_y, ann.end_x, ann.end_y, hex_str, ann.stroke_width }) catch return error.BufOverflow;
+                    pos += _part_1417.len;
                 },
                 .line => {
-        const _part_1420 = std.fmt.bufPrint(buf[pos..], "  <line x1=\"{d}\" y1=\"{d}\" x2=\"{d}\" y2=\"{d}\" stroke=\"{s}\" stroke-width=\"{d}\" stroke-linecap=\"round\"/>\n", .{ ann.start_x, ann.start_y, ann.end_x, ann.end_y, hex_str, ann.stroke_width }) catch return error.BufOverflow;
-        pos += _part_1420.len;
+                    const _part_1420 = std.fmt.bufPrint(buf[pos..], "  <line x1=\"{d}\" y1=\"{d}\" x2=\"{d}\" y2=\"{d}\" stroke=\"{s}\" stroke-width=\"{d}\" stroke-linecap=\"round\"/>\n", .{ ann.start_x, ann.start_y, ann.end_x, ann.end_y, hex_str, ann.stroke_width }) catch return error.BufOverflow;
+                    pos += _part_1420.len;
                 },
                 .rect => {
                     const b = ann.getBounds();
                     const fill_attr = if (ann.filled) try std.fmt.bufPrint(&[_]u8{}, "fill=\"{s}\"", .{hex_str}) else "fill=\"none\"";
-        const _part_1425 = std.fmt.bufPrint(buf[pos..], "  <rect x=\"{d}\" y=\"{d}\" width=\"{d}\" height=\"{d}\" stroke=\"{s}\" stroke-width=\"{d}\" {s}/>\n", .{ b.x, b.y, b.w, b.h, hex_str, ann.stroke_width, fill_attr }) catch return error.BufOverflow;
-        pos += _part_1425.len;
+                    const _part_1425 = std.fmt.bufPrint(buf[pos..], "  <rect x=\"{d}\" y=\"{d}\" width=\"{d}\" height=\"{d}\" stroke=\"{s}\" stroke-width=\"{d}\" {s}/>\n", .{ b.x, b.y, b.w, b.h, hex_str, ann.stroke_width, fill_attr }) catch return error.BufOverflow;
+                    pos += _part_1425.len;
                 },
                 .circle => {
                     const b = ann.getBounds();
                     const fill_attr = if (ann.filled) try std.fmt.bufPrint(&[_]u8{}, "fill=\"{s}\"", .{hex_str}) else "fill=\"none\"";
-        const _part_1430 = std.fmt.bufPrint(buf[pos..], "  <ellipse cx=\"{d}\" cy=\"{d}\" rx=\"{d}\" ry=\"{d}\" stroke=\"{s}\" stroke-width=\"{d}\" {s}/>\n", .{ b.x + @divTrunc(@as(i32, @intCast(b.w)), 2), b.y + @divTrunc(@as(i32, @intCast(b.h)), 2), @divTrunc(@as(i32, @intCast(b.w)), 2), @divTrunc(@as(i32, @intCast(b.h)), 2), hex_str, ann.stroke_width, fill_attr }) catch return error.BufOverflow;
-        pos += _part_1430.len;
+                    const _part_1430 = std.fmt.bufPrint(buf[pos..], "  <ellipse cx=\"{d}\" cy=\"{d}\" rx=\"{d}\" ry=\"{d}\" stroke=\"{s}\" stroke-width=\"{d}\" {s}/>\n", .{ b.x + @divTrunc(@as(i32, @intCast(b.w)), 2), b.y + @divTrunc(@as(i32, @intCast(b.h)), 2), @divTrunc(@as(i32, @intCast(b.w)), 2), @divTrunc(@as(i32, @intCast(b.h)), 2), hex_str, ann.stroke_width, fill_attr }) catch return error.BufOverflow;
+                    pos += _part_1430.len;
                 },
                 .text => {
                     const slice = ann.text_buf[0..ann.text_len];
-                    const align_str = switch (ann.text_align) { .center => "middle", .right => "end", else => "start" };
-        const _part_1435 = std.fmt.bufPrint(buf[pos..], "  <text x=\"{d}\" y=\"{d}\" font-size=\"{d}\" fill=\"{s}\" text-anchor=\"{s}\" font-family=\"sans-serif\">{s}</text>\n", .{ ann.rect.x + 2, ann.rect.y + @as(i32, @intCast(ann.font_size)), ann.font_size, hex_str, align_str, slice }) catch return error.BufOverflow;
-        pos += _part_1435.len;
+                    const align_str = switch (ann.text_align) {
+                        .center => "middle",
+                        .right => "end",
+                        else => "start",
+                    };
+                    const _part_1435 = std.fmt.bufPrint(buf[pos..], "  <text x=\"{d}\" y=\"{d}\" font-size=\"{d}\" fill=\"{s}\" text-anchor=\"{s}\" font-family=\"sans-serif\">{s}</text>\n", .{ ann.rect.x + 2, ann.rect.y + @as(i32, @intCast(ann.font_size)), ann.font_size, hex_str, align_str, slice }) catch return error.BufOverflow;
+                    pos += _part_1435.len;
                 },
                 .pen => {
                     if (ann.points.items.len < 2) continue;
-        const _part_1439 = std.fmt.bufPrint(buf[pos..], "  <polyline points=\"", .{}) catch return error.BufOverflow;
-        pos += _part_1439.len;
+                    const _part_1439 = std.fmt.bufPrint(buf[pos..], "  <polyline points=\"", .{}) catch return error.BufOverflow;
+                    pos += _part_1439.len;
                     for (ann.points.items) |pt| {
-        const _part_1441 = std.fmt.bufPrint(buf[pos..], "{d},{d} ", .{ pt.x, pt.y }) catch return error.BufOverflow;
-        pos += _part_1441.len;
+                        const _part_1441 = std.fmt.bufPrint(buf[pos..], "{d},{d} ", .{ pt.x, pt.y }) catch return error.BufOverflow;
+                        pos += _part_1441.len;
                     }
-        const _part_1443 = std.fmt.bufPrint(buf[pos..], "\" stroke=\"{s}\" stroke-width=\"{d}\" fill=\"none\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/>\n", .{ hex_str, ann.stroke_width }) catch return error.BufOverflow;
-        pos += _part_1443.len;
+                    const _part_1443 = std.fmt.bufPrint(buf[pos..], "\" stroke=\"{s}\" stroke-width=\"{d}\" fill=\"none\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/>\n", .{ hex_str, ann.stroke_width }) catch return error.BufOverflow;
+                    pos += _part_1443.len;
                 },
                 .image => {
                     if (ann.image_data) |img| {
                         _ = img;
-        const _part_1448 = std.fmt.bufPrint(buf[pos..], "  <image x=\"{d}\" y=\"{d}\" width=\"{d}\" height=\"{d}\" href=\"data:image/png;base64,\"/>\n", .{ ann.rect.x, ann.rect.y, ann.rect.w, ann.rect.h }) catch return error.BufOverflow;
-        pos += _part_1448.len;
+                        const _part_1448 = std.fmt.bufPrint(buf[pos..], "  <image x=\"{d}\" y=\"{d}\" width=\"{d}\" height=\"{d}\" href=\"data:image/png;base64,\"/>\n", .{ ann.rect.x, ann.rect.y, ann.rect.w, ann.rect.h }) catch return error.BufOverflow;
+                        pos += _part_1448.len;
                     }
                 },
                 else => {},
