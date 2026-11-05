@@ -998,6 +998,7 @@ pub const WaylandApp = struct {
         c.wl_surface_damage_buffer(self.surface.?, 0, 0, @intCast(phys_w), @intCast(phys_h));
         buf.busy = true;
         c.wl_surface_commit(self.surface.?);
+        self.refreshCursor();
     }
 
     // Registry Listener
@@ -1379,33 +1380,51 @@ pub const WaylandApp = struct {
             return;
         }
 
-        var shape: CursorShape = .default;
         if (self.calendar) |cal| {
             if (cal.handlePointerMotion(px, py)) self.needs_redraw = true;
-            shape = .pointer;
         } else if (self.clipboard) |clip| {
             if (clip.handlePointerMotion(px, py)) self.needs_redraw = true;
+        } else if (self.memory_monitor) |mm| {
+            if (mm.handlePointerMotion(px, py)) self.needs_redraw = true;
+        } else if (self.quicksettings) |qs| {
+            if (qs.handlePointerMotion(px, py)) self.needs_redraw = true;
+        } else if (self.launcher) |l| {
+            if (l.handlePointerMotion(px, py)) self.needs_redraw = true;
+        } else if (self.power) |p| {
+            if (p.handlePointerMotion(px, py)) self.needs_redraw = true;
+        } else if (self.bar) |bar| {
+            if (bar.handlePointerMotion(px, py)) {
+                self.needs_redraw = true;
+            }
+        }
+        self.refreshCursor();
+    }
+
+    pub fn refreshCursor(self: *WaylandApp) void {
+        const px = self.pointer_x;
+        const py = self.pointer_y;
+        var shape: CursorShape = .default;
+        if (self.calendar) |_| {
+            shape = .pointer;
+        } else if (self.clipboard) |_| {
             if (px >= 18 and px < @as(i32, @intCast(self.width)) - 18 and py >= 50 and py < 50 + 34) {
                 shape = .text;
             } else {
                 shape = .pointer;
             }
         } else if (self.memory_monitor) |mm| {
-            if (mm.handlePointerMotion(px, py)) self.needs_redraw = true;
             if (mm.isTextInput(px, py)) {
                 shape = .text;
             } else if (mm.isPointer(px, py)) {
                 shape = .pointer;
             }
         } else if (self.quicksettings) |qs| {
-            if (qs.handlePointerMotion(px, py)) self.needs_redraw = true;
             if (qs.wifi.input_idx != null and py >= 40 and py <= 120 and px >= 36) {
                 shape = .text;
             } else if (qs.isPointer(px, py)) {
                 shape = .pointer;
             }
         } else if (self.launcher) |l| {
-            if (l.handlePointerMotion(px, py)) self.needs_redraw = true;
             const in_rect = l.getInputRect();
             if (px >= in_rect.x and px < in_rect.x + @as(i32, @intCast(in_rect.w)) and
                 py >= in_rect.y and py < in_rect.y + @as(i32, @intCast(in_rect.h)))
@@ -1414,13 +1433,9 @@ pub const WaylandApp = struct {
             } else if (l.hover_index != null) {
                 shape = .pointer;
             }
-        } else if (self.power) |p| {
-            if (p.handlePointerMotion(px, py)) self.needs_redraw = true;
+        } else if (self.power) |_| {
             shape = .pointer;
         } else if (self.bar) |bar| {
-            if (bar.handlePointerMotion(px, py)) {
-                self.needs_redraw = true;
-            }
             if (bar.isPointer(px, py)) shape = .pointer;
         }
         self.updateCursorShape(shape);

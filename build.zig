@@ -18,7 +18,11 @@ fn addMizuIncludePaths(b: *std.Build, obj: anytype) void {
     obj.addIncludePath(.{ .cwd_relative = "/usr/include/webp" });
 }
 
-fn configureMizuModule(b: *std.Build, mod: *std.Build.Module, c_module: *std.Build.Module) void {
+fn configureMizuModule(
+    b: *std.Build,
+    mod: *std.Build.Module,
+    c_module: *std.Build.Module,
+) void {
     mod.addImport("c", c_module);
 
     mod.linkSystemLibrary("wayland-client", .{ .use_pkg_config = .no });
@@ -34,68 +38,50 @@ fn configureMizuModule(b: *std.Build, mod: *std.Build.Module, c_module: *std.Bui
 
     addMizuIncludePaths(b, mod);
 
-    mod.addCSourceFile(.{
-        .file = b.path("src/protocols/wayland/generated/xdg-shell-protocol.c"),
-    });
-    mod.addCSourceFile(.{
-        .file = b.path("src/protocols/wayland/generated/wlr-layer-shell-unstable-v1-protocol.c"),
-    });
-    mod.addCSourceFile(.{
-        .file = b.path("src/protocols/wayland/generated/ext-session-lock-v1-protocol.c"),
-    });
-    mod.addCSourceFile(.{
-        .file = b.path("src/protocols/wayland/generated/viewporter-protocol.c"),
-    });
-    mod.addCSourceFile(.{
-        .file = b.path("src/protocols/wayland/generated/idle-inhibit-unstable-v1-protocol.c"),
-    });
-    mod.addCSourceFile(.{
-        .file = b.path("src/protocols/wayland/generated/wlr-screencopy-unstable-v1-protocol.c"),
-    });
-    mod.addCSourceFile(.{
-        .file = b.path("src/c/notify_dbus.c"),
-    });
-    mod.addCSourceFile(.{
-        .file = b.path("src/c/tray_dbus.c"),
-    });
-    mod.addCSourceFile(.{
-        .file = b.path("src/c/mizu_dbus_monitor.c"),
-    });
-    mod.addCSourceFile(.{
-        .file = b.path("src/c/clay_impl.c"),
-        .flags = &.{ "-O2", "-std=c99" },
-    });
-    mod.addCSourceFile(.{
-        .file = b.path("src/core/nanosvg.c"),
-        .flags = &.{"-O2"},
-    });
-    mod.addCSourceFile(.{
-        .file = b.path("src/core/nanosvg_rasterizer.c"),
-        .flags = &.{"-O2"},
-    });
-    mod.addCSourceFile(.{
-        .file = b.path("src/c/webp_export.c"),
-    });
-    mod.addCSourceFile(.{
-        .file = b.path("src/c/mizu_share.c"),
-    });
+    const c_sources = [_][]const u8{
+        "src/protocols/wayland/generated/xdg-shell-protocol.c",
+        "src/protocols/wayland/generated/wlr-layer-shell-unstable-v1-protocol.c",
+        "src/protocols/wayland/generated/ext-session-lock-v1-protocol.c",
+        "src/protocols/wayland/generated/viewporter-protocol.c",
+        "src/protocols/wayland/generated/idle-inhibit-unstable-v1-protocol.c",
+        "src/protocols/wayland/generated/wlr-screencopy-unstable-v1-protocol.c",
+        "src/c/notify_dbus.c",
+        "src/c/tray_dbus.c",
+        "src/c/mizu_dbus_monitor.c",
+        "src/c/clay_impl.c",
+        "src/core/nanosvg.c",
+        "src/core/nanosvg_rasterizer.c",
+        "src/c/webp_export.c",
+        "src/c/mizu_share.c",
+    };
+
+    for (c_sources) |source| {
+        mod.addCSourceFile(.{
+            .file = b.path(source),
+            .flags = if (std.mem.eql(u8, source, "src/c/clay_impl.c"))
+                &.{ "-O2", "-std=c99" }
+            else if (std.mem.startsWith(u8, source, "src/core/nanosvg"))
+                &.{"-O2"}
+            else
+                &.{},
+        });
+    }
 }
 
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    // Zig 0.17 removed @cImport; generate the C bindings with translate-c instead.
     const c_translate = b.addTranslateC(.{
         .root_source_file = b.path("src/c/c.h"),
         .target = target,
         .optimize = optimize,
         .link_libc = true,
     });
+
     addMizuIncludePaths(b, c_translate);
     const c_module = c_translate.createModule();
 
-    // Main Mizu desktop shell executable
     const exe = b.addExecutable(.{
         .name = "mizu",
         .root_module = b.createModule(.{
@@ -105,70 +91,21 @@ pub fn build(b: *std.Build) void {
             .link_libc = true,
         }),
     });
+
     configureMizuModule(b, exe.root_module, c_module);
     b.installArtifact(exe);
-
-    // Standalone Mizu Ink executable
-    const exe_ink = b.addExecutable(.{
-        .name = "mizu-ink",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/main.zig"),
-            .target = target,
-            .optimize = optimize,
-            .link_libc = true,
-        }),
-    });
-    configureMizuModule(b, exe_ink.root_module, c_module);
-    b.installArtifact(exe_ink);
-
-    // Standalone Mizu Annotate executable (alias to ink)
-    const exe_annotate = b.addExecutable(.{
-        .name = "mizu-annotate",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/main.zig"),
-            .target = target,
-            .optimize = optimize,
-            .link_libc = true,
-        }),
-    });
-    configureMizuModule(b, exe_annotate.root_module, c_module);
-    b.installArtifact(exe_annotate);
-
-    // Standalone Mizu Image executable (alias to ink)
-    const exe_image = b.addExecutable(.{
-        .name = "mizu-image",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/main.zig"),
-            .target = target,
-            .optimize = optimize,
-            .link_libc = true,
-        }),
-    });
-    configureMizuModule(b, exe_image.root_module, c_module);
-    b.installArtifact(exe_image);
-
-    // Standalone Mizu View executable
-    const exe_view = b.addExecutable(.{
-        .name = "mizu-view",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/main.zig"),
-            .target = target,
-            .optimize = optimize,
-            .link_libc = true,
-        }),
-    });
-    configureMizuModule(b, exe_view.root_module, c_module);
-    b.installArtifact(exe_view);
 
     const run_cmd = b.addRunArtifact(exe);
     run_cmd.step.dependOn(b.getInstallStep());
     run_cmd.addPassthruArgs();
-    const run_step = b.step("run", "Run Mizu bar");
+
+    const run_step = b.step("run", "Run Mizu");
     run_step.dependOn(&run_cmd.step);
 
     const unit_tests = b.addTest(.{
         .root_module = exe.root_module,
     });
+
     const run_unit_tests = b.addRunArtifact(unit_tests);
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_unit_tests.step);

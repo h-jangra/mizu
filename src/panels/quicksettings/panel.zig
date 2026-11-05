@@ -1057,7 +1057,6 @@ pub const QuickSettings = struct {
 
     pub fn render(self: *QuickSettings, target: anytype, scale: u32) !void {
         _ = self.checkWifiStatus();
-        self.hit_areas.clearRetainingCapacity();
 
         const w = target.width;
         const h = target.height;
@@ -1070,54 +1069,78 @@ pub const QuickSettings = struct {
         const sec_sz = self.cfg.typography.secondary * scale;
         const icon_sz = self.cfg.typography.quicksettings_icon * scale;
 
-        var ui = try ui_mod.Ui.begin(
-            self.allocator,
-            &self.font,
-            w,
-            h,
-            scale,
-            self.pointer_x,
-            self.pointer_y,
-            false,
-            1.0 / 60.0,
-        );
-        defer ui.deinit();
+        const old_hover = self.hover_idx;
+        var pass: u32 = 0;
+        while (pass < 2) : (pass += 1) {
+            self.hit_areas.clearRetainingCapacity();
 
-        if (self.view_mode == .main) {
-            const top_pad: u16 = @intCast(QsLayout.pad * scale);
-            ui.root(.{
-                .direction = .column,
-                .padding = .{
-                    .left = ui.su(QsLayout.pad),
-                    .right = ui.su(QsLayout.pad),
-                    .top = top_pad,
-                    .bottom = ui.su(0),
-                },
-                .gap = ui.su(QsLayout.section_gap),
-                .bg = self.cfg.theme.panel_bg,
-                .radius = ui.f(self.cfg.theme.radius_panel),
-                .align_y = .top,
-            });
+            var ui = try ui_mod.Ui.begin(
+                self.allocator,
+                &self.font,
+                w,
+                h,
+                scale,
+                self.pointer_x,
+                self.pointer_y,
+                false,
+                1.0 / 60.0,
+            );
+            defer ui.deinit();
 
-            try self.renderMainBody(&ui, target, scale, ui_sz, sec_sz, icon_sz);
-            ui.close();
-        } else {
-            ui.root(.{
-                .direction = .column,
-                .padding = .all(ui.su(QsLayout.pad)),
-                .gap = ui.su(QsLayout.section_gap),
-                .bg = self.cfg.theme.panel_bg,
-                .radius = ui.f(self.cfg.theme.radius_panel),
-                .align_y = .top,
-            });
+            if (self.view_mode == .main) {
+                const top_pad: u16 = @intCast(QsLayout.pad * scale);
+                ui.root(.{
+                    .direction = .column,
+                    .padding = .{
+                        .left = ui.su(QsLayout.pad),
+                        .right = ui.su(QsLayout.pad),
+                        .top = top_pad,
+                        .bottom = ui.su(0),
+                    },
+                    .gap = ui.su(QsLayout.section_gap),
+                    .bg = self.cfg.theme.panel_bg,
+                    .radius = ui.f(self.cfg.theme.radius_panel),
+                    .align_y = .top,
+                });
 
-            try self.renderSubMenu(&ui, target, scale, ui_sz, sec_sz, icon_sz);
-            ui.close();
+                try self.renderMainBody(&ui, target, scale, ui_sz, sec_sz, icon_sz);
+                ui.close();
+            } else {
+                ui.root(.{
+                    .direction = .column,
+                    .padding = .all(ui.su(QsLayout.pad)),
+                    .gap = ui.su(QsLayout.section_gap),
+                    .bg = self.cfg.theme.panel_bg,
+                    .radius = ui.f(self.cfg.theme.radius_panel),
+                    .align_y = .top,
+                });
+
+                try self.renderSubMenu(&ui, target, scale, ui_sz, sec_sz, icon_sz);
+                ui.close();
+            }
+
+            const commands = ui.endLayout();
+            try self.appendHitAreas(&ui, scale);
+
+            if (self.pointer_x >= 0 and self.pointer_y >= 0) {
+                self.hover_idx = null;
+                for (self.hit_areas.items, 0..) |area, idx| {
+                    if (self.pointer_x >= area.x and self.pointer_x < area.x + @as(i32, @intCast(area.w)) and
+                        self.pointer_y >= area.y and self.pointer_y < area.y + @as(i32, @intCast(area.h)))
+                    {
+                        self.hover_idx = idx;
+                        break;
+                    }
+                }
+            }
+
+            if (pass == 0 and old_hover != self.hover_idx) {
+                continue;
+            }
+
+            ui.render(target, commands);
+            break;
         }
-
-        const commands = ui.endLayout();
-        try self.appendHitAreas(&ui, scale);
-        ui.render(target, commands);
 
         // Fade-in overlay stays a direct draw so it covers every Clay command.
         if (self.panel_alpha < 1.0) {

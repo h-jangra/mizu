@@ -351,9 +351,6 @@ pub const Bar = struct {
         ipc: *const mango_ipc.MangoIpc,
         scale: u32,
     ) !void {
-        self.clickable_areas.clearRetainingCapacity();
-        self.pending_clicks.clearRetainingCapacity();
-
         const w = target_renderer.width;
         const h = target_renderer.height;
 
@@ -364,136 +361,149 @@ pub const Bar = struct {
         const scaled_ascender = self.font.ascender_px * @as(i32, @intCast(scale));
         const baseline_y = chip_y + @divTrunc(@as(i32, @intCast(chip_h)) + scaled_ascender, 2) - 1;
 
-        var ctx = BarContext{
-            .allocator = self.allocator,
-            .cfg = &self.cfg,
-            .font = &self.font,
-            .sys = &self.sys_status,
-            .ipc = ipc,
-            .clickable_areas = &self.clickable_areas,
-            .pending_clicks = &self.pending_clicks,
-            .hover_x = self.hover_x,
-            .hover_y = self.hover_y,
-            .chip_y = chip_y,
-            .chip_h = chip_h,
-            .baseline_y = baseline_y,
-            .current_theme_kind = self.current_theme_kind,
-            .scale = scale,
-        };
+        const old_hover = self.getHoveredAreaIndex();
+        var pass: u32 = 0;
+        while (pass < 2) : (pass += 1) {
+            self.clickable_areas.clearRetainingCapacity();
+            self.pending_clicks.clearRetainingCapacity();
 
-        var ui = try ui_mod.Ui.begin(
-            self.allocator,
-            &self.font,
-            w,
-            h,
-            scale,
-            self.hover_x,
-            self.hover_y,
-            false,
-            1.0 / 60.0,
-        );
-        defer ui.deinit();
+            var ctx = BarContext{
+                .allocator = self.allocator,
+                .cfg = &self.cfg,
+                .font = &self.font,
+                .sys = &self.sys_status,
+                .ipc = ipc,
+                .clickable_areas = &self.clickable_areas,
+                .pending_clicks = &self.pending_clicks,
+                .hover_x = self.hover_x,
+                .hover_y = self.hover_y,
+                .chip_y = chip_y,
+                .chip_h = chip_h,
+                .baseline_y = baseline_y,
+                .current_theme_kind = self.current_theme_kind,
+                .scale = scale,
+            };
 
-        const border_w: u16 = if (self.cfg.border_width > 0)
-            @intCast(self.cfg.border_width * scale)
-        else
-            @intCast(@max(1, scale));
-        ui.root(.{
-            .direction = .row,
-            .align_y = .center,
-            .padding = .{
-                .left = ui.su(4),
-                .right = ui.su(6),
-                .top = ui.su(4),
-                .bottom = ui.su(4),
-            },
-            .gap = ui.su(4),
-            .bg = self.cfg.theme.bar_bg,
-            .radius = ui.f(self.cfg.bar_radius),
-            .border = border_w,
-            .border_color = self.cfg.theme.bar_border,
-        });
+            var ui = try ui_mod.Ui.begin(
+                self.allocator,
+                &self.font,
+                w,
+                h,
+                scale,
+                self.hover_x,
+                self.hover_y,
+                false,
+                1.0 / 60.0,
+            );
+            defer ui.deinit();
 
-        // Left half: modules followed by an elastic gap and (optionally) MPRIS.
-        _ = ui.open(.{
-            .width = .{ .grow = .{} },
-            .height = .{ .grow = .{} },
-            .direction = .row,
-            .align_x = .left,
-            .align_y = .center,
-            .gap = ui.su(4),
-        });
-        if (self.cfg.modules_left.items.len > 0) {
-            for (self.cfg.modules_left.items) |mod| {
-                try self.renderLeftModule(mod, &ctx, &ui);
-            }
-        } else {
-            try self.renderLeftModule(.keymaps, &ctx, &ui);
-            try self.renderLeftModule(.recorder, &ctx, &ui);
-            try self.renderLeftModule(.buttons, &ctx, &ui);
-            try self.renderLeftModule(.workspaces, &ctx, &ui);
-        }
-        ui.spacerSized(.{ .grow = .{} }, .{ .fixed = 0 });
-        try mpris.render(&ctx, &ui);
-        ui.close();
-
-        // Exact horizontal centre: the two half containers grow equally.
-        _ = ui.open(.{
-            .width = .fit,
-            .height = .{ .grow = .{} },
-            .align_x = .center,
-            .align_y = .center,
-        });
-        try clock.render(&ctx, &ui);
-        ui.close();
-
-        // Right half, rendered in reverse so the first configured module ends
-        // up furthest to the right (matching the previous right-to-left API).
-        _ = ui.open(.{
-            .width = .{ .grow = .{} },
-            .height = .{ .grow = .{} },
-            .direction = .row,
-            .align_x = .right,
-            .align_y = .center,
-            .gap = ui.su(4),
-        });
-        if (self.cfg.modules_right.items.len > 0) {
-            var i = self.cfg.modules_right.items.len;
-            while (i > 0) {
-                i -= 1;
-                try self.renderRightModule(self.cfg.modules_right.items[i], &ctx, &ui);
-            }
-        } else {
-            try self.renderRightModule(.theme_switch, &ctx, &ui);
-            try self.renderRightModule(.memory, &ctx, &ui);
-            try self.renderRightModule(.quicksettings, &ctx, &ui);
-            try self.renderRightModule(.tray, &ctx, &ui);
-        }
-        ui.close();
-
-        ui.close(); // root
-
-        const commands = ui.endLayout();
-
-        const iscale: i32 = @intCast(scale);
-        for (self.pending_clicks.items) |pending| {
-            const rect = ui.rectOf(pending.name, pending.index) orelse continue;
-            const lx = @divTrunc(rect.x, iscale);
-            const ly = @divTrunc(rect.y, iscale);
-            const lw: u32 = @intCast(@divTrunc(@as(i32, @intCast(rect.w)) + iscale - 1, iscale));
-            const lh: u32 = @intCast(@divTrunc(@as(i32, @intCast(rect.h)) + iscale - 1, iscale));
-            if (lw == 0 or lh == 0) continue;
-            try self.clickable_areas.append(self.allocator, .{
-                .x = lx,
-                .y = ly,
-                .w = lw,
-                .h = lh,
-                .action = pending.action,
-                .scroll = pending.scroll,
+            const border_w: u16 = if (self.cfg.border_width > 0)
+                @intCast(self.cfg.border_width * scale)
+            else
+                @intCast(@max(1, scale));
+            ui.root(.{
+                .direction = .row,
+                .align_y = .center,
+                .padding = .{
+                    .left = ui.su(4),
+                    .right = ui.su(6),
+                    .top = ui.su(4),
+                    .bottom = ui.su(4),
+                },
+                .gap = ui.su(4),
+                .bg = self.cfg.theme.bar_bg,
+                .radius = ui.f(self.cfg.bar_radius),
+                .border = border_w,
+                .border_color = self.cfg.theme.bar_border,
             });
-        }
 
-        ui.render(target_renderer, commands);
+            // Left half: modules followed by an elastic gap and (optionally) MPRIS.
+            _ = ui.open(.{
+                .width = .{ .grow = .{} },
+                .height = .{ .grow = .{} },
+                .direction = .row,
+                .align_x = .left,
+                .align_y = .center,
+                .gap = ui.su(4),
+            });
+            if (self.cfg.modules_left.items.len > 0) {
+                for (self.cfg.modules_left.items) |mod| {
+                    try self.renderLeftModule(mod, &ctx, &ui);
+                }
+            } else {
+                try self.renderLeftModule(.keymaps, &ctx, &ui);
+                try self.renderLeftModule(.recorder, &ctx, &ui);
+                try self.renderLeftModule(.buttons, &ctx, &ui);
+                try self.renderLeftModule(.workspaces, &ctx, &ui);
+            }
+            ui.spacerSized(.{ .grow = .{} }, .{ .fixed = 0 });
+            try mpris.render(&ctx, &ui);
+            ui.close();
+
+            // Exact horizontal centre: the two half containers grow equally.
+            _ = ui.open(.{
+                .width = .fit,
+                .height = .{ .grow = .{} },
+                .align_x = .center,
+                .align_y = .center,
+            });
+            try clock.render(&ctx, &ui);
+            ui.close();
+
+            // Right half, rendered in reverse so the first configured module ends
+            // up furthest to the right (matching the previous right-to-left API).
+            _ = ui.open(.{
+                .width = .{ .grow = .{} },
+                .height = .{ .grow = .{} },
+                .direction = .row,
+                .align_x = .right,
+                .align_y = .center,
+                .gap = ui.su(4),
+            });
+            if (self.cfg.modules_right.items.len > 0) {
+                var i = self.cfg.modules_right.items.len;
+                while (i > 0) {
+                    i -= 1;
+                    try self.renderRightModule(self.cfg.modules_right.items[i], &ctx, &ui);
+                }
+            } else {
+                try self.renderRightModule(.theme_switch, &ctx, &ui);
+                try self.renderRightModule(.memory, &ctx, &ui);
+                try self.renderRightModule(.quicksettings, &ctx, &ui);
+                try self.renderRightModule(.tray, &ctx, &ui);
+            }
+            ui.close();
+
+            ui.close(); // root
+
+            const commands = ui.endLayout();
+
+            const iscale: i32 = @intCast(scale);
+            for (self.pending_clicks.items) |pending| {
+                const rect = ui.rectOf(pending.name, pending.index) orelse continue;
+                const lx = @divTrunc(rect.x, iscale);
+                const ly = @divTrunc(rect.y, iscale);
+                const lw: u32 = @intCast(@divTrunc(@as(i32, @intCast(rect.w)) + iscale - 1, iscale));
+                const lh: u32 = @intCast(@divTrunc(@as(i32, @intCast(rect.h)) + iscale - 1, iscale));
+                if (lw == 0 or lh == 0) continue;
+                try self.clickable_areas.append(self.allocator, .{
+                    .x = lx,
+                    .y = ly,
+                    .w = lw,
+                    .h = lh,
+                    .action = pending.action,
+                    .scroll = pending.scroll,
+                });
+            }
+
+            const new_hover = self.getHoveredAreaIndex();
+            if (pass == 0 and old_hover != new_hover) {
+                continue;
+            }
+
+            ui.render(target_renderer, commands);
+            break;
+        }
     }
 };
 

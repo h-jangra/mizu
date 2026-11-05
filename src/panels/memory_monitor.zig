@@ -707,7 +707,7 @@ pub const MemoryMonitor = struct {
 
         const fx: f64 = @as(f64, @floatFromInt(x));
         const s_f = @as(f64, @floatFromInt(self.render_scale));
-        const btn_left = (contentX0() + 36.0 + 160.0 + 36.0 + 72.0 + 34.0 + 36.0) * s_f;
+        const btn_left = killBtnLeft() * s_f;
         const btn_w = 24.0 * s_f;
         if (new_hover) |idx| {
             if (idx < self.visible_rows.items.len) {
@@ -839,7 +839,7 @@ pub const MemoryMonitor = struct {
 
         const fx: f64 = @as(f64, @floatFromInt(x));
         const s_f = @as(f64, @floatFromInt(self.render_scale));
-        const btn_left = (contentX0() + 36.0 + 160.0 + 36.0 + 72.0 + 34.0 + 36.0) * s_f;
+        const btn_left = killBtnLeft() * s_f;
         const btn_w = 24.0 * s_f;
         if (self.rowIndexAt(x, y)) |idx| {
             if (idx < self.visible_rows.items.len) {
@@ -966,6 +966,10 @@ pub const MemoryMonitor = struct {
 
     fn filterInnerWidth() f64 {
         return filterWidth() - FILTER_TEXT_LEFT - FILTER_INNER_RIGHT;
+    }
+
+    fn killBtnLeft() f64 {
+        return contentX0() + 36.0 + 230.0 + 72.0 + 20.0 + 34.0 + 20.0;
     }
 
     fn nameX() f64 {
@@ -1293,7 +1297,7 @@ pub const MemoryMonitor = struct {
                 .width = .{ .grow = .{} },
                 .height = .{ .fixed = ui.s(28) },
                 .direction = .row,
-                .padding = .{ .left = ui.su(6) },
+                .padding = .{ .left = ui.su(6), .top = ui.su(6) },
                 .align_y = .center,
             });
             ui.text(info, .{ .size = 13 * scale, .color = text_main });
@@ -1334,7 +1338,7 @@ pub const MemoryMonitor = struct {
                 .direction = .row,
                 .align_y = .center,
             });
-            ui.text("Memory", .{ .size = 14 * scale, .color = text_muted });
+            ui.text("Memory", .{ .size = 16 * scale, .color = text_muted });
             ui.close();
 
             _ = ui.open(.{
@@ -1367,7 +1371,7 @@ pub const MemoryMonitor = struct {
         {
             var disk_val_buf: [32]u8 = undefined;
             const disk_val_str = if (self.disk_total_gb > 0)
-                std.fmt.bufPrint(&disk_val_buf, "{d:.1} / {d:.1} GB", .{ self.disk_used_gb, self.disk_total_gb }) catch ""
+                std.fmt.bufPrint(&disk_val_buf, "{d:.1}/{d:.1} GB", .{ self.disk_used_gb, self.disk_total_gb }) catch ""
             else
                 "N/A";
             _ = ui.open(.{
@@ -1385,7 +1389,7 @@ pub const MemoryMonitor = struct {
                 .direction = .row,
                 .align_y = .center,
             });
-            ui.text("Disk", .{ .size = 14 * scale, .color = text_muted });
+            ui.text("Disk", .{ .size = 16 * scale, .color = text_muted });
             ui.close();
 
             _ = ui.open(.{
@@ -1453,9 +1457,8 @@ pub const MemoryMonitor = struct {
                 .align_y = .center,
                 .gap = ui.su(6),
             });
-            ui.text(icons.glyphs.memory, .{ .size = 28 * scale, .color = alphaCol(text_muted, 0.45) });
-            ui.text("No processes match", .{ .size = 14 * scale, .color = text_muted });
-            ui.text("Try a different filter", .{ .size = 12 * scale, .color = alphaCol(text_muted, 0.6) });
+            ui.text("No processes match", .{ .size = 18 * scale, .color = text_muted });
+            ui.text("Try a different filter", .{ .size = 16 * scale, .color = alphaCol(text_muted, 0.6) });
             ui.close();
         } else {
             const vis = visibleRows();
@@ -1505,7 +1508,7 @@ pub const MemoryMonitor = struct {
                 ui.close();
 
                 _ = ui.open(.{
-                    .width = .{ .fixed = ui.s(160) },
+                    .width = .{ .fixed = ui.s(230) },
                     .height = .{ .grow = .{} },
                     .direction = .column,
                     .padding = .{ .left = ui.su(6), .top = ui.su(2), .bottom = ui.su(2) },
@@ -1535,14 +1538,6 @@ pub const MemoryMonitor = struct {
                 }
                 ui.close();
 
-                const cpu_str = "";
-                ui.text(cpu_str, .{
-                    .size = (self.cfg.typography.ui) * scale,
-                    .color = if (is_selected) th.text_bright else text_muted,
-                    .width = ui.s(36),
-                    .text_align = .right,
-                });
-
                 var mem_row_buf: [32]u8 = undefined;
                 const mem_row_str = if (row.kind == .group) formatMemory(&mem_row_buf, grp.total_rss_kb) else formatMemory(&mem_row_buf, grp.procs.items[row.sub_idx].rss_kb);
                 ui.text(mem_row_str, .{
@@ -1567,7 +1562,7 @@ pub const MemoryMonitor = struct {
                     .text_align = .left,
                 });
 
-                ui.spacerSized(.{ .fixed = ui.s(20) }, .{ .fixed = 0 });
+                ui.spacerSized(.{ .fixed = ui.s(10) }, .{ .fixed = 0 });
 
                 if (row.kind == .subprocess) {
                     const proc = grp.procs.items[row.sub_idx];
@@ -1623,12 +1618,12 @@ pub const MemoryMonitor = struct {
                             ui.icon("x", 12 * scale, th.error_color, 0);
                             ui.close();
                         } else {
-                            ui.spacerSized(.{ .fixed = ui.s(24) }, .{ .fixed = 0 });
+                            ui.spacerSized(.{ .fixed = ui.s(10) }, .{ .fixed = 0 });
                         }
                     }
                 } else {
                     // Group rows don't have kill button
-                    ui.spacerSized(.{ .fixed = ui.s(28) }, .{ .fixed = 0 });
+                    ui.spacerSized(.{ .fixed = ui.s(10) }, .{ .fixed = 0 });
                 }
 
                 ui.close(); // row
@@ -2124,8 +2119,8 @@ test "system monitor stats and subprocess kill confirm flow" {
 
     // Subprocess 1 is at index 2 (row 2 in list)
     const row2_y: i32 = @intFromFloat(MemoryMonitor.listTop() + ROW_H * 2.0 + 10.0);
-    const click_kill_x: i32 = @intFromFloat(MemoryMonitor.contentX0() + 374.0 + 10.0);
-    const click_cancel_x: i32 = @intFromFloat(MemoryMonitor.contentX0() + 374.0 + 40.0);
+    const click_kill_x: i32 = @intFromFloat(MemoryMonitor.killBtnLeft() + 10.0);
+    const click_cancel_x: i32 = @intFromFloat(MemoryMonitor.killBtnLeft() + 40.0);
 
     // Initial state: no confirmation
     try std.testing.expectEqual(@as(?u32, null), mm.confirm_kill_pid);

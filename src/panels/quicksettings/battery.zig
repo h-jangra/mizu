@@ -38,7 +38,7 @@ pub fn renderHeader(panel: anytype, ui: *ui_mod.Ui, scale: u32) void {
     const is_charging = panel.sys.bat_status == .charging;
     const is_full = panel.sys.bat_status == .full;
     const bat_color = if (plugged or is_full) panel.cfg.theme.success_color else if (bat_pct <= 20) panel.cfg.theme.error_color else panel.cfg.theme.text_bright;
-    const bat_svg = if (!panel.sys.has_battery) "plug" else if (is_charging) "battery-charging" else if (is_full or bat_pct >= 90) "battery-full" else if (bat_pct <= 20) "battery-empty" else if (bat_pct <= 50) "battery-low" else if (bat_pct <= 80) "battery-middle" else "battery-high";
+    const bat_svg = if (!panel.sys.has_battery) "plug" else if (is_full) "battery-full" else if (is_charging) "battery-charging" else if (bat_pct >= 90) "battery-full" else if (bat_pct <= 20) "battery-empty" else if (bat_pct <= 50) "battery-low" else if (bat_pct <= 80) "battery-middle" else "battery-high";
 
     // Battery icon
     _ = ui.open(.{ .width = .{ .fixed = ui.s(48) }, .height = .{ .fixed = ui.s(48) }, .align_x = .center, .align_y = .center });

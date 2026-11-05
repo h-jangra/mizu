@@ -59,6 +59,9 @@ fn measureText(text: c.Clay_StringSlice, config: [*c]c.Clay_TextElementConfig, u
     return .{ .width = @floatFromInt(w), .height = h };
 }
 
+var pointer_pos: c.Clay_Vector2 = .{ .x = -10000, .y = -10000 };
+var pointer_down_state: bool = false;
+
 /// Initialize (once) and begin a layout frame. Coordinates are physical pixels.
 pub fn begin(
     font: *@import("renderer.zig").Font,
@@ -92,14 +95,18 @@ pub fn begin(
     }
 
     measure_ctx.font = font;
+    pointer_pos = .{ .x = pointer_x, .y = pointer_y };
+    pointer_down_state = pointer_down;
     c.Clay_SetLayoutDimensions(.{ .width = @floatFromInt(width), .height = @floatFromInt(height) });
-    c.Clay_SetPointerState(.{ .x = pointer_x, .y = pointer_y }, pointer_down);
+    c.Clay_SetPointerState(pointer_pos, pointer_down);
     c.Clay_UpdateScrollContainers(false, .{ .x = scroll_x, .y = scroll_y }, delta_s);
     c.Clay_BeginLayout();
 }
 
 pub fn end(delta_s: f32) c.Clay_RenderCommandArray {
-    return c.Clay_EndLayout(delta_s);
+    const commands = c.Clay_EndLayout(delta_s);
+    c.Clay_SetPointerState(pointer_pos, pointer_down_state);
+    return commands;
 }
 
 pub fn lastError() []const u8 {
@@ -151,9 +158,71 @@ pub fn rectOf(id: c.Clay_ElementId) ?@import("renderer.zig").Rect {
 }
 
 pub fn pointerOver(id: c.Clay_ElementId) bool {
-    return c.Clay_PointerOver(id);
+    if (c.Clay_PointerOver(id)) return true;
+    const data = c.Clay_GetElementData(id);
+    if (!data.found) return false;
+    const box = data.boundingBox;
+    return pointer_pos.x >= box.x and pointer_pos.x < box.x + box.width and
+        pointer_pos.y >= box.y and pointer_pos.y < box.y + box.height;
 }
 
 pub fn declarations() []const u8 {
     return "";
+}
+
+test "Clay pointerOver execution order and current frame recalculated bounds" {
+    var font = try @import("renderer.zig").Font.init(std.testing.allocator, "/usr/share/fonts/TTF/DejaVuSans.ttf", 14);
+    defer font.deinit();
+
+    const target_id = elementId("test-btn", 0);
+
+    // Frame 1: Pointer at (150, 50). Spacer = 100, element at [100, 200].
+    try begin(&font, 800, 600, 150.0, 50.0, false, 0, 0, 1.0 / 60.0);
+    open(elementId("root", 0), .{
+        .layout = .{
+            .sizing = .{ .width = .{ .size = .{ .minMax = .{ .min = 800, .max = 800 } }, .type = c.CLAY__SIZING_TYPE_FIXED }, .height = .{ .size = .{ .minMax = .{ .min = 600, .max = 600 } }, .type = c.CLAY__SIZING_TYPE_FIXED } },
+            .layoutDirection = c.CLAY_LEFT_TO_RIGHT,
+        },
+    });
+    open(elementId("spacer", 0), .{
+        .layout = .{
+            .sizing = .{ .width = .{ .size = .{ .minMax = .{ .min = 100, .max = 100 } }, .type = c.CLAY__SIZING_TYPE_FIXED }, .height = .{ .size = .{ .minMax = .{ .min = 100, .max = 100 } }, .type = c.CLAY__SIZING_TYPE_FIXED } },
+        },
+    });
+    close();
+    open(target_id, .{
+        .layout = .{
+            .sizing = .{ .width = .{ .size = .{ .minMax = .{ .min = 100, .max = 100 } }, .type = c.CLAY__SIZING_TYPE_FIXED }, .height = .{ .size = .{ .minMax = .{ .min = 100, .max = 100 } }, .type = c.CLAY__SIZING_TYPE_FIXED } },
+        },
+    });
+    close();
+    close();
+
+    _ = end(1.0 / 60.0);
+    try std.testing.expect(pointerOver(target_id));
+
+    // Frame 2: Pointer remains stationary at (150, 50). Spacer expands to 200, target moves to [200, 300].
+    try begin(&font, 800, 600, 150.0, 50.0, false, 0, 0, 1.0 / 60.0);
+    open(elementId("root", 0), .{
+        .layout = .{
+            .sizing = .{ .width = .{ .size = .{ .minMax = .{ .min = 800, .max = 800 } }, .type = c.CLAY__SIZING_TYPE_FIXED }, .height = .{ .size = .{ .minMax = .{ .min = 600, .max = 600 } }, .type = c.CLAY__SIZING_TYPE_FIXED } },
+            .layoutDirection = c.CLAY_LEFT_TO_RIGHT,
+        },
+    });
+    open(elementId("spacer", 0), .{
+        .layout = .{
+            .sizing = .{ .width = .{ .size = .{ .minMax = .{ .min = 200, .max = 200 } }, .type = c.CLAY__SIZING_TYPE_FIXED }, .height = .{ .size = .{ .minMax = .{ .min = 100, .max = 100 } }, .type = c.CLAY__SIZING_TYPE_FIXED } },
+        },
+    });
+    close();
+    open(target_id, .{
+        .layout = .{
+            .sizing = .{ .width = .{ .size = .{ .minMax = .{ .min = 100, .max = 100 } }, .type = c.CLAY__SIZING_TYPE_FIXED }, .height = .{ .size = .{ .minMax = .{ .min = 100, .max = 100 } }, .type = c.CLAY__SIZING_TYPE_FIXED } },
+        },
+    });
+    close();
+    close();
+
+    _ = end(1.0 / 60.0);
+    try std.testing.expect(!pointerOver(target_id));
 }

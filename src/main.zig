@@ -2010,3 +2010,7 @@ fn runKeyOverlay(allocator: std.mem.Allocator, cfg: config.Config) !void {
 fn runLock(allocator: std.mem.Allocator, cfg: config.Config) !void {
     try lock_module.runLock(allocator, cfg);
 }
+
+test {
+    std.testing.refAllDecls(@import("core/clay.zig"));
+}
