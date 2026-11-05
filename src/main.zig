@@ -47,8 +47,8 @@ test {
     _ = @import("services/caffeine.zig");
     _ = @import("graphics/image_ops.zig");
     _ = @import("core/wayland_window.zig");
-    _ = @import("apps/annotate.zig");
-    _ = @import("apps/image_viewer.zig");
+    _ = @import("apps/ink/ink.zig");
+    _ = @import("apps/view/view.zig");
     _ = @import("panels/wallpaper.zig");
 }
 
@@ -289,7 +289,7 @@ fn toggleOrLockInstance(name: []const u8) bool {
                 if (c.kill(existing_pid, 0) == 0) {
                     _ = c.kill(existing_pid, c.SIGTERM);
                     _ = c.unlink(pid_path.ptr);
-                    return true;
+                    return false;
                 }
             }
         }
@@ -414,18 +414,6 @@ fn handleThemeCommand(arg_it: anytype) u8 {
         _ = theme.selectTheme(prv.id());
         std.debug.print("Switched theme to {s} {s}\n", .{ prv.icon(), prv.name() });
         return 0;
-    } else if (std.mem.eql(u8, sub1.?, "generate") or std.mem.eql(u8, sub1.?, "gen")) {
-        const target = arg_it.next();
-        if (target == null or std.mem.eql(u8, target.?, "all")) {
-            theme.generateAllThemes();
-            std.debug.print("Generated configuration bundles for all built-in themes in themes/<theme>/\n", .{});
-            return 0;
-        } else {
-            const th = theme.loadTheme(target.?);
-            theme.generateThemeDirectory(target.?, &th);
-            std.debug.print("Generated configuration bundle for theme '{s}' in themes/{s}/\n", .{ target.?, target.? });
-            return 0;
-        }
     } else if (std.mem.eql(u8, sub1.?, "set")) {
         const target_theme = arg_it.next() orelse {
             std.debug.print("Usage: mizu theme set <theme_name>\n", .{});
@@ -455,42 +443,50 @@ pub fn main(init: std.process.Init.Minimal) u8 {
     _ = c.sigprocmask(c.SIG_BLOCK, &init_sig_mask, null);
 
     var arg_it = std.process.Args.Iterator.init(init.args);
-    _ = arg_it.next(); // skip binary name
+    const bin_path = arg_it.next() orelse "mizu";
+    const bin_name = std.fs.path.basename(bin_path);
 
-    const maybe_cmd_str = arg_it.next();
-    if (maybe_cmd_str == null) {
-        const allocator = std.heap.c_allocator;
-        var cfg = loadConfig(allocator);
-        defer cfg.deinit(allocator);
+    var cmd: Command = undefined;
+    if (std.mem.eql(u8, bin_name, "mizu-view")) {
+        cmd = .view;
+    } else if (std.mem.eql(u8, bin_name, "mizu-ink") or std.mem.eql(u8, bin_name, "mizu-annotate") or std.mem.eql(u8, bin_name, "mizu-image")) {
+        cmd = .ink;
+    } else {
+        const maybe_cmd_str = arg_it.next();
+        if (maybe_cmd_str == null) {
+            const allocator = std.heap.c_allocator;
+            var cfg = loadConfig(allocator);
+            defer cfg.deinit(allocator);
 
-        if (getBarPid()) |existing_pid| {
-            std.debug.print("mizu: desktop shell already running (PID {d})\n", .{existing_pid});
+            if (getBarPid()) |existing_pid| {
+                std.debug.print("mizu: desktop shell already running (PID {d})\n", .{existing_pid});
+                return 0;
+            }
+
+            runBar(allocator, cfg) catch |err| {
+                std.debug.print("mizu error: {any}\n", .{err});
+                return 1;
+            };
             return 0;
         }
 
-        runBar(allocator, cfg) catch |err| {
-            std.debug.print("mizu error: {any}\n", .{err});
+        const cmd_str = maybe_cmd_str.?;
+        const maybe_cmd = parseCommand(cmd_str);
+        if (maybe_cmd == null) {
+            const allocator = std.heap.c_allocator;
+            var cfg = loadConfig(allocator);
+            defer cfg.deinit(allocator);
+
+            if (cfg.findPanel(cmd_str)) |panel_cmd| {
+                return runCustomPanel(allocator, cmd_str, panel_cmd);
+            }
+
+            std.debug.print("mizu: unrecognized command or panel '{s}'\n\n", .{cmd_str});
+            printUsage();
             return 1;
-        };
-        return 0;
-    }
-
-    const cmd_str = maybe_cmd_str.?;
-    const maybe_cmd = parseCommand(cmd_str);
-    if (maybe_cmd == null) {
-        const allocator = std.heap.c_allocator;
-        var cfg = loadConfig(allocator);
-        defer cfg.deinit(allocator);
-
-        if (cfg.findPanel(cmd_str)) |panel_cmd| {
-            return runCustomPanel(allocator, cmd_str, panel_cmd);
         }
-
-        std.debug.print("mizu: unrecognized command or panel '{s}'\n\n", .{cmd_str});
-        printUsage();
-        return 1;
+        cmd = maybe_cmd.?;
     }
-    const cmd = maybe_cmd.?;
 
     switch (cmd) {
         .help => {
@@ -513,6 +509,8 @@ pub fn main(init: std.process.Init.Minimal) u8 {
                     return 0;
                 } else if (std.mem.eql(u8, arg, "-")) {
                     file_to_open = "-";
+                } else if (std.mem.eql(u8, arg, "view") or std.mem.eql(u8, arg, "v")) {
+                    continue;
                 } else if (!std.mem.startsWith(u8, arg, "-")) {
                     file_to_open = arg;
                 }
@@ -540,6 +538,8 @@ pub fn main(init: std.process.Init.Minimal) u8 {
                     return 0;
                 } else if (std.mem.eql(u8, arg, "-")) {
                     file_to_open = "-";
+                } else if (std.mem.eql(u8, arg, "ink") or std.mem.eql(u8, arg, "annotate") or std.mem.eql(u8, arg, "image") or std.mem.eql(u8, arg, "shot") or std.mem.eql(u8, arg, "draw") or std.mem.eql(u8, arg, "img")) {
+                    continue;
                 } else if (!std.mem.startsWith(u8, arg, "-")) {
                     file_to_open = arg;
                 }
@@ -748,6 +748,17 @@ pub fn main(init: std.process.Init.Minimal) u8 {
                 }
             }
 
+            var sock_path_buf: [256]u8 = undefined;
+            const sock_path = getOsdSocketPath(&sock_path_buf, .notification);
+
+            var cmd_buf: [1024]u8 = undefined;
+            const initial_cmd = std.fmt.bufPrint(&cmd_buf, "notify:{s}:::{s}", .{ title, body }) catch "notify:Mizu:::";
+
+            var msg_buf: [1024]u8 = undefined;
+            const msg = std.fmt.bufPrint(&msg_buf, "{s}\n", .{initial_cmd}) catch initial_cmd;
+
+            const ipc_sent = trySendOsdIpc(sock_path, msg);
+
             if (!no_store) {
                 // Record to persistent notification history
                 var store = notification_module.NotificationStore.init(allocator);
@@ -771,16 +782,7 @@ pub fn main(init: std.process.Init.Minimal) u8 {
                 store.add(item);
             }
 
-            var sock_path_buf: [256]u8 = undefined;
-            const sock_path = getOsdSocketPath(&sock_path_buf, .notification);
-
-            var cmd_buf: [1024]u8 = undefined;
-            const initial_cmd = std.fmt.bufPrint(&cmd_buf, "notify:{s}:::{s}", .{ title, body }) catch "notify:Mizu:::";
-
-            var msg_buf: [1024]u8 = undefined;
-            const msg = std.fmt.bufPrint(&msg_buf, "{s}\n", .{initial_cmd}) catch initial_cmd;
-
-            if (trySendOsdIpc(sock_path, msg)) {
+            if (ipc_sent) {
                 return 0;
             }
 

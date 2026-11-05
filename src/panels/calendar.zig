@@ -539,14 +539,12 @@ pub const Calendar = struct {
         const col_h: f32 = @as(f32, @floatFromInt(h)) - 2.0 * pad_px;
         const card_h: f32 = (col_h - 2.0 * col_v_gap) / 3.0;
 
-        // 2-column layout: left = calendar (header + grid); right = date info + holiday
         _ = ui.open(.{
             .width = .{ .grow = .{} },
             .height = .{ .grow = .{} },
             .direction = .row,
             .gap = ui.su(10),
         });
-        // LEFT COLUMN - Calendar (whole bg same as the panel bg)
         _ = ui.open(.{
             .id = "cal-left",
             .index = 0,
@@ -557,7 +555,6 @@ pub const Calendar = struct {
             .bg = self.cfg.theme.panel_bg,
             .radius = ui.f(self.cfg.theme.radius_panel),
         });
-        // Month header: < Month >
         _ = ui.open(.{
             .width = .{ .grow = .{} },
             .height = .{ .fixed = @floatFromInt(44 * scale) },
@@ -693,9 +690,8 @@ pub const Calendar = struct {
         }
         ui.close(); // grid
 
-        ui.close(); // left column
+        ui.close();
 
-        // RIGHT COLUMN - Date info + holiday (three separate cards on the panel bg)
         _ = ui.open(.{
             .id = "cal-right",
             .index = 0,
@@ -705,7 +701,6 @@ pub const Calendar = struct {
             .gap = ui.su(12),
         });
 
-        // 1. Clock card: descriptive, font shrinks until the time fits
         c.tzset();
         const cur_time = c.time(null);
         var tm: c.struct_tm = undefined;
@@ -720,8 +715,6 @@ pub const Calendar = struct {
         const clock_str = std.fmt.bufPrint(&clock_buf, "{d}:{d:0>2}:{d:0>2}", .{ display_hour, min_u, sec_u }) catch "12:00:00";
 
         var clock_size = sec_sz * 6;
-        // Account for the extra drawn width of the heavy 9-pass text
-        // (copies extend up to 2 logical px to the right) in the budget.
         const clock_weight_offset: u32 = 4 * scale;
         const clock_budget = right_w - @as(f32, @floatFromInt(2 * 16 * scale)) - @as(f32, @floatFromInt(clock_weight_offset));
         while (clock_size > sec_sz * 2 and @as(f32, @floatFromInt(self.font.measureTextWithSize(clock_str, clock_size))) > clock_budget) {
@@ -753,10 +746,9 @@ pub const Calendar = struct {
         const clock_custom = ui.allocator.create(ui_mod.Custom) catch return;
         clock_custom.* = .{ .callback = .{ .function = ClockDraw.draw, .data = clock_data } };
         ui.custom(.{ .grow = .{} }, .{ .grow = .{} }, clock_custom, 0);
-        ui.close(); // custom clock text
-        ui.close(); // clock card
+        ui.close();
+        ui.close();
 
-        // 2. Current date card: "30 Oct" over "Friday · 10/30/2026"
         const weekday_full = [_][]const u8{ "Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday" };
         const short_months = [_][]const u8{ "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec" };
         const wday_idx: usize = @intCast(@mod(@as(i64, tm.tm_wday), 7));
@@ -798,7 +790,6 @@ pub const Calendar = struct {
         ui.text(line2_str, .{ .size = (sec_sz * 5) / 4, .color = self.cfg.theme.text_muted, .line_height = @intCast((sec_sz * 5) / 4 + 4), .wrap = true, .text_align = .center });
         ui.close();
 
-        // 3. Holidays card (shows whole-month holidays, or the selected day's holiday)
         _ = ui.open(.{
             .id = "cal-hol",
             .width = .{ .grow = .{} },

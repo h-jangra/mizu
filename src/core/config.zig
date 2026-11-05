@@ -341,6 +341,7 @@ pub const Config = struct {
         var custom_buttons_cleared = false;
         var custom_panels_cleared = false;
         var configured_font_family: ?[]const u8 = null;
+        var theme_configured = false;
 
         while (lines.next()) |raw_line| {
             const line = std.mem.trim(u8, raw_line, " \t\r");
@@ -421,6 +422,7 @@ pub const Config = struct {
                     cfg.border_width = std.fmt.parseInt(u32, val, 10) catch cfg.border_width;
                 } else if (std.mem.eql(u8, key, "theme") or std.mem.eql(u8, key, "theme_name")) {
                     cfg.theme = theme.loadTheme(val);
+                    theme_configured = true;
                 } else if (std.mem.eql(u8, key, "clock_format")) {
                     cfg.clock_format = allocator.dupe(u8, val) catch cfg.clock_format;
                 } else if (std.mem.eql(u8, key, "calendar_file")) {
@@ -523,9 +525,10 @@ pub const Config = struct {
             }
         }
 
-        // Saved runtime theme takes precedence over static config.ini setting
-        if (theme.loadSavedTheme()) |saved| {
-            cfg.theme = theme.loadTheme(saved.id());
+        if (!theme_configured) {
+            if (theme.loadSavedTheme()) |saved| {
+                cfg.theme = theme.loadTheme(saved.id());
+            }
         }
 
         if (configured_font_family) |fam| {

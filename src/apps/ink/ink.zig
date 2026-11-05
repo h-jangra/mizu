@@ -223,31 +223,18 @@ pub const Annotation = struct {
     id: u32,
     kind: AnnotationKind,
 
-    // Bounding coordinates in base image pixel space
     rect: Rect = .{ .x = 0, .y = 0, .w = 0, .h = 0 },
-
-    // For arrows and lines: start and end points
     start_x: i32 = 0,
     start_y: i32 = 0,
     end_x: i32 = 0,
     end_y: i32 = 0,
-
-    // For freehand pen
     points: std.ArrayListUnmanaged(Point) = .empty,
-
-    // For text
     text_buf: [1024]u8 = @splat(0),
     text_len: usize = 0,
     font_size: u32 = 18,
     text_align: TextAlign = .left,
-
-    // For step badge
     step_number: u32 = 1,
-
-    // For pasted image layer
     image_data: ?ImageBuffer = null,
-
-    // Styling
     color: Color = Color.hex(0xE06C75),
     stroke_width: u32 = 4,
     filled: bool = false,
@@ -1230,7 +1217,6 @@ pub const AnnotateApp = struct {
     next_annotation_id: u32 = 1,
     step_badge_counter: u32 = 1,
 
-    // Active tool & properties
     active_tool: Tool = .select,
     current_color: Color = Color.hex(0xE06C75),
     stroke_width: u32 = 4,
@@ -1238,7 +1224,6 @@ pub const AnnotateApp = struct {
     current_text_align: TextAlign = .left,
     fill_shape: bool = false,
 
-    // Navigation (Zoom & Pan)
     zoom: f32 = 1.0,
     pan_x: f32 = 0.0,
     pan_y: f32 = 0.0,
@@ -1246,42 +1231,33 @@ pub const AnnotateApp = struct {
     pan_start_x: i32 = 0,
     pan_start_y: i32 = 0,
 
-    // Interaction states
     is_drawing: bool = false,
     is_moving: bool = false,
     is_resizing: bool = false,
     is_marquee: bool = false,
     active_handle: ResizeHandle = .none,
 
-    drag_start_x: i32 = 0, // In image coordinates
+    drag_start_x: i32 = 0,
     drag_start_y: i32 = 0,
     drag_curr_x: i32 = 0,
     drag_curr_y: i32 = 0,
     last_move_x: i32 = 0,
     last_move_y: i32 = 0,
 
-    // Inline Text Editing
     editing_text_id: ?u32 = null,
     text_editor: ?TextEditState = null,
-
-    // Eraser gesture undo tracker
     has_pushed_eraser_undo: bool = false,
-
-    // Font dropdown
     font_dropdown_open: bool = false,
 
-    // Custom Hex Color Dialog
     color_dialog_open: bool = false,
     color_dialog_buf: [16]u8 = @splat(0),
     color_dialog_len: usize = 0,
     color_dialog_cursor: usize = 0,
 
-    // Font Size Input Box Editing
     editing_font_size: bool = false,
     font_size_buf: [8]u8 = @splat(0),
     font_size_len: usize = 0,
 
-    // Crop Tool state
     is_crop_mode: bool = false,
     is_cropping: bool = false,
     crop_x0: i32 = 0,
@@ -1289,26 +1265,21 @@ pub const AnnotateApp = struct {
     crop_x1: i32 = 0,
     crop_y1: i32 = 0,
 
-    // Side Panels
     show_layers: bool = false,
     show_adjustments: bool = false,
     show_info: bool = false,
 
-    // Adjustments
     adjustments: Adjustments = .{},
     adjust_base_image: ?ImageBuffer = null,
     active_slider: ?enum { brightness, contrast, saturation, blur } = null,
 
-    // Metadata
     original_path: ?[]const u8 = null,
     file_size_bytes: usize = 0,
 
-    // Toast Status
     status_msg: [128]u8 = @splat(0),
     status_len: usize = 0,
     status_ticks: u32 = 0,
 
-    // Dimensions (Logical coordinates)
     ui_scale: f32 = 1.0,
     ui_font_size: u32 = 13,
     toolbar_height: u32 = 44,
@@ -3791,25 +3762,21 @@ pub const AnnotateApp = struct {
         const on_row2 = is_narrow and (y >= 38);
 
         if (!on_row2) {
-            // Row 1: Groups 1 through 10
             var bx: i32 = 12;
             const btn_w: i32 = 28;
 
-            // Group 1: Select
             if (x >= bx and x < bx + btn_w) {
                 self.setActiveTool(.select);
                 return;
             }
             bx += btn_w + 13;
 
-            // Group 2: Freehand
             if (x >= bx and x < bx + btn_w) {
                 self.setActiveTool(.freehand);
                 return;
             }
             bx += btn_w + 13;
 
-            // Group 3: Arrow & Line
             if (x >= bx and x < bx + btn_w) {
                 self.setActiveTool(.arrow);
                 return;
@@ -3821,7 +3788,6 @@ pub const AnnotateApp = struct {
             }
             bx += btn_w + 13;
 
-            // Group 4: Rectangle & Ellipse & Fill
             if (x >= bx and x < bx + btn_w) {
                 self.setActiveTool(.rect);
                 return;
@@ -3843,7 +3809,6 @@ pub const AnnotateApp = struct {
             }
             bx += btn_w + 13;
 
-            // Group 5: Text Annotation & Font Size
             if (x >= bx and x < bx + btn_w) {
                 self.setActiveTool(.text);
                 return;
@@ -3866,14 +3831,12 @@ pub const AnnotateApp = struct {
             }
             bx += 20 + 13;
 
-            // Group 6: Numbered Step Badge
             if (x >= bx and x < bx + btn_w) {
                 self.setActiveTool(.step_badge);
                 return;
             }
             bx += btn_w + 13;
 
-            // Group 7: Blur & Pixelate
             if (x >= bx and x < bx + btn_w) {
                 self.setActiveTool(.blur);
                 return;
@@ -3885,21 +3848,18 @@ pub const AnnotateApp = struct {
             }
             bx += btn_w + 13;
 
-            // Group 8: Highlight
             if (x >= bx and x < bx + btn_w) {
                 self.setActiveTool(.highlight);
                 return;
             }
             bx += btn_w + 13;
 
-            // Group 9: Eraser
             if (x >= bx and x < bx + btn_w) {
                 self.setActiveTool(.eraser);
                 return;
             }
             bx += btn_w + 13;
 
-            // Group 10: Crop
             if (x >= bx and x < bx + btn_w) {
                 self.startCrop();
                 return;
@@ -3907,7 +3867,6 @@ pub const AnnotateApp = struct {
             bx += btn_w + 13;
 
             if (!is_narrow) {
-                // Group 11: Color Palette
                 for (Palette.colors) |col| {
                     if (x >= bx and x < bx + 16) {
                         self.current_color = col;
@@ -3920,21 +3879,18 @@ pub const AnnotateApp = struct {
                     bx += 18;
                 }
 
-                // Palette icon () -> open custom hex input
                 if (x >= bx and x < bx + 26) {
                     self.openColorDialog();
                     return;
                 }
                 bx += 29;
 
-                // Color picker (󰈊) -> pick from screen, set color & copy to clipboard
                 if (x >= bx and x < bx + 26) {
                     self.pickColorFromScreen();
                     return;
                 }
                 bx += 29;
 
-                // Group 12: Right Actions: Undo, Redo, Save, Copy
                 const rx_base: i32 = @as(i32, @intCast(self.win.width)) - 138;
                 if (x >= rx_base) {
                     var rx = rx_base;
@@ -5572,31 +5528,31 @@ test "TextEditState text editing, multiline and cursor navigation" {
     try std.testing.expectEqual(@as(usize, 11), te.cursor_idx);
 
     // Left navigation
-    te.moveCursorLeft(false);
+    te.moveLeft(false);
     try std.testing.expectEqual(@as(usize, 10), te.cursor_idx);
 
     // Home navigation
-    te.moveCursorHome(false);
+    te.moveHome(false, true);
     try std.testing.expectEqual(@as(usize, 0), te.cursor_idx);
 
     // Word right navigation
-    te.moveCursorWordRight(false);
+    te.moveWordRight(false);
     try std.testing.expectEqual(@as(usize, 5), te.cursor_idx); // After "Hello"
 
     // Word left navigation
-    te.moveCursorWordLeft(false);
+    te.moveWordLeft(false);
     try std.testing.expectEqual(@as(usize, 0), te.cursor_idx);
 
     // End navigation
-    te.moveCursorEnd(false);
+    te.moveEnd(false, true);
     try std.testing.expectEqual(@as(usize, 11), te.cursor_idx);
 
     // Enter / newline insertion (multiline)
-    te.insertText("\nNew Line");
+    try te.insertBytes("\nNew Line");
     try std.testing.expectEqualStrings("Hello World\nNew Line", te.text.items);
 
     // Backspace
-    te.backspace();
+    te.deleteBackward();
     try std.testing.expectEqualStrings("Hello World\nNew Lin", te.text.items);
 
     // Undo
@@ -5618,7 +5574,7 @@ test "TextEditState text editing, multiline and cursor navigation" {
     }
 
     // Type over selection replaces all text
-    te.insertText("Fresh Text");
+    try te.insertBytes("Fresh Text");
     try std.testing.expectEqualStrings("Fresh Text", te.text.items);
     try std.testing.expect(!te.hasSelection());
 

@@ -44,8 +44,6 @@ pub const DrawCtx = struct {
         );
     }
 
-    // ---- Primitives ----
-
     pub fn clear(self: DrawCtx, color: Color) void {
         self.renderer.clear(color);
     }
@@ -93,10 +91,6 @@ pub const DrawCtx = struct {
         self.renderer.drawDropShadow(x, y, w, h, radius, blur, 2, color);
     }
 
-    // ---- Text ----
-
-    /// Draw text at `(x, baseline_y)`. `baseline_y` is the typographic baseline
-    /// (where the bottom of most capital letters sit).
     pub fn text(self: DrawCtx, font: *Font, txt: []const u8, x: i32, baseline_y: i32, size_px: u32, color: Color) void {
         self.renderer.drawTextWithSize(font, txt, x, baseline_y, size_px, color);
     }
@@ -124,8 +118,6 @@ pub const DrawCtx = struct {
         _ = self;
         return font.measureInk(txt, size_px);
     }
-
-    // ---- Images ----
 
     pub fn image(self: DrawCtx, img: *Image, x: i32, y: i32, w: u32, h: u32) void {
         self.renderer.drawImage(img, @as(f64, @floatFromInt(x)), @as(f64, @floatFromInt(y)), @as(f64, @floatFromInt(w)), @as(f64, @floatFromInt(h)));

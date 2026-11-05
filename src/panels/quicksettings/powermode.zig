@@ -79,6 +79,8 @@ pub fn renderMenu(panel: anytype, ui: *ui_mod.Ui, scale: u32, sub_sz: u32) void 
             .padding = .{ .left = ui.su(12), .right = ui.su(12) },
             .gap = ui.su(10),
             .bg = if (sel) panel.cfg.theme.elevated else if (hov) panel.cfg.theme.card_hover_bg else panel.cfg.theme.card_bg,
+            .border = ui.su(1),
+            .border_color = if (sel) panel.cfg.theme.accent else if (hov) panel.cfg.theme.accent else panel.cfg.theme.border,
             .radius = ui.f(10),
             .align_y = .center,
         });

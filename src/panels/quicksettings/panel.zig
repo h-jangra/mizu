@@ -1147,7 +1147,6 @@ pub const QuickSettings = struct {
 
         try sliders.renderRow(self, ui, scale);
 
-        // Row 1: Wi-Fi and Bluetooth.
         _ = ui.open(.{
             .width = .{ .grow = .{} },
             .height = .{ .fixed = ui.s(QsLayout.card_h) },
@@ -1158,7 +1157,6 @@ pub const QuickSettings = struct {
         try bluetooth.renderMainCard(self, ui, scale, icon_sz, ui_sz, sec_sz);
         ui.close();
 
-        // Row 2: Screen Recording and Power Mode.
         _ = ui.open(.{
             .width = .{ .grow = .{} },
             .height = .{ .fixed = ui.s(QsLayout.card_h) },
@@ -1169,7 +1167,6 @@ pub const QuickSettings = struct {
         try powermode.renderMainCard(self, ui, scale, icon_sz, ui_sz, sec_sz);
         ui.close();
 
-        // Row 3: Eye comfort, DND, Caffeine, Keymap.
         _ = ui.open(.{
             .width = .{ .grow = .{} },
             .height = .{ .fixed = ui.s(QsLayout.row3_h) },
@@ -1691,7 +1688,6 @@ pub const QuickSettings = struct {
                 }
             },
             .display_menu => {
-                // Section 1: Display Scaling
                 _ = ui.open(.{
                     .width = .{ .grow = .{} },
                     .direction = .column,
@@ -1727,10 +1723,9 @@ pub const QuickSettings = struct {
                     });
                     ui.close();
                 }
-                ui.close(); // row
-                ui.close(); // section 1
+                ui.close();
+                ui.close();
 
-                // Section 2: Refresh Rate
                 _ = ui.open(.{
                     .width = .{ .grow = .{} },
                     .direction = .column,
@@ -1766,10 +1761,9 @@ pub const QuickSettings = struct {
                     });
                     ui.close();
                 }
-                ui.close(); // row
-                ui.close(); // section 2
+                ui.close();
+                ui.close();
 
-                // Section 3: Resolution
                 _ = ui.open(.{
                     .width = .{ .grow = .{} },
                     .direction = .column,
@@ -1820,9 +1814,8 @@ pub const QuickSettings = struct {
                     ui.close();
                 }
                 ui.close();
-                ui.close(); // section 3
+                ui.close();
 
-                // Section 4: Eye Comfort (Night Light)
                 {
                     const hov = ui.hovered("qs-disp-eye-comfort", 0);
                     _ = ui.open(.{
@@ -3082,27 +3075,10 @@ test "QuickSettings performance latency measurements" {
     _ = c.clock_gettime(c.CLOCK_MONOTONIC, &ts_end);
     const deinit_ns = (@as(i128, ts_end.tv_sec) - @as(i128, ts_start.tv_sec)) * 1_000_000_000 + (@as(i128, ts_end.tv_nsec) - @as(i128, ts_start.tv_nsec));
 
-    std.debug.print("\n[BENCHMARK] QuickSettings init latency: {d:.2} µs ({d:.3} ms)\n", .{
-        @as(f64, @floatFromInt(init_ns)) / 1000.0,
-        @as(f64, @floatFromInt(init_ns)) / 1_000_000.0,
-    });
-    std.debug.print("[BENCHMARK] QuickSettings tick latency: {d:.2} µs ({d:.3} ms)\n", .{
-        @as(f64, @floatFromInt(tick_ns)) / 1000.0,
-        @as(f64, @floatFromInt(tick_ns)) / 1_000_000.0,
-    });
-    std.debug.print("[BENCHMARK] QuickSettings render latency: {d:.2} µs ({d:.3} ms)\n", .{
-        @as(f64, @floatFromInt(render_ns)) / 1000.0,
-        @as(f64, @floatFromInt(render_ns)) / 1_000_000.0,
-    });
-    std.debug.print("[BENCHMARK] QuickSettings deinit latency: {d:.2} µs ({d:.3} ms)\n", .{
-        @as(f64, @floatFromInt(deinit_ns)) / 1000.0,
-        @as(f64, @floatFromInt(deinit_ns)) / 1_000_000.0,
-    });
-
-    try std.testing.expect(init_ns < 1_500_000_000); // under 1500ms (cold fontconfig/sys status init in debug mode)
-    try std.testing.expect(tick_ns < 10_000_000); // under 10ms
-    try std.testing.expect(render_ns < 250_000_000); // under 250ms (unoptimized debug software rendering)
-    try std.testing.expect(deinit_ns < 10_000_000); // under 10ms (zero blocking join!)
+    try std.testing.expect(init_ns < 1_500_000_000);
+    try std.testing.expect(tick_ns < 10_000_000);
+    try std.testing.expect(render_ns < 250_000_000);
+    try std.testing.expect(deinit_ns < 10_000_000);
 }
 
 test "QuickSettings audio options tabs and device selection" {

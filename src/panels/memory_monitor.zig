@@ -1490,7 +1490,6 @@ pub const MemoryMonitor = struct {
                     .align_y = .center,
                 });
 
-                // Icon column
                 _ = ui.open(.{
                     .width = .{ .fixed = ui.s(36) },
                     .height = .{ .grow = .{} },
@@ -1503,9 +1502,8 @@ pub const MemoryMonitor = struct {
                 } else {
                     ui.icon("command", 16 * scale, if (is_selected) accent else text_muted, 0);
                 }
-                ui.close(); // icon
+                ui.close();
 
-                // Info column (name + command/path)
                 _ = ui.open(.{
                     .width = .{ .fixed = ui.s(160) },
                     .height = .{ .grow = .{} },
@@ -1535,10 +1533,9 @@ pub const MemoryMonitor = struct {
                         .color = if (is_selected) th.text_bright else th.text_main,
                     });
                 }
-                ui.close(); // info
+                ui.close();
 
-                // CPU column
-                const cpu_str = ""; // Per-process CPU % requires /proc/pid/stat parsing (not available here)
+                const cpu_str = "";
                 ui.text(cpu_str, .{
                     .size = (self.cfg.typography.ui) * scale,
                     .color = if (is_selected) th.text_bright else text_muted,
@@ -1546,7 +1543,6 @@ pub const MemoryMonitor = struct {
                     .text_align = .right,
                 });
 
-                // Memory column
                 var mem_row_buf: [32]u8 = undefined;
                 const mem_row_str = if (row.kind == .group) formatMemory(&mem_row_buf, grp.total_rss_kb) else formatMemory(&mem_row_buf, grp.procs.items[row.sub_idx].rss_kb);
                 ui.text(mem_row_str, .{
@@ -1558,7 +1554,6 @@ pub const MemoryMonitor = struct {
 
                 ui.spacerSized(.{ .fixed = ui.s(20) }, .{ .fixed = 0 });
 
-                // % column (memory percent)
                 var pct_buf: [16]u8 = undefined;
                 const pct_str = if (self.mem.total_kb > 0) blk: {
                     const kb = if (row.kind == .group) grp.total_rss_kb else grp.procs.items[row.sub_idx].rss_kb;
@@ -1574,14 +1569,12 @@ pub const MemoryMonitor = struct {
 
                 ui.spacerSized(.{ .fixed = ui.s(20) }, .{ .fixed = 0 });
 
-                // Kill button column
                 if (row.kind == .subprocess) {
                     const proc = grp.procs.items[row.sub_idx];
                     const is_confirming = self.confirm_kill_pid != null and self.confirm_kill_pid.? == proc.pid;
                     const is_kill_hov = self.hover_kill_action == .kill and self.hover_kill_pid == proc.pid;
 
                     if (is_confirming) {
-                        // Confirm / Cancel buttons
                         _ = ui.open(.{
                             .width = .{ .fixed = ui.s(56) },
                             .height = .{ .grow = .{} },
@@ -1590,7 +1583,6 @@ pub const MemoryMonitor = struct {
                             .align_x = .right,
                             .align_y = .center,
                         });
-                        // Confirm button
                         const is_chk_hov = self.hover_kill_action == .confirm and self.hover_kill_pid == proc.pid;
                         _ = ui.open(.{
                             .width = .{ .fixed = ui.s(26) },
@@ -1604,7 +1596,6 @@ pub const MemoryMonitor = struct {
                         });
                         ui.icon("check", 12 * scale, th.success_color, 0);
                         ui.close();
-                        // Cancel button
                         const is_cnc_hov = self.hover_kill_action == .cancel and self.hover_kill_pid == proc.pid;
                         _ = ui.open(.{
                             .width = .{ .fixed = ui.s(26) },
@@ -1618,9 +1609,8 @@ pub const MemoryMonitor = struct {
                         });
                         ui.icon("x", 12 * scale, if (is_cnc_hov) th.error_color else text_muted, 0);
                         ui.close();
-                        ui.close(); // buttons
+                        ui.close();
                     } else {
-                        // Single kill button (x) shown on hover/select
                         if (is_hovered or is_selected) {
                             _ = ui.open(.{
                                 .width = .{ .fixed = ui.s(24) },

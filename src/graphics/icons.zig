@@ -604,6 +604,8 @@ fn tryDirWithAliases(allocator: std.mem.Allocator, dir: []const u8, name: []cons
         if (existingPath(allocator, dir, "process-working")) |p| return p;
     } else if (std.mem.eql(u8, name, "folder")) {
         if (existingPath(allocator, dir, "folder-blue")) |p| return p;
+    } else if (std.mem.eql(u8, name, "connect")) {
+        if (existingPath(allocator, dir, "plug-connected")) |p| return p;
     }
     return null;
 }
@@ -903,35 +905,6 @@ fn tryMizuAssets(allocator: std.mem.Allocator, name: []const u8) ?[]u8 {
     return null;
 }
 
-fn tryMizuThemeIcons(allocator: std.mem.Allocator, name: []const u8, target: u16) ?[]u8 {
-    const local_dirs = [_][]const u8{ "themes/icons", "../themes/icons" };
-    for (local_dirs) |dir| {
-        if (tryMizuIconDir(allocator, dir, name, target)) |p| return p;
-    }
-
-    if (g_active_theme_name_len > 0) {
-        const active = g_active_theme_name[0..g_active_theme_name_len];
-        var base_buf: [512]u8 = undefined;
-        if (theme.getUserThemesDir(&base_buf)) |ub| {
-            var dir_buf: [512]u8 = undefined;
-            if (std.fmt.bufPrint(&dir_buf, "{s}/{s}/icons", .{ ub, active })) |dir| {
-                if (tryMizuIconDir(allocator, dir, name, target)) |p| return p;
-            } else |_| {}
-        }
-        var builtin_buf: [512]u8 = undefined;
-        if (theme.resolveBuiltinThemesDir(&builtin_buf)) |bb| {
-            var dir_buf: [512]u8 = undefined;
-            if (std.fmt.bufPrint(&dir_buf, "{s}/{s}/icons", .{ bb, active })) |dir| {
-                if (tryMizuIconDir(allocator, dir, name, target)) |p| return p;
-            } else |_| {}
-        }
-    }
-
-    if (tryMizuIconDir(allocator, "/usr/share/mizu/themes/icons", name, target)) |p| return p;
-    if (tryMizuIconDir(allocator, "/usr/local/share/mizu/themes/icons", name, target)) |p| return p;
-    return null;
-}
-
 /// Resolve a UI icon path for `name` (caller frees). Bundled assets win so
 /// launcher chrome keeps its crisp SVGs.
 pub fn resolveIconPath(allocator: std.mem.Allocator, name: []const u8, target_size: u16) ![]u8 {
@@ -940,7 +913,6 @@ pub fn resolveIconPath(allocator: std.mem.Allocator, name: []const u8, target_si
     if (directIconPath(allocator, name)) |p| return p;
     const base = stripIconExt(name);
     if (tryMizuAssets(allocator, base)) |p| return p;
-    if (tryMizuThemeIcons(allocator, base, target)) |p| return p;
     if (tryGtkIconPath(allocator, base, target)) |p| return p;
     return error.NotFound;
 }
@@ -951,7 +923,6 @@ pub fn resolveAppIconPath(allocator: std.mem.Allocator, name: []const u8, target
     const target = if (target_size == 0) 1 else target_size;
     if (directIconPath(allocator, name)) |p| return p;
     const base = stripIconExt(name);
-    if (tryMizuThemeIcons(allocator, base, target)) |p| return p;
     if (tryGtkIconPath(allocator, base, target)) |p| return p;
     if (tryPixmap(allocator, base)) |p| return p;
     if (tryMizuAssets(allocator, base)) |p| return p;

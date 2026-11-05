@@ -15,14 +15,6 @@ Mizu uses native Wayland protocols and Clay for layout, with a custom Zig render
 - **Customizable** — INI configuration, themes, buttons, and custom panels.
 - **Lightweight** — Native rendering, on-demand panels, and minimal idle CPU usage.
 
-## Documentation
-
-- [Overview](docs/src/overview.md)
-- [Getting Started](docs/src/getting-started.md)
-- [User Guide](docs/src/user-guide.md)
-- [Image Applications](docs/src/image-apps.md)
-- [Configuration](docs/src/configuration.md)
-
 ## Dependencies
 
 Verified on Void Linux x86_64.

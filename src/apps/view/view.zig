@@ -19,6 +19,7 @@ pub fn isSupportedImageExtension(name: []const u8) bool {
     return std.ascii.eqlIgnoreCase(ext, ".png") or
         std.ascii.eqlIgnoreCase(ext, ".jpg") or
         std.ascii.eqlIgnoreCase(ext, ".jpeg") or
+        std.ascii.eqlIgnoreCase(ext, ".jfif") or
         std.ascii.eqlIgnoreCase(ext, ".svg") or
         std.ascii.eqlIgnoreCase(ext, ".webp") or
         std.ascii.eqlIgnoreCase(ext, ".bmp") or

@@ -76,6 +76,9 @@ fn configureMizuModule(b: *std.Build, mod: *std.Build.Module, c_module: *std.Bui
     mod.addCSourceFile(.{
         .file = b.path("src/c/webp_export.c"),
     });
+    mod.addCSourceFile(.{
+        .file = b.path("src/c/mizu_share.c"),
+    });
 }
 
 pub fn build(b: *std.Build) void {
@@ -156,13 +159,6 @@ pub fn build(b: *std.Build) void {
     });
     configureMizuModule(b, exe_view.root_module, c_module);
     b.installArtifact(exe_view);
-
-    // Install built-in themes into share/mizu/themes
-    b.installDirectory(.{
-        .source_dir = b.path("themes"),
-        .install_dir = .{ .custom = "share/mizu" },
-        .install_subdir = "themes",
-    });
 
     const run_cmd = b.addRunArtifact(exe);
     run_cmd.step.dependOn(b.getInstallStep());

@@ -5,7 +5,6 @@ const config = @import("../core/config.zig");
 const renderer = @import("../core/renderer.zig");
 const icons = @import("../graphics/icons.zig");
 const sys_status = @import("../services/system_status.zig");
-const animation = @import("../core/animation.zig");
 const ui_mod = @import("../core/ui.zig");
 
 pub const OsdKind = enum {
@@ -27,7 +26,6 @@ pub const Osd = struct {
 
     percent: u32 = 50,
     is_muted: bool = false,
-    fade_anim: animation.Animation = animation.Animation.init(),
 
     title: [128]u8 = @splat(0),
     title_len: usize = 0,
@@ -60,9 +58,6 @@ pub const Osd = struct {
         };
 
         self.updateValue();
-        if (self.kind == .notification) {
-            animation.quickFadeIn(&self.fade_anim);
-        }
         return self;
     }
 
@@ -71,10 +66,6 @@ pub const Osd = struct {
     }
 
     pub fn tick(self: *Osd) bool {
-        var changed = false;
-        if (self.kind == .notification and self.fade_anim.isActive()) {
-            if (self.fade_anim.update(16)) changed = true;
-        }
         if (theme.loadSavedTheme()) |saved| {
             if (saved != self.cfg.theme.kind) {
                 self.cfg.theme = saved.toTheme();
@@ -401,15 +392,6 @@ pub const Osd = struct {
         ui.close(); // root
         const commands = ui.endLayout();
         ui.render(target, commands);
-
-        // Notification entry fade: black overlay fades out as animation completes.
-        if (self.kind == .notification and self.fade_anim.get() < 1.0) {
-            const fade_a = @as(u8, @intFromFloat((1.0 - self.fade_anim.get()) * 255.0));
-            if (fade_a > 0) {
-                const fade_radius: u32 = 14;
-                target.fillRoundedRect(0, 0, target.width, target.height, fade_radius, theme.Color.init(fade_a, 0, 0, 0));
-            }
-        }
     }
 
 };

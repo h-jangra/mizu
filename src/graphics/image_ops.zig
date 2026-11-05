@@ -887,7 +887,7 @@ pub const ImageBuffer = struct {
     // File I/O: Load, Save PNG, Save JPEG
     pub fn loadFromFile(allocator: std.mem.Allocator, path: []const u8) !ImageBuffer {
         // Try SVG if file extension is .svg
-        if (std.mem.endsWith(u8, path, ".svg")) {
+        if (std.ascii.endsWithIgnoreCase(path, ".svg")) {
             if (try loadSvg(allocator, path)) |buf| return buf;
         }
 

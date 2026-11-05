@@ -460,6 +460,8 @@ pub const ClipAction = union(enum) {
     clear_all,
     close,
     toggle_qr,
+    toggle_share,
+    stop_share,
 };
 
 const ClipInputDraw = struct {
@@ -527,6 +529,7 @@ pub const ClipboardPanel = struct {
     hit_areas: std.ArrayList(ClipHitArea),
     search_rect: renderer.Rect = .{ .x = 24, .y = 56, .w = 480, .h = 48 },
     show_qr: bool = false,
+    show_share_view: bool = false,
 
     history_loading: bool = true,
     decode_cache: DecodedCache = .{},
@@ -561,6 +564,9 @@ pub const ClipboardPanel = struct {
         self.input.focused = true;
         self.filtered_indices.ensureTotalCapacity(allocator, 500) catch {};
         self.hit_areas.ensureTotalCapacity(allocator, 64) catch {};
+        self.show_share_view = false;
+
+        c.mizu_share_set_wake_fd(shared.wake_fd);
 
         // Preload session cache for instant display.
         if (session_has_cache and session_cached_count > 0) {
@@ -630,7 +636,6 @@ pub const ClipboardPanel = struct {
     pub fn tick(self: *ClipboardPanel) bool {
         var changed = false;
 
-        // 1. Process history worker results
         self.shared.history_lock.lock();
         if (self.shared.history_done) {
             self.shared.history_done = false;
@@ -643,7 +648,6 @@ pub const ClipboardPanel = struct {
             }
             self.history_loading = false;
 
-            // Update process session cache for warm reopen
             session_cached_count = @min(count, session_cached_items.len);
             @memcpy(session_cached_items[0..session_cached_count], self.shared.history_items[0..session_cached_count]);
             session_has_cache = true;
@@ -656,21 +660,17 @@ pub const ClipboardPanel = struct {
             self.shared.history_lock.unlock();
         }
 
-        // 2. Process decode worker results
         self.shared.decode_lock.lock();
         if (self.shared.decode_res_ready) {
             self.shared.decode_res_ready = false;
             const res_id = self.shared.decode_res_id;
             const res_len_raw = self.shared.decode_res_len;
-            // Check if high bit is set (image flag)
             const is_image = (res_len_raw & 0x80000000) != 0;
             const res_len = res_len_raw & 0x7FFFFFFF;
             if (res_len > 0) {
                 if (is_image) {
-                    // Decode image from raw bytes
                     const image_data = self.shared.decode_res_buf[0..res_len];
                     var img: ?*renderer.Image = null;
-                    // Try PNG first, then JPEG
                     if (renderer.Image.loadPngFromMemory(self.allocator, image_data)) |png_img| {
                         img = png_img;
                     } else |_| {
@@ -742,6 +742,9 @@ pub const ClipboardPanel = struct {
     }
 
     pub fn requestDecode(self: *ClipboardPanel, id: u64) void {
+        // Direct wl-paste items (id 999999) are already loaded in preview
+        if (id == 999999) return;
+
         // Reuse cached preview if available
         if (self.decode_cache.get(id) != null) return;
 
@@ -910,19 +913,37 @@ pub const ClipboardPanel = struct {
                         const is_png = len >= 8 and buf[0] == 0x89 and buf[1] == 0x50 and buf[2] == 0x4E and buf[3] == 0x47;
                         const is_jpeg = len >= 2 and buf[0] == 0xFF and buf[1] == 0xD8;
                         const is_image = is_png or is_jpeg;
-                        var item = ClipItem{ .id = 999999, .clip_type = if (is_image) .image else .text };
-                        const max_p = @min(len, item.preview.len);
-                        const preview_len = trimToValidUtf8(buf[0..max_p]);
-                        @memcpy(item.preview[0..preview_len], buf[0..preview_len]);
-                        item.preview_len = preview_len;
-                        const max_f = @min(len, item.first_line.len);
-                        const first_len = trimToValidUtf8(buf[0..max_f]);
-                        @memcpy(item.first_line[0..first_len], buf[0..first_len]);
-                        item.first_line_len = first_len;
-                        item.first_line_loaded = true;
-                        // Insert at front by shifting (simplified: append, filter shows last)
-                        result_items[result_count] = item;
-                        result_count += 1;
+
+                        // Deduplicate: avoid adding if already captured in result_items (e.g. from cliphist)
+                        var already_present = false;
+                        for (result_items[0..result_count]) |existing| {
+                            if (is_image and existing.clip_type == .image) {
+                                already_present = true;
+                                break;
+                            } else if (!is_image and existing.clip_type == .text) {
+                                const exist_text = existing.preview[0..existing.preview_len];
+                                const paste_text = buf[0..@min(len, 4096)];
+                                if (exist_text.len > 0 and (std.mem.startsWith(u8, paste_text, exist_text) or std.mem.startsWith(u8, exist_text, paste_text))) {
+                                    already_present = true;
+                                    break;
+                                }
+                            }
+                        }
+
+                        if (!already_present) {
+                            var item = ClipItem{ .id = 999999, .clip_type = if (is_image) .image else .text };
+                            const max_p = @min(len, item.preview.len);
+                            const preview_len = trimToValidUtf8(buf[0..max_p]);
+                            @memcpy(item.preview[0..preview_len], buf[0..preview_len]);
+                            item.preview_len = preview_len;
+                            const max_f = @min(len, item.first_line.len);
+                            const first_len = trimToValidUtf8(buf[0..max_f]);
+                            @memcpy(item.first_line[0..first_len], buf[0..first_len]);
+                            item.first_line_len = first_len;
+                            item.first_line_loaded = true;
+                            result_items[result_count] = item;
+                            result_count += 1;
+                        }
                     }
                 }
             }
@@ -1002,10 +1023,12 @@ pub const ClipboardPanel = struct {
         if (actual_idx >= self.items.items.len) return;
         const item = self.items.items[actual_idx];
 
-        // Decode from cliphist to preserve full multi-line content.
-        var cmd_buf: [256]u8 = undefined;
-        const cmd = std.fmt.bufPrintSentinel(&cmd_buf, "export PATH=\"$PATH:/usr/sbin:/sbin:/usr/local/bin:/usr/bin:$HOME/.local/bin\"; cliphist decode {d} | wl-copy", .{item.id}, 0) catch return;
-        sys_status.spawnCmd(cmd);
+        if (item.id != 999999) {
+            // Decode from cliphist to preserve full multi-line content.
+            var cmd_buf: [256]u8 = undefined;
+            const cmd = std.fmt.bufPrintSentinel(&cmd_buf, "export PATH=\"$PATH:/usr/sbin:/sbin:/usr/local/bin:/usr/bin:$HOME/.local/bin\"; cliphist decode {d} | wl-copy", .{item.id}, 0) catch return;
+            sys_status.spawnCmd(cmd);
+        }
 
         self.running = false;
     }
@@ -1015,8 +1038,19 @@ pub const ClipboardPanel = struct {
         const item = self.items.items[actual_idx];
 
         var cmd_buf: [256]u8 = undefined;
-        const cmd = std.fmt.bufPrintSentinel(&cmd_buf, "export PATH=\"$PATH:/usr/sbin:/sbin:/usr/local/bin:/usr/bin:$HOME/.local/bin\"; printf '{d}\\t' | cliphist delete", .{item.id}, 0) catch return;
-        sys_status.spawnCmd(cmd);
+        if (item.id != 999999) {
+            const cmd = std.fmt.bufPrintSentinel(&cmd_buf, "export PATH=\"$PATH:/usr/sbin:/sbin:/usr/local/bin:/usr/bin:$HOME/.local/bin\"; printf '{d}\\t' | cliphist delete", .{item.id}, 0) catch return;
+            sys_status.spawnCmd(cmd);
+        } else {
+            sys_status.spawnCmd("export PATH=\"$PATH:/usr/sbin:/sbin:/usr/local/bin:/usr/bin:$HOME/.local/bin\"; wl-copy --clear 2>/dev/null; wl-copy --primary --clear 2>/dev/null");
+        }
+
+        // If that was the last item or only 1 item remains, clear system clipboard as well
+        if (self.items.items.len <= 1) {
+            sys_status.spawnCmd("export PATH=\"$PATH:/usr/sbin:/sbin:/usr/local/bin:/usr/bin:$HOME/.local/bin\"; wl-copy --clear 2>/dev/null; wl-copy --primary --clear 2>/dev/null");
+            session_cached_count = 0;
+            session_has_cache = false;
+        }
 
         self.decode_cache.remove(item.id);
         self.image_cache.remove(item.id);
@@ -1027,11 +1061,19 @@ pub const ClipboardPanel = struct {
     }
 
     pub fn clearAll(self: *ClipboardPanel) void {
-        sys_status.spawnCmd("export PATH=\"$PATH:/usr/sbin:/sbin:/usr/local/bin:/usr/bin:$HOME/.local/bin\"; cliphist wipe");
+        _ = c.system("export PATH=\"$PATH:/usr/sbin:/sbin:/usr/local/bin:/usr/bin:$HOME/.local/bin\"; cliphist wipe 2>/dev/null; wl-copy --clear 2>/dev/null; wl-copy --primary --clear 2>/dev/null");
+        sys_status.spawnCmd("export PATH=\"$PATH:/usr/sbin:/sbin:/usr/local/bin:/usr/bin:$HOME/.local/bin\"; cliphist wipe; wl-copy --clear 2>/dev/null; wl-copy --primary --clear 2>/dev/null");
         for (self.items.items) |*item| item.deinit(self.allocator);
         self.items.clearRetainingCapacity();
         self.decode_cache.clear();
         self.image_cache.clear();
+        session_cached_count = 0;
+        session_has_cache = false;
+        self.shared.history_lock.lock();
+        self.shared.history_count = 0;
+        self.shared.history_done = false;
+        self.shared.history_lock.unlock();
+        self.selected_index = 0;
         self.updateFilter();
     }
 
@@ -1083,6 +1125,7 @@ pub const ClipboardPanel = struct {
                     switch (area.action) {
                         .none => {},
                         .click_card => |filter_idx| {
+                            self.show_share_view = false;
                             if (self.selected_index == filter_idx) {
                                 if (filter_idx < self.filtered_indices.items.len) {
                                     const actual_idx = self.filtered_indices.items[filter_idx];
@@ -1102,6 +1145,18 @@ pub const ClipboardPanel = struct {
                         .toggle_qr => {
                             self.show_qr = !self.show_qr;
                         },
+                        .toggle_share => {
+                            if (c.mizu_share_is_running() == 0) {
+                                _ = c.mizu_share_start();
+                                self.show_share_view = true;
+                            } else {
+                                self.show_share_view = !self.show_share_view;
+                            }
+                        },
+                        .stop_share => {
+                            c.mizu_share_stop();
+                            self.show_share_view = false;
+                        },
                     }
                     return true;
                 }
@@ -1120,7 +1175,7 @@ pub const ClipboardPanel = struct {
         const total = self.filtered_indices.items.len;
         if (total == 0) return false;
 
-        const visible_rows: usize = 8;
+        const visible_rows: usize = 10;
         const max_scroll = total -| visible_rows;
 
         if (delta > 0) {
@@ -1258,6 +1313,7 @@ pub const ClipboardPanel = struct {
         const title_sz = self.cfg.typography.title * scale;
         const button_sz = self.cfg.typography.button_text * scale;
         const ui_sz = self.cfg.typography.ui * scale;
+        const sec_sz = self.cfg.typography.secondary * scale;
         const col1_w = 460 * scale;
 
         const total_filtered = self.filtered_indices.items.len;
@@ -1325,6 +1381,37 @@ pub const ClipboardPanel = struct {
 
         ui.spacerSized(.{ .grow = .{} }, .{ .fixed = 0 });
 
+        const is_sharing = c.mizu_share_is_running() != 0;
+        const share_hov = ui.hovered("clip-share", 0);
+        _ = ui.open(.{
+            .id = "clip-share",
+            .height = .{ .fixed = @floatFromInt(28 * scale) },
+            .direction = .row,
+            .gap = ui.su(6),
+            .padding = .{ .left = ui.su(8), .right = ui.su(8) },
+            .bg = if (self.show_share_view and is_sharing)
+                Color.init(42, self.cfg.theme.accent.r, self.cfg.theme.accent.g, self.cfg.theme.accent.b)
+            else if (share_hov)
+                self.cfg.theme.elevated
+            else
+                null,
+            .radius = ui.f(6),
+            .border = if (self.show_share_view and is_sharing) ui.su(1) else 0,
+            .border_color = self.cfg.theme.accent,
+            .align_x = .center,
+            .align_y = .center,
+        });
+        ui.icon("connect", 14 * scale, if (is_sharing) self.cfg.theme.accent else (if (share_hov) self.cfg.theme.text_bright else self.cfg.theme.text_muted), 0);
+        ui.text("Share", .{
+            .size = button_sz,
+            .color = if (is_sharing) self.cfg.theme.accent else (if (share_hov) self.cfg.theme.text_bright else self.cfg.theme.text_muted),
+        });
+        ui.text(if (is_sharing) "On" else "Off", .{
+            .size = sec_sz,
+            .color = if (is_sharing) self.cfg.theme.accent else self.cfg.theme.text_muted,
+        });
+        ui.close();
+
         const clear_hov = ui.hovered("clip-clear", 0);
         _ = ui.open(.{
             .id = "clip-clear",
@@ -1379,9 +1466,10 @@ pub const ClipboardPanel = struct {
             .width = .{ .grow = .{} },
             .height = .{ .grow = .{} },
             .direction = .column,
-            .gap = ui.su(6),
+            .gap = ui.su(1),
             .padding = .{ .top = ui.su(10) },
             .clip_vertical = true,
+            .align_y = .top,
         });
 
         if (total_filtered == 0) {
@@ -1405,12 +1493,52 @@ pub const ClipboardPanel = struct {
         } else {
             const visible_rows: usize = 10;
             var r: usize = 0;
+            const count_this_page = @min(visible_rows, total_filtered - self.scroll_offset);
             while (r < visible_rows and (self.scroll_offset + r) < total_filtered) : (r += 1) {
                 const filter_idx = self.scroll_offset + r;
                 const actual_idx = self.filtered_indices.items[filter_idx];
                 const item = self.items.items[actual_idx];
                 const is_selected = (filter_idx == self.selected_index);
                 const card_hov = ui.hovered("clip-card", @intCast(r));
+
+                const row_first = (r == 0);
+                const row_last = (r == count_this_page - 1);
+
+                const row_bg: ?Color = if (is_selected)
+                    Color.init(42, self.cfg.theme.accent.r, self.cfg.theme.accent.g, self.cfg.theme.accent.b)
+                else if (card_hov)
+                    self.cfg.theme.card_hover_bg
+                else
+                    self.cfg.theme.card_bg;
+
+                _ = ui.open(.{
+                    .id = "clip-card",
+                    .index = @intCast(r),
+                    .width = .{ .grow = .{} },
+                    .height = .{ .fixed = @floatFromInt(48 * scale) },
+                    .direction = .row,
+                    .padding = .{ .left = ui.su(12), .right = ui.su(10) },
+                    .gap = ui.su(8),
+                    .bg = row_bg,
+                    .radius_top = if (row_first) ui.f(10) else 0,
+                    .radius_bottom = if (row_last) ui.f(10) else 0,
+                    .align_y = .center,
+                });
+
+                // Dedicated icon slot on left
+                _ = ui.open(.{
+                    .width = .{ .fixed = @floatFromInt(28 * scale) },
+                    .height = .{ .grow = .{} },
+                    .direction = .column,
+                    .align_x = .center,
+                    .align_y = .center,
+                });
+                if (item.clip_type == .image) {
+                    ui.icon("image", 18 * scale, if (is_selected) self.cfg.theme.accent else self.cfg.theme.text_muted, 0);
+                } else {
+                    ui.icon("clipboard", 18 * scale, if (is_selected) self.cfg.theme.accent else self.cfg.theme.text_muted, 0);
+                }
+                ui.close();
 
                 const first_line = if (item.first_line_len > 0) item.first_line[0..item.first_line_len] else item.preview[0..item.preview_len];
                 var clean_buf: [160]u8 = undefined;
@@ -1425,40 +1553,15 @@ pub const ClipboardPanel = struct {
                 const clean_slice = std.mem.trim(u8, clean_buf[0..clean_len], " ");
 
                 var trunc_buf: [160]u8 = undefined;
-                const t_str = truncateStr(target, &self.font, clean_slice, col1_w -| 92 * scale, &trunc_buf);
-
-                _ = ui.open(.{
-                    .id = "clip-card",
-                    .index = @intCast(r),
-                    .width = .{ .grow = .{} },
-                    .height = .{ .fixed = @floatFromInt(52 * scale) },
-                    .direction = .row,
-                    .padding = .{ .left = ui.su(10), .right = ui.su(10) },
-                    .gap = ui.su(6),
-                    .bg = if (is_selected)
-                        Color.init(42, self.cfg.theme.accent.r, self.cfg.theme.accent.g, self.cfg.theme.accent.b)
-                    else if (card_hov)
-                        self.cfg.theme.surface
-                    else
-                        null,
-                    .radius = ui.f(self.cfg.theme.radius_button),
-                    .border = if (is_selected or card_hov) ui.su(1) else 0,
-                    .border_color = if (is_selected)
-                        Color.init(80, self.cfg.theme.accent.r, self.cfg.theme.accent.g, self.cfg.theme.accent.b)
-                    else
-                        self.cfg.theme.border,
-                    .align_y = .center,
-                });
+                const t_str = truncateStr(target, &self.font, clean_slice, col1_w -| 96 * scale, &trunc_buf);
 
                 // Show image info for image items, text preview for text items
                 var display_str: []const u8 = t_str;
-                var has_thumbnail = false;
                 if (item.clip_type == .image) {
                     // Show image label with dimensions instead of binary garbage
                     var img_info_buf: [128]u8 = undefined;
                     const img_str = std.fmt.bufPrint(&img_info_buf, "Image · {d}x{d} · {s}", .{ item.image_width, item.image_height, if (item.image_format.len > 0) item.image_format else "unknown" }) catch "Image";
                     display_str = img_str;
-                    has_thumbnail = true;
                 }
 
                 _ = ui.open(.{
@@ -1467,10 +1570,6 @@ pub const ClipboardPanel = struct {
                     .align_y = .center,
                     .clip_horizontal = true,
                 });
-                if (has_thumbnail and item.clip_type == .image) {
-                    ui.icon("image", 16 * scale, self.cfg.theme.accent, 0);
-                    ui.spacerSized(.{ .fixed = ui.s(6) }, .{ .fixed = 0 });
-                }
                 ui.text(display_str, .{
                     .size = self.cfg.typography.ui * scale,
                     .color = if (is_selected) self.cfg.theme.text_bright else self.cfg.theme.text_main,
@@ -1481,14 +1580,14 @@ pub const ClipboardPanel = struct {
                 _ = ui.open(.{
                     .id = "clip-del",
                     .index = @intCast(r),
-                    .width = .{ .fixed = @floatFromInt(36 * scale) },
-                    .height = .{ .fixed = @floatFromInt(36 * scale) },
+                    .width = .{ .fixed = @floatFromInt(30 * scale) },
+                    .height = .{ .fixed = @floatFromInt(30 * scale) },
                     .bg = if (del_hov) Color.init(45, self.cfg.theme.error_color.r, self.cfg.theme.error_color.g, self.cfg.theme.error_color.b) else null,
-                    .radius = ui.f(5),
+                    .radius = ui.f(6),
                     .align_x = .center,
                     .align_y = .center,
                 });
-                ui.icon("trash", icon_sz, if (del_hov) self.cfg.theme.error_color else Color.init(100, self.cfg.theme.text_muted.r, self.cfg.theme.text_muted.g, self.cfg.theme.text_muted.b), 0);
+                ui.icon("trash", 15 * scale, if (del_hov) self.cfg.theme.error_color else Color.init(90, self.cfg.theme.text_muted.r, self.cfg.theme.text_muted.g, self.cfg.theme.text_muted.b), 0);
                 ui.close();
 
                 ui.close(); // card
@@ -1522,6 +1621,9 @@ pub const ClipboardPanel = struct {
         if (ui.rectOf("clip-clear", 0)) |rect| {
             try self.appendHitRect(rect, iscale, .clear_all);
         }
+        if (ui.rectOf("clip-share", 0)) |rect| {
+            try self.appendHitRect(rect, iscale, .toggle_share);
+        }
         if (total_filtered > 0) {
             const visible_rows: usize = 10;
             var r: usize = 0;
@@ -1554,6 +1656,139 @@ pub const ClipboardPanel = struct {
         });
     }
 
+    fn renderShareView(
+        self: *ClipboardPanel,
+        target: renderer.Renderer,
+        x: i32,
+        y: i32,
+        w: u32,
+        card_h: u32,
+        card_y: i32,
+        scale: u32,
+    ) !void {
+        const iscale: i32 = @intCast(scale);
+        const sec_sz = self.cfg.typography.secondary * scale;
+        const ui_sz = self.cfg.typography.ui * scale;
+
+        icons.drawSvgIcon(
+            target,
+            self.allocator,
+            "connect",
+            16 * scale,
+            scale,
+            x + 10 * iscale,
+            y + 14 * iscale,
+            self.cfg.theme.accent,
+        );
+        target.drawTextWithSize(&self.font, "Mizu Share", x + 24 * iscale, y + 20 * iscale, ui_sz, self.cfg.theme.text_bright);
+
+        const off_btn_w: u32 = 44 * scale;
+        const off_btn_h: u32 = 24 * scale;
+        const off_btn_x = x + @as(i32, @intCast(w)) - @as(i32, @intCast(off_btn_w));
+        const off_btn_y = y + 4 * iscale;
+        const off_hov = self.isAreaHovered(@divTrunc(off_btn_x, iscale), @divTrunc(off_btn_y, iscale), 44, 24);
+
+        target.fillSquircle(off_btn_x, off_btn_y, off_btn_w, off_btn_h, 6 * scale, if (off_hov) self.cfg.theme.elevated else self.cfg.theme.surface);
+        target.drawSquircleBorder(off_btn_x, off_btn_y, off_btn_w, off_btn_h, 6 * scale, 1, self.cfg.theme.border);
+        const off_w = target.measureTextWithSize(&self.font, "Off", sec_sz);
+        target.drawTextWithSize(
+            &self.font,
+            "Off",
+            off_btn_x + @divTrunc(@as(i32, @intCast(off_btn_w)) - @as(i32, @intCast(off_w)), 2),
+            off_btn_y + 17 * iscale,
+            sec_sz,
+            if (off_hov) self.cfg.theme.error_color else self.cfg.theme.text_muted,
+        );
+
+        try self.hit_areas.append(self.allocator, .{
+            .x = @divTrunc(off_btn_x, iscale),
+            .y = @divTrunc(off_btn_y, iscale),
+            .w = 44,
+            .h = 24,
+            .action = .stop_share,
+        });
+
+        target.fillSquircle(x, card_y, w, card_h, 10 * scale, self.cfg.theme.surface);
+        target.drawSquircleBorder(x, card_y, w, card_h, 10 * scale, 1, self.cfg.theme.border);
+
+        const raw_url = c.mizu_share_get_url();
+        const url = if (raw_url != null) std.mem.span(raw_url) else "";
+        if (url.len > 0) {
+            const qr = qrcode.encodeText(url);
+            const quiet_zone: u32 = 2;
+            const total_modules = qr.size + quiet_zone * 2;
+
+            const max_line_w = if (w > 48 * scale) w - 48 * scale else w;
+            var final_lines: [4][]const u8 = undefined;
+            var final_count: usize = 0;
+
+            if (target.measureTextWithSize(&self.font, url, sec_sz) <= max_line_w) {
+                final_lines[0] = url;
+                final_count = 1;
+            } else {
+                var raw_parts: [2][]const u8 = undefined;
+                var raw_part_count: usize = 1;
+                raw_parts[0] = url;
+                if (std.mem.indexOfScalar(u8, url, '?')) |q_idx| {
+                    raw_parts[0] = url[0..q_idx];
+                    raw_parts[1] = url[q_idx..];
+                    raw_part_count = 2;
+                }
+
+                for (raw_parts[0..raw_part_count]) |raw_part| {
+                    var cur = raw_part;
+                    while (cur.len > 0 and final_count < final_lines.len) {
+                        if (target.measureTextWithSize(&self.font, cur, sec_sz) <= max_line_w) {
+                            final_lines[final_count] = cur;
+                            final_count += 1;
+                            break;
+                        }
+                        var split_idx = cur.len;
+                        while (split_idx > 1 and target.measureTextWithSize(&self.font, cur[0..split_idx], sec_sz) > max_line_w) {
+                            split_idx -= 1;
+                        }
+                        final_lines[final_count] = cur[0..split_idx];
+                        final_count += 1;
+                        cur = cur[split_idx..];
+                    }
+                }
+            }
+
+            const text_h: u32 = @intCast(final_count * 18 * scale);
+            const reserved_v: u32 = (40 * scale) + text_h;
+            const max_box = @min(if (w > 48 * scale) w - 48 * scale else w, if (card_h > reserved_v) card_h - reserved_v else card_h);
+            const mod_size = @max(1, max_box / total_modules);
+            const qr_px = total_modules * mod_size;
+            const qr_box_x = x + @divTrunc(@as(i32, @intCast(w)) - @as(i32, @intCast(qr_px)), 2);
+
+            const total_content_h: i32 = @as(i32, @intCast(qr_px + (16 * scale))) + @as(i32, @intCast(text_h));
+            const qr_box_y = card_y + @max(16 * iscale, @divTrunc(@as(i32, @intCast(card_h)) - total_content_h, 2));
+
+            target.fillSquircle(qr_box_x, qr_box_y, qr_px, qr_px, 8 * scale, theme.Color.rgb(255, 255, 255));
+            target.drawSquircleBorder(qr_box_x, qr_box_y, qr_px, qr_px, 8 * scale, 1, theme.Color.rgb(200, 200, 200));
+
+            var qy: u32 = 0;
+            while (qy < qr.size) : (qy += 1) {
+                var qx: u32 = 0;
+                while (qx < qr.size) : (qx += 1) {
+                    if (qr.isDark(qx, qy)) {
+                        const mx = qr_box_x + @as(i32, @intCast((quiet_zone + qx) * mod_size));
+                        const my = qr_box_y + @as(i32, @intCast((quiet_zone + qy) * mod_size));
+                        target.fillRect(mx, my, mod_size, mod_size, theme.Color.rgb(0, 0, 0));
+                    }
+                }
+            }
+
+            var cur_y = qr_box_y + @as(i32, @intCast(qr_px)) + 18 * iscale;
+            for (final_lines[0..final_count]) |ln| {
+                const lw = target.measureTextWithSize(&self.font, ln, sec_sz);
+                const lx = x + @divTrunc(@as(i32, @intCast(w)) - @as(i32, @intCast(lw)), 2);
+                target.drawTextWithSize(&self.font, ln, lx, cur_y, sec_sz, self.cfg.theme.accent);
+                cur_y += 18 * iscale;
+            }
+        }
+    }
+
     fn renderPreviewColumn(
         self: *ClipboardPanel,
         target: renderer.Renderer,
@@ -1571,6 +1806,11 @@ pub const ClipboardPanel = struct {
         const sec_sz = self.cfg.typography.secondary * scale;
         const ui_sz = self.cfg.typography.ui * scale;
         const heading_sz = self.cfg.typography.heading * scale;
+
+        if (self.show_share_view and c.mizu_share_is_running() != 0) {
+            try self.renderShareView(target, x, y, w, card_h, card_y, scale);
+            return;
+        }
 
         if (selected_actual_idx == null or selected_actual_idx.? >= self.items.items.len) {
             target.fillSquircle(x, card_y, w, card_h, 10 * scale, self.cfg.theme.surface);
@@ -2368,6 +2608,46 @@ test "Clipboard repeated opening and closing with session cache" {
     }
 }
 
+test "Clipboard clearAll clears all items, caches and state" {
+    const allocator = std.testing.allocator;
+    var cfg = config.Config.init(allocator);
+    defer cfg.deinit(allocator);
+
+    session_has_cache = true;
+    session_cached_count = 5;
+
+    var panel = ClipboardPanel{
+        .allocator = allocator,
+        .cfg = cfg,
+        .font = undefined,
+        .items = std.ArrayList(ClipItem).empty,
+        .filtered_indices = std.ArrayList(usize).empty,
+        .input = text_input.TextInput.init(allocator, "Search...", false),
+        .hit_areas = std.ArrayList(ClipHitArea).empty,
+        .shared = try SharedWorkerContext.create(allocator),
+    };
+    defer {
+        panel.shared.release();
+        panel.hit_areas.deinit(allocator);
+        panel.filtered_indices.deinit(allocator);
+        panel.input.deinit();
+        panel.items.deinit(allocator);
+    }
+
+    try panel.items.append(allocator, .{ .id = 1 });
+    try panel.items.append(allocator, .{ .id = 2 });
+    panel.updateFilter();
+    try std.testing.expectEqual(@as(usize, 2), panel.items.items.len);
+    try std.testing.expectEqual(@as(usize, 2), panel.filtered_indices.items.len);
+
+    panel.clearAll();
+
+    try std.testing.expectEqual(@as(usize, 0), panel.items.items.len);
+    try std.testing.expectEqual(@as(usize, 0), panel.filtered_indices.items.len);
+    try std.testing.expectEqual(@as(usize, 0), session_cached_count);
+    try std.testing.expect(!session_has_cache);
+}
+
 fn getMonotonicNs() i128 {
     var ts: c.struct_timespec = undefined;
     _ = c.clock_gettime(c.CLOCK_MONOTONIC, &ts);
@@ -2385,7 +2665,7 @@ test "Clipboard performance latency measurements" {
     defer panel.deinit();
     var t1 = getMonotonicNs();
     const init_us = @as(f64, @floatFromInt(t1 - t0)) / 1000.0;
-    std.debug.print("\n[BENCHMARK] Panel init latency: {d:.2} µs ({d:.3} ms)\n", .{ init_us, init_us / 1000.0 });
+    _ = init_us;
 
     // 2. Measure immediate first frame render time (using fake renderer buffer)
     const render_pixels = try allocator.alloc(u32, panel.width * panel.height);
@@ -2396,7 +2676,7 @@ test "Clipboard performance latency measurements" {
     try panel.render(rend, 1);
     t1 = getMonotonicNs();
     const first_render_us = @as(f64, @floatFromInt(t1 - t0)) / 1000.0;
-    std.debug.print("[BENCHMARK] First frame render (loading state) latency: {d:.2} µs ({d:.3} ms)\n", .{ first_render_us, first_render_us / 1000.0 });
+    _ = first_render_us;
 
     // 3. Measure time for background history delivery via eventfd
     t0 = getMonotonicNs();
@@ -2420,14 +2700,14 @@ test "Clipboard performance latency measurements" {
     }
     t1 = getMonotonicNs();
     const history_us = @as(f64, @floatFromInt(t1 - t0)) / 1000.0;
-    std.debug.print("[BENCHMARK] Live history load & filter latency: {d:.2} µs ({d:.3} ms) (items: {d})\n", .{ history_us, history_us / 1000.0, panel.items.items.len });
+    _ = history_us;
 
     // 4. Measure render time with items loaded
     t0 = getMonotonicNs();
     try panel.render(rend, 1);
     t1 = getMonotonicNs();
     const populated_render_us = @as(f64, @floatFromInt(t1 - t0)) / 1000.0;
-    std.debug.print("[BENCHMARK] Populated panel render latency: {d:.2} µs ({d:.3} ms)\n", .{ populated_render_us, populated_render_us / 1000.0 });
+    _ = populated_render_us;
 
     // 5. Measure decode delivery via eventfd
     t0 = getMonotonicNs();
@@ -2443,16 +2723,13 @@ test "Clipboard performance latency measurements" {
         }
     }
     t1 = getMonotonicNs();
-    const decode_us = @as(f64, @floatFromInt(t1 - t0)) / 1000.0;
-    std.debug.print("[BENCHMARK] Live selected item decode latency: {d:.2} µs ({d:.3} ms)\n", .{ decode_us, decode_us / 1000.0 });
+    _ = t1 - t0;
 
     // 6. Measure cached preview lookup latency
     if (panel.getSelectedId()) |sel_id| {
         t0 = getMonotonicNs();
-        const cached = panel.decode_cache.get(sel_id);
+        _ = panel.decode_cache.get(sel_id);
         t1 = getMonotonicNs();
-        const cache_lookup_ns = t1 - t0;
-        std.debug.print("[BENCHMARK] Cached preview lookup latency: {d} ns (cached: {})\n", .{ cache_lookup_ns, cached != null });
     }
 
     // 7. Measure incremental filtering latency over 500 items
@@ -2486,16 +2763,14 @@ test "Clipboard performance latency measurements" {
     try panel_filt.input.insertBytes("gitlab");
     panel_filt.updateFilter();
     t1 = getMonotonicNs();
-    const filter_us = @as(f64, @floatFromInt(t1 - t0)) / 1000.0;
-    std.debug.print("[BENCHMARK] Filter 500 items latency: {d:.2} µs ({d:.3} ms)\n", .{ filter_us, filter_us / 1000.0 });
+    _ = t1 - t0;
 
     // 8. Measure instant closing time during in-flight operations
     var panel_closing = try ClipboardPanel.init(allocator, cfg);
     t0 = getMonotonicNs();
     panel_closing.deinit();
     t1 = getMonotonicNs();
-    const deinit_us = @as(f64, @floatFromInt(t1 - t0)) / 1000.0;
-    std.debug.print("[BENCHMARK] Panel deinit (closing during decode/history) latency: {d:.2} µs ({d:.3} ms)\n\n", .{ deinit_us, deinit_us / 1000.0 });
+    _ = t1 - t0;
 
     // Allow detached background threads in this unit test to finish exiting cleanly
     _ = c.usleep(150000);
@@ -2520,4 +2795,146 @@ test "ImageCache enforces byte budget and evicts LRU" {
     try std.testing.expect(cache.total_bytes <= ImageCache.max_bytes);
     try std.testing.expect(cache.get(1) == null);
     try std.testing.expect(cache.get(5) != null);
+}
+
+test "Mizu Share embedded server start, share view, and stop" {
+    const allocator = std.testing.allocator;
+    var cfg = config.Config.init(allocator);
+    defer cfg.deinit(allocator);
+
+    const shared = try SharedWorkerContext.create(allocator);
+    defer shared.release();
+
+    var panel = ClipboardPanel{
+        .allocator = allocator,
+        .cfg = cfg,
+        .font = undefined,
+        .items = std.ArrayList(ClipItem).empty,
+        .filtered_indices = std.ArrayList(usize).empty,
+        .input = text_input.TextInput.init(allocator, "Search...", false),
+        .hit_areas = std.ArrayList(ClipHitArea).empty,
+        .shared = shared,
+    };
+
+    c.mizu_share_stop();
+    try std.testing.expectEqual(@as(c_int, 0), c.mizu_share_is_running());
+    try std.testing.expect(!panel.show_share_view);
+
+    try std.testing.expectEqual(@as(c_int, 0), c.mizu_share_start());
+    panel.show_share_view = true;
+    try std.testing.expectEqual(@as(c_int, 1), c.mizu_share_is_running());
+
+    const url_ptr = c.mizu_share_get_url();
+    try std.testing.expect(url_ptr != null);
+    const url = std.mem.span(url_ptr);
+    try std.testing.expect(std.mem.startsWith(u8, url, "http://"));
+    try std.testing.expect(std.mem.indexOf(u8, url, "?token=") != null);
+
+    panel.hit_areas.deinit(allocator);
+    panel.filtered_indices.deinit(allocator);
+    panel.input.deinit();
+    try std.testing.expectEqual(@as(c_int, 1), c.mizu_share_is_running());
+
+    // Panel is reopened while share is still running in background
+    var panel2 = ClipboardPanel{
+        .allocator = allocator,
+        .cfg = cfg,
+        .font = undefined,
+        .items = std.ArrayList(ClipItem).empty,
+        .filtered_indices = std.ArrayList(usize).empty,
+        .input = text_input.TextInput.init(allocator, "Search...", false),
+        .hit_areas = std.ArrayList(ClipHitArea).empty,
+        .shared = shared,
+    };
+    defer {
+        panel2.hit_areas.deinit(allocator);
+        panel2.filtered_indices.deinit(allocator);
+        panel2.input.deinit();
+    }
+
+    try std.testing.expect(!panel2.show_share_view);
+    try std.testing.expectEqual(@as(c_int, 1), c.mizu_share_is_running());
+
+    // User clicks Share button: toggles share view on without stopping server
+    if (c.mizu_share_is_running() == 0) {
+        _ = c.mizu_share_start();
+        panel2.show_share_view = true;
+    } else {
+        panel2.show_share_view = !panel2.show_share_view;
+    }
+    try std.testing.expect(panel2.show_share_view);
+    try std.testing.expectEqual(@as(c_int, 1), c.mizu_share_is_running());
+
+    // User clicks Off button on preview side: stops server
+    c.mizu_share_stop();
+    panel2.show_share_view = false;
+    c.mizu_share_stop();
+    try std.testing.expectEqual(@as(c_int, 0), c.mizu_share_is_running());
+    const token_ptr = c.mizu_share_get_token();
+    try std.testing.expect(token_ptr != null);
+    try std.testing.expectEqual(@as(usize, 0), std.mem.span(token_ptr).len);
+}
+
+test "Mizu Share HTTP endpoints and security" {
+    try std.testing.expectEqual(@as(c_int, 0), c.mizu_share_start());
+    defer c.mizu_share_stop();
+
+    const url_ptr = c.mizu_share_get_url();
+    try std.testing.expect(url_ptr != null);
+    const url = std.mem.span(url_ptr);
+
+    var cmd_buf: [512]u8 = undefined;
+    const cmd1 = try std.fmt.bufPrintSentinel(&cmd_buf, "curl -s -o /dev/null -w '%{{http_code}}' '{s}'", .{url}, 0);
+    if (c.popen(cmd1.ptr, "r")) |p| {
+        defer _ = c.pclose(p);
+        var res_buf: [16]u8 = undefined;
+        if (c.fgets(&res_buf, @intCast(res_buf.len), p) != null) {
+            const code = std.mem.trim(u8, std.mem.span(@as([*:0]const u8, @ptrCast(&res_buf))), " \r\n");
+            try std.testing.expectEqualStrings("200", code);
+        }
+    }
+
+    const qpos = std.mem.indexOfScalar(u8, url, '?').?;
+    const base_url = url[0..qpos];
+    const cmd2 = try std.fmt.bufPrintSentinel(&cmd_buf, "curl -s -o /dev/null -w '%{{http_code}}' '{s}'", .{base_url}, 0);
+    if (c.popen(cmd2.ptr, "r")) |p| {
+        defer _ = c.pclose(p);
+        var res_buf: [16]u8 = undefined;
+        if (c.fgets(&res_buf, @intCast(res_buf.len), p) != null) {
+            const code = std.mem.trim(u8, std.mem.span(@as([*:0]const u8, @ptrCast(&res_buf))), " \r\n");
+            try std.testing.expectEqualStrings("403", code);
+        }
+    }
+
+    var text_url_buf: [512]u8 = undefined;
+    const text_url = try std.fmt.bufPrintSentinel(&text_url_buf, "{s}api/text?{s}", .{ base_url, url[qpos + 1 ..] }, 0);
+    const cmd3 = try std.fmt.bufPrintSentinel(&cmd_buf, "curl -s -X POST -d 'Hello from Mobile' '{s}'", .{text_url}, 0);
+    if (c.popen(cmd3.ptr, "r")) |p| {
+        defer _ = c.pclose(p);
+        var res_buf: [64]u8 = undefined;
+        if (c.fgets(&res_buf, @intCast(res_buf.len), p) != null) {
+            const resp = std.mem.span(@as([*:0]const u8, @ptrCast(&res_buf)));
+            try std.testing.expect(std.mem.indexOf(u8, resp, "\"ok\":true") != null);
+        }
+    }
+
+    var upload_url_buf: [512]u8 = undefined;
+    const upload_url = try std.fmt.bufPrintSentinel(&upload_url_buf, "{s}api/upload?{s}", .{ base_url, url[qpos + 1 ..] }, 0);
+    const cmd4 = try std.fmt.bufPrintSentinel(&cmd_buf, "curl -s -X POST -H 'X-Filename: mizu_test_share.txt' -d 'Testing Mizu Upload' '{s}'", .{upload_url}, 0);
+    if (c.popen(cmd4.ptr, "r")) |p| {
+        defer _ = c.pclose(p);
+        var res_buf: [128]u8 = undefined;
+        if (c.fgets(&res_buf, @intCast(res_buf.len), p) != null) {
+            const resp = std.mem.span(@as([*:0]const u8, @ptrCast(&res_buf)));
+            try std.testing.expect(std.mem.indexOf(u8, resp, "\"ok\":true") != null);
+        }
+    }
+
+    if (c.getenv("HOME")) |home_ptr| {
+        const home = std.mem.span(home_ptr);
+        var clean_path: [512]u8 = undefined;
+        if (std.fmt.bufPrintSentinel(&clean_path, "{s}/Downloads/MizuShare/mizu_test_share.txt", .{home}, 0)) |p| {
+            _ = c.unlink(p.ptr);
+        } else |_| {}
+    }
 }

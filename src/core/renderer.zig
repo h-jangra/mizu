@@ -590,7 +590,11 @@ pub const Image = struct {
 
         c.jpeg_stdio_src(&cinfo, fp);
         if (c.jpeg_read_header(&cinfo, 1) != c.JPEG_HEADER_OK) return null;
-        cinfo.out_color_space = c.JCS_RGB;
+        if (cinfo.jpeg_color_space == c.JCS_CMYK or cinfo.jpeg_color_space == c.JCS_YCCK) {
+            cinfo.out_color_space = c.JCS_CMYK;
+        } else {
+            cinfo.out_color_space = c.JCS_RGB;
+        }
         _ = c.jpeg_start_decompress(&cinfo);
 
         const width: u32 = cinfo.output_width;
@@ -601,22 +605,41 @@ pub const Image = struct {
         const pixels = try allocator.alloc(u32, pixel_count);
         errdefer allocator.free(pixels);
 
-        const row_stride = @as(usize, cinfo.output_width) * @as(usize, @intCast(cinfo.output_components));
+        const components: usize = @intCast(cinfo.output_components);
+        const row_stride = @as(usize, cinfo.output_width) * components;
         const row_buffer = try allocator.alloc(u8, row_stride);
         defer allocator.free(row_buffer);
 
         var row_ptrs = [_][*c]u8{row_buffer.ptr};
 
         var cur_y: u32 = 0;
-        while (cinfo.output_scanline < cinfo.output_height) {
+        while (cinfo.output_scanline < cinfo.output_height and cur_y < height) {
             _ = c.jpeg_read_scanlines(&cinfo, &row_ptrs, 1);
             const dst_offset = @as(usize, cur_y) * @as(usize, width);
             var x: usize = 0;
-            while (x < width) : (x += 1) {
-                const r: u32 = row_buffer[x * 3 + 0];
-                const g: u32 = row_buffer[x * 3 + 1];
-                const b: u32 = row_buffer[x * 3 + 2];
-                pixels[dst_offset + x] = (0xFF << 24) | (r << 16) | (g << 8) | b;
+            if (components == 3) {
+                while (x < width) : (x += 1) {
+                    const r: u32 = row_buffer[x * 3 + 0];
+                    const g: u32 = row_buffer[x * 3 + 1];
+                    const b: u32 = row_buffer[x * 3 + 2];
+                    pixels[dst_offset + x] = (0xFF << 24) | (r << 16) | (g << 8) | b;
+                }
+            } else if (components == 1) {
+                while (x < width) : (x += 1) {
+                    const g: u32 = row_buffer[x];
+                    pixels[dst_offset + x] = (0xFF << 24) | (g << 16) | (g << 8) | g;
+                }
+            } else if (components >= 4) {
+                while (x < width) : (x += 1) {
+                    const c_val: u32 = row_buffer[x * components + 0];
+                    const m_val: u32 = row_buffer[x * components + 1];
+                    const y_val: u32 = row_buffer[x * components + 2];
+                    const k_val: u32 = row_buffer[x * components + 3];
+                    const r: u32 = (c_val * k_val) / 255;
+                    const g: u32 = (m_val * k_val) / 255;
+                    const b: u32 = (y_val * k_val) / 255;
+                    pixels[dst_offset + x] = (0xFF << 24) | (r << 16) | (g << 8) | b;
+                }
             }
             cur_y += 1;
         }
@@ -655,9 +678,9 @@ pub const Image = struct {
     }
 
     pub fn loadFile(allocator: std.mem.Allocator, path: []const u8) !?*Image {
-        if (std.mem.endsWith(u8, path, ".png")) {
+        if (std.ascii.endsWithIgnoreCase(path, ".png")) {
             return loadPng(allocator, path);
-        } else if (std.mem.endsWith(u8, path, ".jpg") or std.mem.endsWith(u8, path, ".jpeg")) {
+        } else if (std.ascii.endsWithIgnoreCase(path, ".jpg") or std.ascii.endsWithIgnoreCase(path, ".jpeg") or std.ascii.endsWithIgnoreCase(path, ".jfif")) {
             return loadJpeg(allocator, path);
         }
 
@@ -836,7 +859,11 @@ pub const Image = struct {
         cinfo.src = &src_mgr;
 
         if (c.jpeg_read_header(&cinfo, 1) != c.JPEG_HEADER_OK) return null;
-        cinfo.out_color_space = c.JCS_RGB;
+        if (cinfo.jpeg_color_space == c.JCS_CMYK or cinfo.jpeg_color_space == c.JCS_YCCK) {
+            cinfo.out_color_space = c.JCS_CMYK;
+        } else {
+            cinfo.out_color_space = c.JCS_RGB;
+        }
         _ = c.jpeg_start_decompress(&cinfo);
 
         const width: u32 = cinfo.output_width;
@@ -847,22 +874,41 @@ pub const Image = struct {
         const pixels = try allocator.alloc(u32, pixel_count);
         errdefer allocator.free(pixels);
 
-        const row_stride = @as(usize, cinfo.output_width) * @as(usize, @intCast(cinfo.output_components));
+        const components: usize = @intCast(cinfo.output_components);
+        const row_stride = @as(usize, cinfo.output_width) * components;
         const row_buffer = try allocator.alloc(u8, row_stride);
         defer allocator.free(row_buffer);
 
         var row_ptrs = [_][*c]u8{row_buffer.ptr};
 
         var cur_y: u32 = 0;
-        while (cinfo.output_scanline < cinfo.output_height) {
+        while (cinfo.output_scanline < cinfo.output_height and cur_y < height) {
             _ = c.jpeg_read_scanlines(&cinfo, &row_ptrs, 1);
             const dst_offset = @as(usize, cur_y) * @as(usize, width);
             var x: usize = 0;
-            while (x < width) : (x += 1) {
-                const r: u32 = row_buffer[x * 3 + 0];
-                const g: u32 = row_buffer[x * 3 + 1];
-                const b: u32 = row_buffer[x * 3 + 2];
-                pixels[dst_offset + x] = (0xFF << 24) | (r << 16) | (g << 8) | b;
+            if (components == 3) {
+                while (x < width) : (x += 1) {
+                    const r: u32 = row_buffer[x * 3 + 0];
+                    const g: u32 = row_buffer[x * 3 + 1];
+                    const b: u32 = row_buffer[x * 3 + 2];
+                    pixels[dst_offset + x] = (0xFF << 24) | (r << 16) | (g << 8) | b;
+                }
+            } else if (components == 1) {
+                while (x < width) : (x += 1) {
+                    const g: u32 = row_buffer[x];
+                    pixels[dst_offset + x] = (0xFF << 24) | (g << 16) | (g << 8) | g;
+                }
+            } else if (components >= 4) {
+                while (x < width) : (x += 1) {
+                    const c_val: u32 = row_buffer[x * components + 0];
+                    const m_val: u32 = row_buffer[x * components + 1];
+                    const y_val: u32 = row_buffer[x * components + 2];
+                    const k_val: u32 = row_buffer[x * components + 3];
+                    const r: u32 = (c_val * k_val) / 255;
+                    const g: u32 = (m_val * k_val) / 255;
+                    const b: u32 = (y_val * k_val) / 255;
+                    pixels[dst_offset + x] = (0xFF << 24) | (r << 16) | (g << 8) | b;
+                }
             }
             cur_y += 1;
         }
@@ -2071,18 +2117,24 @@ pub const Renderer = struct {
         var dy = y0;
         while (dy < y1) : (dy += 1) {
             const src_y_f = (@as(f64, @floatFromInt(dy)) - dest_y) * scale_y;
+            if (src_y_f < -0.5 or src_y_f > @as(f64, @floatFromInt(img.height)) - 0.5) continue;
+
             const src_y0 = @max(0.0, src_y_f - 0.5);
-            const src_y1 = @min(@as(f64, @floatFromInt(img.height)) - 0.5, src_y_f + 0.5);
+            const src_y1 = @min(@as(f64, @floatFromInt(img.height - 1)), @max(0.0, src_y_f + 0.5));
             const y0_i = @as(u32, @intFromFloat(@max(0.0, @floor(src_y0))));
-            const y1_i = @as(u32, @min(@as(u32, @intFromFloat(@ceil(src_y1))), img.height - 1));
+            const y1_i = @as(u32, @min(@as(u32, @intFromFloat(@max(0.0, @ceil(src_y1)))), img.height - 1));
+            if (y0_i > y1_i) continue;
 
             var dx = x0;
             while (dx < x1) : (dx += 1) {
                 const src_x_f = (@as(f64, @floatFromInt(dx)) - dest_x) * scale_x;
+                if (src_x_f < -0.5 or src_x_f > @as(f64, @floatFromInt(img.width)) - 0.5) continue;
+
                 const src_x0 = @max(0.0, src_x_f - 0.5);
-                const src_x1 = @min(@as(f64, @floatFromInt(img.width)) - 0.5, src_x_f + 0.5);
+                const src_x1 = @min(@as(f64, @floatFromInt(img.width - 1)), @max(0.0, src_x_f + 0.5));
                 const x0_i = @as(u32, @intFromFloat(@max(0.0, @floor(src_x0))));
-                const x1_i = @as(u32, @min(@as(u32, @intFromFloat(@ceil(src_x1))), img.width - 1));
+                const x1_i = @as(u32, @min(@as(u32, @intFromFloat(@max(0.0, @ceil(src_x1)))), img.width - 1));
+                if (x0_i > x1_i) continue;
 
                 var sum_r: f64 = 0;
                 var sum_g: f64 = 0;
