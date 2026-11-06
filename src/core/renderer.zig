@@ -1275,7 +1275,7 @@ pub const Renderer = struct {
         const max_a = @as(f32, @floatFromInt(shadow_color.a));
 
         var step: u32 = 1;
-        while (step <= blur) : (step += 1) {
+        while (step <= blur) : (step += 2) {
             const expand = @as(i32, @intCast(step));
             const cur_x = x - expand;
             const cur_y = y - expand + y_offset;
@@ -1285,12 +1285,12 @@ pub const Renderer = struct {
             // Smooth quadratic falloff curve:
             const t = @as(f32, @floatFromInt(blur + 1 - step)) / (blur_f + 1.0);
             const factor = t * t;
-            const alpha_val = @as(u32, @intFromFloat(max_a * factor * 0.40));
+            const alpha_val = @as(u32, @intFromFloat(max_a * factor * 0.70));
 
             if (alpha_val > 0) {
                 var col = shadow_color;
                 col.a = @intCast(@min(255, alpha_val));
-                self.drawRoundedBorder(cur_x, cur_y, cur_w, cur_h, radius + @as(u32, @intCast(expand)), 1, col);
+                self.drawRoundedBorder(cur_x, cur_y, cur_w, cur_h, radius + @as(u32, @intCast(expand)), 2, col);
             }
         }
     }
@@ -1839,14 +1839,23 @@ pub const Renderer = struct {
         }
 
         const step_f: f32 = @floatFromInt(steps);
-        const x_inc = @as(f32, @floatFromInt(x1 - x0)) / step_f;
-        const y_inc = @as(f32, @floatFromInt(y1 - y0)) / step_f;
+        const step_dist: f32 = @max(1.0, @as(f32, @floatCast(radius)) * 0.65);
+        const num_steps: i32 = @intFromFloat(@ceil(step_f / step_dist));
+
+        if (num_steps <= 0) {
+            self.fillCircle(@floatFromInt(x0), @floatFromInt(y0), radius, col);
+            return;
+        }
+
+        const num_steps_f = @as(f32, @floatFromInt(num_steps));
+        const x_inc = @as(f32, @floatFromInt(x1 - x0)) / num_steps_f;
+        const y_inc = @as(f32, @floatFromInt(y1 - y0)) / num_steps_f;
 
         var curr_x: f32 = @floatFromInt(x0);
         var curr_y: f32 = @floatFromInt(y0);
 
         var i: i32 = 0;
-        while (i <= steps) : (i += 1) {
+        while (i <= num_steps) : (i += 1) {
             self.fillCircle(@floatCast(curr_x), @floatCast(curr_y), radius, col);
             curr_x += x_inc;
             curr_y += y_inc;
@@ -2109,70 +2118,112 @@ pub const Renderer = struct {
         const y1 = @min(@as(i32, @intCast(self.height)), @as(i32, @intFromFloat(dest_y + dest_h)));
         if (x0 >= x1 or y0 >= y1) return;
 
+        const stride_pixels = @as(usize, self.stride) / 4;
+
+        // Fast 1:1 unscaled scanline path (e.g. screenshot at 100% zoom)
+        if (@abs(dest_w - @as(f64, @floatFromInt(img.width))) < 0.001 and @abs(dest_h - @as(f64, @floatFromInt(img.height))) < 0.001) {
+            const dest_xi = @as(i32, @intFromFloat(@round(dest_x)));
+            const dest_yi = @as(i32, @intFromFloat(@round(dest_y)));
+            const copy_w = @as(usize, @intCast(x1 - x0));
+            var dy = y0;
+            while (dy < y1) : (dy += 1) {
+                const sy = dy - dest_yi;
+                if (sy < 0 or sy >= @as(i32, @intCast(img.height))) continue;
+                const sx0 = x0 - dest_xi;
+                if (sx0 < 0 or sx0 + (x1 - x0) > @as(i32, @intCast(img.width))) continue;
+                const src_start = @as(usize, @intCast(sy)) * @as(usize, img.width) + @as(usize, @intCast(sx0));
+                const dst_start = @as(usize, @intCast(dy)) * stride_pixels + @as(usize, @intCast(x0));
+                const src_slice = img.pixels[src_start .. src_start + copy_w];
+                const dst_slice = self.pixels[dst_start .. dst_start + copy_w];
+
+                var all_opaque = true;
+                for (src_slice) |p| {
+                    if ((p >> 24) != 0xFF) {
+                        all_opaque = false;
+                        break;
+                    }
+                }
+                if (all_opaque) {
+                    @memcpy(dst_slice, src_slice);
+                } else {
+                    for (src_slice, 0..) |sp, idx| {
+                        const a = sp >> 24;
+                        if (a == 255) {
+                            dst_slice[idx] = sp;
+                        } else if (a > 0) {
+                            dst_slice[idx] = blendOver(dst_slice[idx], Color.fromArgb(sp));
+                        }
+                    }
+                }
+            }
+            return;
+        }
+
         const scale_x = @as(f64, @floatFromInt(img.width)) / dest_w;
         const scale_y = @as(f64, @floatFromInt(img.height)) / dest_h;
 
-        const stride_pixels = @as(usize, self.stride) / 4;
-
+        // Fast 4-tap bilinear interpolation for scaled image
         var dy = y0;
         while (dy < y1) : (dy += 1) {
             const src_y_f = (@as(f64, @floatFromInt(dy)) - dest_y) * scale_y;
-            if (src_y_f < -0.5 or src_y_f > @as(f64, @floatFromInt(img.height)) - 0.5) continue;
+            if (src_y_f < 0.0 or src_y_f >= @as(f64, @floatFromInt(img.height))) continue;
 
-            const src_y0 = @max(0.0, src_y_f - 0.5);
-            const src_y1 = @min(@as(f64, @floatFromInt(img.height - 1)), @max(0.0, src_y_f + 0.5));
-            const y0_i = @as(u32, @intFromFloat(@max(0.0, @floor(src_y0))));
-            const y1_i = @as(u32, @min(@as(u32, @intFromFloat(@max(0.0, @ceil(src_y1)))), img.height - 1));
-            if (y0_i > y1_i) continue;
+            const sy0 = @as(usize, @intFromFloat(src_y_f));
+            const sy1 = @min(sy0 + 1, @as(usize, img.height - 1));
+            const fy = @as(f32, @floatCast(src_y_f - @as(f64, @floatFromInt(sy0))));
+            const ify = 1.0 - fy;
+
+            const row0 = sy0 * @as(usize, img.width);
+            const row1 = sy1 * @as(usize, img.width);
+            const dst_row = @as(usize, @intCast(dy)) * stride_pixels;
 
             var dx = x0;
             while (dx < x1) : (dx += 1) {
                 const src_x_f = (@as(f64, @floatFromInt(dx)) - dest_x) * scale_x;
-                if (src_x_f < -0.5 or src_x_f > @as(f64, @floatFromInt(img.width)) - 0.5) continue;
+                if (src_x_f < 0.0 or src_x_f >= @as(f64, @floatFromInt(img.width))) continue;
 
-                const src_x0 = @max(0.0, src_x_f - 0.5);
-                const src_x1 = @min(@as(f64, @floatFromInt(img.width - 1)), @max(0.0, src_x_f + 0.5));
-                const x0_i = @as(u32, @intFromFloat(@max(0.0, @floor(src_x0))));
-                const x1_i = @as(u32, @min(@as(u32, @intFromFloat(@max(0.0, @ceil(src_x1)))), img.width - 1));
-                if (x0_i > x1_i) continue;
+                const sx0 = @as(usize, @intFromFloat(src_x_f));
+                const sx1 = @min(sx0 + 1, @as(usize, img.width - 1));
+                const fx = @as(f32, @floatCast(src_x_f - @as(f64, @floatFromInt(sx0))));
+                const ifx = 1.0 - fx;
 
-                var sum_r: f64 = 0;
-                var sum_g: f64 = 0;
-                var sum_b: f64 = 0;
-                var sum_a: f64 = 0;
-                var weight: f64 = 0;
+                const w00 = ifx * ify;
+                const w10 = fx * ify;
+                const w01 = ifx * fy;
+                const w11 = fx * fy;
 
-                const y_start = @max(y0_i, @as(u32, 0));
-                const y_end = @min(y1_i, img.height - 1);
-                for (y_start..y_end + 1) |sy| {
-                    const fy = @as(f64, @floatFromInt(sy)) - src_y_f;
-                    const wy = @max(0.0, 1.0 - @abs(fy));
-                    const x_start = @max(x0_i, @as(u32, 0));
-                    const x_end = @min(x1_i, img.width - 1);
-                    for (x_start..x_end + 1) |sx| {
-                        const fx = @as(f64, @floatFromInt(sx)) - src_x_f;
-                        const wx = @max(0.0, 1.0 - @abs(fx));
-                        const w = wx * wy;
-                        const src_pixel = img.pixels[@as(usize, sy) * @as(usize, img.width) + @as(usize, sx)];
-                        const sa = @as(f64, @floatFromInt(@as(u8, @truncate((src_pixel >> 24) & 0xFF))));
-                        const sr = @as(f64, @floatFromInt(@as(u8, @truncate((src_pixel >> 16) & 0xFF))));
-                        const sg = @as(f64, @floatFromInt(@as(u8, @truncate((src_pixel >> 8) & 0xFF))));
-                        const sb = @as(f64, @floatFromInt(@as(u8, @truncate(src_pixel & 0xFF))));
-                        sum_a += sa * w;
-                        sum_r += sr * w;
-                        sum_g += sg * w;
-                        sum_b += sb * w;
-                        weight += w;
-                    }
-                }
+                const p00 = img.pixels[row0 + sx0];
+                const p10 = img.pixels[row0 + sx1];
+                const p01 = img.pixels[row1 + sx0];
+                const p11 = img.pixels[row1 + sx1];
 
-                if (weight > 0) {
-                    const out_a = @as(u8, @intFromFloat(@max(0.0, @min(255.0, sum_a / weight))));
-                    const out_r = @as(u8, @intFromFloat(@max(0.0, @min(255.0, sum_r / weight))));
-                    const out_g = @as(u8, @intFromFloat(@max(0.0, @min(255.0, sum_g / weight))));
-                    const out_b = @as(u8, @intFromFloat(@max(0.0, @min(255.0, sum_b / weight))));
-                    const dst_idx = @as(usize, @intCast(dy)) * stride_pixels + @as(usize, @intCast(dx));
-                    self.pixels[dst_idx] = blendOver(self.pixels[dst_idx], Color.init(out_a, out_r, out_g, out_b));
+                const a = @as(f32, @floatFromInt(p00 >> 24)) * w00 +
+                    @as(f32, @floatFromInt(p10 >> 24)) * w10 +
+                    @as(f32, @floatFromInt(p01 >> 24)) * w01 +
+                    @as(f32, @floatFromInt(p11 >> 24)) * w11;
+                const r = @as(f32, @floatFromInt((p00 >> 16) & 0xFF)) * w00 +
+                    @as(f32, @floatFromInt((p10 >> 16) & 0xFF)) * w10 +
+                    @as(f32, @floatFromInt((p01 >> 16) & 0xFF)) * w01 +
+                    @as(f32, @floatFromInt((p11 >> 16) & 0xFF)) * w11;
+                const g = @as(f32, @floatFromInt((p00 >> 8) & 0xFF)) * w00 +
+                    @as(f32, @floatFromInt((p10 >> 8) & 0xFF)) * w10 +
+                    @as(f32, @floatFromInt((p01 >> 8) & 0xFF)) * w01 +
+                    @as(f32, @floatFromInt((p11 >> 8) & 0xFF)) * w11;
+                const b = @as(f32, @floatFromInt(p00 & 0xFF)) * w00 +
+                    @as(f32, @floatFromInt(p10 & 0xFF)) * w10 +
+                    @as(f32, @floatFromInt(p01 & 0xFF)) * w01 +
+                    @as(f32, @floatFromInt(p11 & 0xFF)) * w11;
+
+                const out_col = (@as(u32, @intFromFloat(a)) << 24) |
+                    (@as(u32, @intFromFloat(r)) << 16) |
+                    (@as(u32, @intFromFloat(g)) << 8) |
+                    @as(u32, @intFromFloat(b));
+
+                const dst_idx = dst_row + @as(usize, @intCast(dx));
+                if ((out_col >> 24) == 255) {
+                    self.pixels[dst_idx] = out_col;
+                } else {
+                    self.pixels[dst_idx] = blendOver(self.pixels[dst_idx], Color.fromArgb(out_col));
                 }
             }
         }

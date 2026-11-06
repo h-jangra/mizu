@@ -1321,9 +1321,21 @@ pub const QuickSettings = struct {
             .align_y = .center,
         });
 
-        // Rounded-square accent-colored icon container
-        const icon_bg = self.cfg.theme.accent;
-        const icon_color = self.cfg.theme.accent_fg;
+        // Icon container background and icon color
+        const icon_hov = ui.hovered("qs-card-main-icon", idx);
+        const icon_bg = if (is_active)
+            self.cfg.theme.accent
+        else if (icon_hov)
+            self.cfg.theme.card_hover_bg
+        else
+            self.cfg.theme.btn_raised_bg;
+
+        const icon_color = if (is_active)
+            self.cfg.theme.accent_fg
+        else if (icon_hov)
+            self.cfg.theme.accent
+        else
+            self.cfg.theme.text_muted;
 
         _ = ui.open(.{
             .id = "qs-card-main-icon",
@@ -1332,6 +1344,8 @@ pub const QuickSettings = struct {
             .height = .{ .fixed = ui.s(52) },
             .bg = icon_bg,
             .radius = ui.f(14),
+            .border = if (!is_active) ui.su(1) else 0,
+            .border_color = if (!is_active) (if (icon_hov) self.cfg.theme.accent else self.cfg.theme.border) else null,
             .align_x = .center,
             .align_y = .center,
         });

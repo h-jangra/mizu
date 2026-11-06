@@ -87,7 +87,7 @@ pub const Tool = enum {
             .blur => "󰂶",
             .pixelate => "",
             .crop => "",
-            .eraser => "󰛔",
+            .eraser => "󰇾",
         };
     }
 };
@@ -294,7 +294,7 @@ pub const Annotation = struct {
                 };
             },
             .step_badge => {
-                const r: i32 = 16;
+                const r: i32 = @intCast(@as(u32, @intFromFloat(@as(f32, @floatFromInt(self.font_size)) * 0.85)) + self.stroke_width);
                 return Rect{
                     .x = self.rect.x - r - 2,
                     .y = self.rect.y - r - 2,
@@ -374,7 +374,7 @@ pub const Annotation = struct {
             .step_badge => {
                 const cx: f32 = @floatFromInt(self.rect.x);
                 const cy: f32 = @floatFromInt(self.rect.y);
-                const r: f32 = 18.0;
+                const r: f32 = @as(f32, @floatFromInt(self.font_size)) * 0.85 + @as(f32, @floatFromInt(self.stroke_width)) + 2.0;
                 const d2 = (p_xf - cx) * (p_xf - cx) + (p_yf - cy) * (p_yf - cy);
                 return d2 <= r * r;
             },
@@ -539,18 +539,23 @@ pub const Annotation = struct {
             .step_badge => {
                 const cx = scaleCoord(self.rect.x, scale);
                 const cy = scaleCoord(self.rect.y, scale);
-                const r = scaleCoord(16, scale);
+                const base_r: i32 = @intCast(@as(u32, @intFromFloat(@as(f32, @floatFromInt(self.font_size)) * 0.85)) + self.stroke_width);
+                const r = scaleCoord(base_r, scale);
                 // Outer filled circle
                 img.fillCircle(cx, cy, r, self.color);
+                // White circle border
+                img.drawCircle(cx, cy, r, sw, Color.rgb(255, 255, 255), false);
                 // White step number text
                 var num_buf: [16]u8 = undefined;
                 const num_str = std.fmt.bufPrint(&num_buf, "{d}", .{self.step_number}) catch "1";
+                const fs = scaleSize(self.font_size, scale);
+                const nw = font.measureTextWithSize(num_str, fs);
                 img.drawText(
                     font,
                     num_str,
-                    cx - scaleCoord(4, scale),
-                    cy + scaleCoord(5, scale),
-                    scaleSize(13, scale),
+                    cx - @divTrunc(@as(i32, @intCast(nw)), 2),
+                    cy + @as(i32, @intCast(@divTrunc(fs, 3))),
+                    fs,
                     Color.rgb(255, 255, 255),
                 );
             },
@@ -1576,6 +1581,11 @@ pub const AnnotateApp = struct {
             if (ann.kind == .text) {
                 self.current_font_size = ann.font_size;
                 self.current_text_align = ann.text_align;
+            } else if (ann.kind == .step_badge) {
+                self.current_font_size = ann.font_size;
+                self.stroke_width = ann.stroke_width;
+            } else {
+                self.stroke_width = ann.stroke_width;
             }
         }
         self.win.needs_redraw = true;
@@ -1593,6 +1603,11 @@ pub const AnnotateApp = struct {
         if (self.findAnnotationById(id)) |ann| {
             if (ann.kind == .text) {
                 self.current_font_size = ann.font_size;
+            } else if (ann.kind == .step_badge) {
+                self.current_font_size = ann.font_size;
+                self.stroke_width = ann.stroke_width;
+            } else {
+                self.stroke_width = ann.stroke_width;
             }
         }
         self.win.needs_redraw = true;
@@ -1650,6 +1665,16 @@ pub const AnnotateApp = struct {
         ann.rect.h = @intCast(@max(18, line_count * line_h + 8));
     }
 
+    pub fn isTextContext(self: *AnnotateApp) bool {
+        if (self.active_tool == .text or self.editing_text_id != null) return true;
+        for (self.selected_ids.items) |sid| {
+            if (self.findAnnotationById(sid)) |a| {
+                if (a.kind == .text) return true;
+            }
+        }
+        return false;
+    }
+
     pub fn decreaseFontSize(self: *AnnotateApp) void {
         if (self.current_font_size > 8) {
             self.current_font_size -= 2;
@@ -1658,6 +1683,10 @@ pub const AnnotateApp = struct {
                     if (a.kind == .text) {
                         a.font_size = self.current_font_size;
                         self.updateTextAnnotationBounds(a);
+                    } else if (a.kind == .step_badge) {
+                        a.font_size = self.current_font_size;
+                        a.stroke_width = @max(1, @divTrunc(self.current_font_size, 4));
+                        self.stroke_width = a.stroke_width;
                     }
                 }
             }
@@ -1681,6 +1710,10 @@ pub const AnnotateApp = struct {
                     if (a.kind == .text) {
                         a.font_size = self.current_font_size;
                         self.updateTextAnnotationBounds(a);
+                    } else if (a.kind == .step_badge) {
+                        a.font_size = self.current_font_size;
+                        a.stroke_width = @max(1, @divTrunc(self.current_font_size, 4));
+                        self.stroke_width = a.stroke_width;
                     }
                 }
             }
@@ -1702,6 +1735,9 @@ pub const AnnotateApp = struct {
             for (self.selected_ids.items) |sid| {
                 if (self.findAnnotationById(sid)) |a| {
                     a.stroke_width = self.stroke_width;
+                    if (a.kind == .step_badge) {
+                        a.font_size = @max(10, 10 + a.stroke_width * 2);
+                    }
                 }
             }
             var buf: [32]u8 = undefined;
@@ -1716,6 +1752,9 @@ pub const AnnotateApp = struct {
             for (self.selected_ids.items) |sid| {
                 if (self.findAnnotationById(sid)) |a| {
                     a.stroke_width = self.stroke_width;
+                    if (a.kind == .step_badge) {
+                        a.font_size = @max(10, 10 + a.stroke_width * 2);
+                    }
                 }
             }
             var buf: [32]u8 = undefined;
@@ -1725,16 +1764,7 @@ pub const AnnotateApp = struct {
     }
 
     pub fn handleShiftScroll(self: *AnnotateApp, delta: f64) void {
-        const is_text = (self.active_tool == .text or self.editing_text_id != null or blk: {
-            for (self.selected_ids.items) |sid| {
-                if (self.findAnnotationById(sid)) |a| {
-                    if (a.kind == .text) break :blk true;
-                }
-            }
-            break :blk false;
-        });
-
-        if (is_text) {
+        if (self.isTextContext()) {
             if (delta < 0) {
                 self.increaseFontSize();
             } else {
@@ -2336,6 +2366,15 @@ pub const AnnotateApp = struct {
                         pos += _part_1448.len;
                     }
                 },
+                .step_badge => {
+                    const rad = @as(u32, @intFromFloat(@as(f32, @floatFromInt(ann.font_size)) * 0.85)) + ann.stroke_width;
+                    var num_buf: [16]u8 = undefined;
+                    const num_str = std.fmt.bufPrint(&num_buf, "{d}", .{ann.step_number}) catch "1";
+                    const _part_c = std.fmt.bufPrint(buf[pos..], "  <circle cx=\"{d}\" cy=\"{d}\" r=\"{d}\" fill=\"{s}\" stroke=\"#ffffff\" stroke-width=\"{d}\"/>\n", .{ ann.rect.x, ann.rect.y, rad, hex_str, ann.stroke_width }) catch return error.BufOverflow;
+                    pos += _part_c.len;
+                    const _part_t = std.fmt.bufPrint(buf[pos..], "  <text x=\"{d}\" y=\"{d}\" font-size=\"{d}\" fill=\"#ffffff\" text-anchor=\"middle\" dominant-baseline=\"central\" font-family=\"sans-serif\">{s}</text>\n", .{ ann.rect.x, ann.rect.y, ann.font_size, num_str }) catch return error.BufOverflow;
+                    pos += _part_t.len;
+                },
                 else => {},
             }
         }
@@ -2691,11 +2730,17 @@ pub const AnnotateApp = struct {
 
             if (self.active_tool == .freehand and self.annotations.items.len > 0) {
                 const last_idx = self.annotations.items.len - 1;
-                self.annotations.items[last_idx].points.append(self.allocator, .{ .x = img_x, .y = img_y }) catch {};
+                const pts = &self.annotations.items[last_idx].points;
+                if (pts.items.len == 0 or pts.items[pts.items.len - 1].x != img_x or pts.items[pts.items.len - 1].y != img_y) {
+                    pts.append(self.allocator, .{ .x = img_x, .y = img_y }) catch {};
+                    self.win.needs_redraw = true;
+                }
             } else if (self.active_tool == .eraser) {
                 _ = self.eraseAnnotationAt(img_x, img_y);
+                self.win.needs_redraw = true;
+            } else {
+                self.win.needs_redraw = true;
             }
-            self.win.needs_redraw = true;
             return;
         }
 
@@ -2829,7 +2874,7 @@ pub const AnnotateApp = struct {
                     return;
                 }
 
-                // Check font dropdown clicks
+                // Check font/thickness dropdown clicks
                 if (self.font_dropdown_open) {
                     const dx: i32 = 282;
                     const dy: i32 = @as(i32, @intCast(self.toolbar_height)) + 2;
@@ -2837,11 +2882,37 @@ pub const AnnotateApp = struct {
                     const dh: i32 = 195;
                     if (x >= dx and x < dx + dw and y >= dy and y < dy + dh) {
                         const row_idx = @divTrunc(y - dy - 8, 30);
-                        const sizes = [_]u32{ 12, 16, 20, 24, 32, 48 };
+                        const is_text = self.isTextContext();
+                        const font_sizes = [_]u32{ 12, 16, 20, 24, 32, 48 };
+                        const stroke_sizes = [_]u32{ 1, 2, 4, 6, 8, 12 };
+                        const sizes = if (is_text) &font_sizes else &stroke_sizes;
+
                         if (row_idx >= 0 and @as(usize, @intCast(row_idx)) < sizes.len) {
-                            self.current_font_size = sizes[@as(usize, @intCast(row_idx))];
-                            for (self.selected_ids.items) |sid| {
-                                if (self.findAnnotationById(sid)) |a| a.font_size = self.current_font_size;
+                            const val = sizes[@as(usize, @intCast(row_idx))];
+                            if (is_text) {
+                                self.current_font_size = val;
+                                for (self.selected_ids.items) |sid| {
+                                    if (self.findAnnotationById(sid)) |a| {
+                                        if (a.kind == .text) {
+                                            a.font_size = val;
+                                            self.updateTextAnnotationBounds(a);
+                                        }
+                                    }
+                                }
+                                var buf: [32]u8 = undefined;
+                                self.setStatus(std.fmt.bufPrint(&buf, "Font size: {d}px", .{val}) catch "Font size");
+                            } else {
+                                self.stroke_width = val;
+                                for (self.selected_ids.items) |sid| {
+                                    if (self.findAnnotationById(sid)) |a| {
+                                        a.stroke_width = val;
+                                        if (a.kind == .step_badge) {
+                                            a.font_size = @max(10, 10 + val * 2);
+                                        }
+                                    }
+                                }
+                                var buf: [32]u8 = undefined;
+                                self.setStatus(std.fmt.bufPrint(&buf, "Thickness: {d}px", .{val}) catch "Thickness");
                             }
                             self.win.needs_redraw = true;
                         }
@@ -3019,6 +3090,8 @@ pub const AnnotateApp = struct {
                             .rect = Rect{ .x = img_x, .y = img_y, .w = 32, .h = 32 },
                             .step_number = self.step_badge_counter,
                             .color = self.current_color,
+                            .stroke_width = self.stroke_width,
+                            .font_size = @max(10, 10 + self.stroke_width * 2),
                         };
                         self.step_badge_counter += 1;
                         self.annotations.append(self.allocator, badge) catch return;
@@ -3730,6 +3803,30 @@ pub const AnnotateApp = struct {
     }
 
     pub fn cycleFontSize(self: *AnnotateApp) void {
+        if (!self.isTextContext()) {
+            const stroke_presets = [_]u32{ 1, 2, 4, 6, 8, 12, 16 };
+            var next_sw: u32 = stroke_presets[0];
+            for (stroke_presets, 0..) |sw, i| {
+                if (sw > self.stroke_width) {
+                    next_sw = sw;
+                    break;
+                }
+                if (i == stroke_presets.len - 1) {
+                    next_sw = stroke_presets[0];
+                }
+            }
+            self.stroke_width = next_sw;
+            for (self.selected_ids.items) |sid| {
+                if (self.findAnnotationById(sid)) |a| {
+                    a.stroke_width = self.stroke_width;
+                }
+            }
+            var buf: [32]u8 = undefined;
+            self.setStatus(std.fmt.bufPrint(&buf, "Thickness: {d}px", .{self.stroke_width}) catch "Thickness");
+            self.win.needs_redraw = true;
+            return;
+        }
+
         const sizes = [_]u32{ 12, 16, 20, 24, 32, 48 };
         var next_sz: u32 = sizes[0];
         for (sizes, 0..) |sz, i| {
@@ -3815,7 +3912,11 @@ pub const AnnotateApp = struct {
             }
             bx += btn_w + 4;
             if (x >= bx and x < bx + 20) {
-                self.decreaseFontSize();
+                if (self.isTextContext()) {
+                    self.decreaseFontSize();
+                } else {
+                    self.decreaseStrokeWidth();
+                }
                 return;
             }
             bx += 20 + 2;
@@ -3826,7 +3927,11 @@ pub const AnnotateApp = struct {
             }
             bx += 36 + 2;
             if (x >= bx and x < bx + 20) {
-                self.increaseFontSize();
+                if (self.isTextContext()) {
+                    self.increaseFontSize();
+                } else {
+                    self.increaseStrokeWidth();
+                }
                 return;
             }
             bx += 20 + 13;
@@ -4121,16 +4226,20 @@ pub const AnnotateApp = struct {
         const phys_h: f64 = @as(f64, @floatFromInt(self.base_image.img.height)) * @as(f64, self.zoom * self.effectiveScale());
 
         // Soft drop shadow behind canvas
-        canvas_renderer.drawSoftShadow(
-            dest_px,
-            dest_py,
-            @intFromFloat(phys_w),
-            @intFromFloat(phys_h),
-            self.toPhysSize(8),
-            self.toPhysSize(16),
-            @as(i32, @intCast(self.toPhysSize(4))),
-            th.shadow_dark,
-        );
+        const pw_phys = @as(f64, @floatFromInt(self.win.physicalWidth()));
+        const ph_phys = @as(f64, @floatFromInt(self.win.physicalHeight()));
+        if (dest_px > 0 or dest_py > 0 or @as(f64, @floatFromInt(dest_px)) + phys_w < pw_phys or @as(f64, @floatFromInt(dest_py)) + phys_h < ph_phys) {
+            canvas_renderer.drawSoftShadow(
+                dest_px,
+                dest_py,
+                @intFromFloat(phys_w),
+                @intFromFloat(phys_h),
+                self.toPhysSize(6),
+                self.toPhysSize(8),
+                @as(i32, @intCast(self.toPhysSize(3))),
+                th.shadow_dark,
+            );
+        }
 
         const r_img = renderer.Image{
             .width = self.base_image.img.width,
@@ -4403,13 +4512,15 @@ pub const AnnotateApp = struct {
             .step_badge => {
                 const sx = self.imageToPhysX(ann.rect.x);
                 const sy = self.imageToPhysY(ann.rect.y);
-                const rad: f64 = 16.0 * @as(f64, self.zoom * self.effectiveScale());
+                const base_r: f64 = @as(f64, @floatFromInt(ann.font_size)) * 0.85 + @as(f64, @floatFromInt(ann.stroke_width));
+                const rad: f64 = base_r * @as(f64, self.zoom * self.effectiveScale());
                 r.fillCircle(@floatFromInt(sx), @floatFromInt(sy), rad, ann.color);
-                r.drawCircleBorder(@floatFromInt(sx), @floatFromInt(sy), rad, @max(1.0, 1.5 * self.effectiveScale()), Color.rgb(255, 255, 255));
+                const border_w: f64 = @max(1.0, @as(f64, @floatFromInt(scaled_sw)));
+                r.drawCircleBorder(@floatFromInt(sx), @floatFromInt(sy), rad, border_w, Color.rgb(255, 255, 255));
 
                 var num_buf: [16]u8 = undefined;
                 const num_str = std.fmt.bufPrint(&num_buf, "{d}", .{ann.step_number}) catch "1";
-                const badge_fs = @max(9, @as(u32, @intFromFloat(12.0 * self.zoom * self.effectiveScale())));
+                const badge_fs = @max(9, @as(u32, @intFromFloat(@as(f32, @floatFromInt(ann.font_size)) * self.zoom * self.effectiveScale())));
                 const nw = r.measureTextWithSize(self.font, num_str, badge_fs);
                 r.drawTextWithSize(self.font, num_str, sx - @divTrunc(@as(i32, @intCast(nw)), 2), sy + @as(i32, @intCast(@divTrunc(badge_fs, 3))), badge_fs, Color.rgb(255, 255, 255));
             },
@@ -4697,15 +4808,15 @@ pub const AnnotateApp = struct {
         r.fillRect(self.toPhysX(bx), self.toPhysY(11), 1, self.toPhysSize(22), th.glass_border);
         bx += 7;
 
-        // Group 5: Text annotation & Font size badge
+        // Group 5: Text annotation & Font size / Stroke thickness badge
         self.renderToolButton(r, bx, btn_y, btn_w, btn_h, Tool.text.icon(), self.active_tool == .text, true, null);
         bx += @as(i32, @intCast(btn_w)) + 4;
 
-        // Font size decrease [-]
+        // Size decrease [-]
         self.renderToolButton(r, bx, btn_y, 20, btn_h, "󰧳", false, true, null);
         bx += 20 + 2;
 
-        // Font size badge / dropdown trigger
+        // Size badge / dropdown trigger
         {
             const f_px = self.toPhysX(bx);
             const f_py = self.toPhysY(btn_y);
@@ -4717,14 +4828,15 @@ pub const AnnotateApp = struct {
             r.drawRoundedBorder(f_px, f_py, f_pw, f_ph, self.toPhysSize(6), 1, if (self.font_dropdown_open) th.accent else th.glass_border);
 
             var sz_buf: [8]u8 = undefined;
-            const sz_str = std.fmt.bufPrint(&sz_buf, "{d}", .{self.current_font_size}) catch "18";
+            const sz_val = if (self.isTextContext()) self.current_font_size else self.stroke_width;
+            const sz_str = std.fmt.bufPrint(&sz_buf, "{d}", .{sz_val}) catch "4";
             const sz_lw = r.measureTextWithSize(self.font, sz_str, self.ui_font_size);
             const sz_lx = f_px + @divTrunc(@as(i32, @intCast(f_pw)) - @as(i32, @intCast(sz_lw)), 2);
             r.drawTextWithSize(self.font, sz_str, sz_lx, f_py + @as(i32, @intCast(@divTrunc(f_ph * 3, 4))) - 1, self.ui_font_size, f_fg);
             bx += 36 + 2;
         }
 
-        // Font size increase [+]
+        // Size increase [+]
         self.renderToolButton(r, bx, btn_y, 20, btn_h, "󰧴", false, true, null);
         bx += 20 + 6;
 
@@ -5088,10 +5200,15 @@ pub const AnnotateApp = struct {
         r.fillRoundedRect(x, y, w, h, self.toPhysSize(6), th.surface);
         r.drawRoundedBorder(x, y, w, h, self.toPhysSize(6), 1, th.glass_border);
 
-        const sizes = [_]u32{ 12, 16, 20, 24, 32, 48 };
+        const is_text = self.isTextContext();
+        const font_sizes = [_]u32{ 12, 16, 20, 24, 32, 48 };
+        const stroke_sizes = [_]u32{ 1, 2, 4, 6, 8, 12 };
+        const sizes = if (is_text) &font_sizes else &stroke_sizes;
+        const current_val = if (is_text) self.current_font_size else self.stroke_width;
+
         var cur_y = y + @as(i32, @intCast(self.toPhysSize(8)));
         for (sizes) |sz| {
-            const active = (self.current_font_size == sz);
+            const active = (current_val == sz);
             const bg = if (active) th.accent else th.btn_raised_bg;
             const fg = if (active) th.accent_fg else th.text_main;
             r.fillRoundedRect(x + 4, cur_y, w - 8, @intCast(row_h - 4), self.toPhysSize(4), bg);
@@ -5381,12 +5498,25 @@ test "Step badge hit testing and numbering" {
         .rect = Rect{ .x = 100, .y = 100, .w = 32, .h = 32 },
         .step_number = 5,
         .color = Color.hex(0x61AFEF),
+        .stroke_width = 4,
     };
     defer badge.deinit(alloc);
 
     try std.testing.expect(badge.hitTest(102, 104));
     try std.testing.expect(!badge.hitTest(150, 150));
     try std.testing.expectEqual(@as(u32, 5), badge.step_number);
+
+    // Verify bounds expand with stroke thickness and font size
+    const b4 = badge.getBounds();
+    badge.stroke_width = 8;
+    const b8 = badge.getBounds();
+    try std.testing.expect(b8.w > b4.w);
+    try std.testing.expect(b8.h > b4.h);
+
+    badge.font_size = 28;
+    const b_font = badge.getBounds();
+    try std.testing.expect(b_font.w > b8.w);
+    try std.testing.expect(b_font.h > b8.h);
 }
 
 test "Resize handle operations" {
