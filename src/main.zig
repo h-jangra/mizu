@@ -35,6 +35,7 @@ test {
     _ = @import("bar/bar.zig");
     _ = @import("panels/calendar.zig");
     _ = @import("panels/clipboard.zig");
+    _ = @import("panels/notifications.zig");
     _ = @import("core/text_input.zig");
     _ = @import("core/ui.zig");
     _ = @import("services/keymap.zig");
@@ -889,13 +890,15 @@ fn runBar(allocator: std.mem.Allocator, cfg: config.Config) !void {
         return;
     }
 
-    if (c.fopen("/tmp/mizu-bar.pid", "w")) |f| {
+    var pid_path_buf: [64]u8 = undefined;
+    const pid_path = std.fmt.bufPrintSentinel(&pid_path_buf, "/tmp/mizu-bar.{d}.pid", .{c.getuid()}, 0) catch return;
+    if (c.fopen(pid_path.ptr, "w")) |f| {
         var buf: [32]u8 = undefined;
         const pid_str = std.fmt.bufPrint(&buf, "{d}\n", .{c.getpid()}) catch "";
         _ = c.fwrite(pid_str.ptr, 1, pid_str.len, f);
         _ = c.fclose(f);
     }
-    defer _ = c.unlink("/tmp/mizu-bar.pid");
+    defer _ = c.unlink(pid_path.ptr);
 
     // Automatically start the wallpaper daemon with mizu if not running
     if (!wallpaper_module.isDaemonRunning()) {

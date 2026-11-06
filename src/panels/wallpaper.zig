@@ -2403,10 +2403,14 @@ pub fn printUsage() void {
     std.debug.print("{s}", .{usage});
 }
 
-const PID_FILE = "/tmp/mizu-wallpaper.pid";
+fn getPidFilePath(buf: []u8) ?[*:0]const u8 {
+    return std.fmt.bufPrintSentinel(buf, "/tmp/mizu-wallpaper.{d}.pid", .{c.getuid()}, 0) catch null;
+}
 
 fn writePidFile(pid: c.pid_t) void {
-    const fd = c.open(PID_FILE, c.O_WRONLY | c.O_CREAT | c.O_TRUNC, @as(c_uint, 0o644));
+    var path_buf: [64]u8 = undefined;
+    const pid_path = getPidFilePath(&path_buf) orelse return;
+    const fd = c.open(pid_path, c.O_WRONLY | c.O_CREAT | c.O_TRUNC, @as(c_uint, 0o644));
     if (fd < 0) return;
     defer _ = c.close(fd);
     var buf: [32]u8 = undefined;
@@ -2415,7 +2419,10 @@ fn writePidFile(pid: c.pid_t) void {
 }
 
 fn deletePidFile() void {
-    _ = c.unlink(PID_FILE);
+    var path_buf: [64]u8 = undefined;
+    if (getPidFilePath(&path_buf)) |pid_path| {
+        _ = c.unlink(pid_path);
+    }
 }
 
 fn killProcessesByName(target_name: []const u8) void {
@@ -2454,7 +2461,9 @@ fn killProcessesByName(target_name: []const u8) void {
 }
 
 fn killExistingWallpaperDaemon() void {
-    const fd = c.open(PID_FILE, c.O_RDONLY);
+    var path_buf: [64]u8 = undefined;
+    const pid_path = getPidFilePath(&path_buf) orelse return;
+    const fd = c.open(pid_path, c.O_RDONLY);
     if (fd >= 0) {
         var buf: [32]u8 = undefined;
         const n = c.read(fd, &buf, buf.len);
@@ -2493,7 +2502,9 @@ pub fn runSwitcher(allocator: std.mem.Allocator) u8 {
 }
 
 pub fn isDaemonRunning() bool {
-    const fd = c.open(PID_FILE, c.O_RDONLY);
+    var path_buf: [64]u8 = undefined;
+    const pid_path = getPidFilePath(&path_buf) orelse return false;
+    const fd = c.open(pid_path, c.O_RDONLY);
     if (fd < 0) return false;
     defer _ = c.close(fd);
 

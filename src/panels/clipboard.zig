@@ -8,7 +8,35 @@ const sys_status = @import("../services/system_status.zig");
 const text_input = @import("../core/text_input.zig");
 const icons = @import("../graphics/icons.zig");
 const ui_mod = @import("../core/ui.zig");
-const qrcode = @import("../graphics/qrcode.zig");
+
+pub const QrCodeResult = struct {
+    size: u32,
+    code: c.QRCode,
+    modules: [4096]u8,
+
+    pub fn isDark(self: *const QrCodeResult, x: u32, y: u32) bool {
+        if (self.size == 0 or x >= self.size or y >= self.size) return false;
+        var mutable_code = self.code;
+        mutable_code.modules = @constCast(&self.modules);
+        return c.qrcode_getModule(&mutable_code, @intCast(x), @intCast(y));
+    }
+};
+
+pub fn generateQr(text: []const u8) ?QrCodeResult {
+    if (text.len == 0 or text.len > 4296) return null;
+    var res: QrCodeResult = undefined;
+    var ver: u8 = 1;
+    while (ver <= 40) : (ver += 1) {
+        const buf_size = c.qrcode_getBufferSize(ver);
+        if (buf_size > res.modules.len) break;
+        const ret = c.qrcode_initBytes(&res.code, &res.modules, ver, c.ECC_LOW, @constCast(text.ptr), @intCast(text.len));
+        if (ret == 0) {
+            res.size = res.code.size;
+            return res;
+        }
+    }
+    return null;
+}
 
 pub const ClipType = enum {
     text,
@@ -443,6 +471,661 @@ var session_cached_items: [500]ClipItem = @splat(ClipItem{ .id = 0 });
 var session_cached_count: usize = 0;
 var session_has_cache: bool = false;
 
+pub const VisualLine = struct {
+    start: usize,
+    end: usize,
+    logical_line: usize,
+    is_first: bool,
+};
+
+pub const MultiLineEditor = struct {
+    allocator: std.mem.Allocator,
+    text: std.ArrayList(u8),
+    cursor_idx: usize = 0,
+    selection_anchor: ?usize = null,
+    scroll_line: usize = 0,
+    caret_visible: bool = true,
+    visual_lines: std.ArrayList(VisualLine) = std.ArrayList(VisualLine).empty,
+    last_wrap_width: u32 = 0,
+    last_wrap_font_size: u32 = 0,
+
+    pub fn init(allocator: std.mem.Allocator) MultiLineEditor {
+        return .{
+            .allocator = allocator,
+            .text = std.ArrayList(u8).empty,
+            .cursor_idx = 0,
+            .selection_anchor = null,
+            .scroll_line = 0,
+            .caret_visible = true,
+            .visual_lines = std.ArrayList(VisualLine).empty,
+        };
+    }
+
+    pub fn deinit(self: *MultiLineEditor) void {
+        if (self.text.capacity > 0) {
+            self.text.deinit(self.allocator);
+            self.text = std.ArrayList(u8).empty;
+        }
+        if (self.visual_lines.capacity > 0) {
+            self.visual_lines.deinit(self.allocator);
+            self.visual_lines = std.ArrayList(VisualLine).empty;
+        }
+    }
+
+    pub fn setText(self: *MultiLineEditor, new_text: []const u8) !void {
+        self.text.clearRetainingCapacity();
+        try self.text.appendSlice(self.allocator, new_text);
+        self.cursor_idx = self.text.items.len;
+        self.selection_anchor = null;
+        self.scroll_line = 0;
+        self.caret_visible = true;
+        self.visual_lines.clearRetainingCapacity();
+    }
+
+    pub fn getText(self: *const MultiLineEditor) []const u8 {
+        return self.text.items;
+    }
+
+    pub const CursorPos = struct {
+        line: usize,
+        line_start: usize,
+        line_end: usize,
+        col_bytes: usize,
+    };
+
+    pub fn getCursorPos(self: *const MultiLineEditor, at_idx: usize) CursorPos {
+        const clamped = @min(at_idx, self.text.items.len);
+        var line: usize = 0;
+        var line_start: usize = 0;
+        var i: usize = 0;
+        while (i < clamped) : (i += 1) {
+            if (self.text.items[i] == '\n') {
+                line += 1;
+                line_start = i + 1;
+            }
+        }
+        var line_end = line_start;
+        while (line_end < self.text.items.len and self.text.items[line_end] != '\n' and self.text.items[line_end] != '\r') : (line_end += 1) {}
+        return .{
+            .line = line,
+            .line_start = line_start,
+            .line_end = line_end,
+            .col_bytes = clamped - line_start,
+        };
+    }
+
+    pub fn getTotalLines(self: *const MultiLineEditor) usize {
+        if (self.visual_lines.items.len > 0) {
+            return self.visual_lines.items.len;
+        }
+        if (self.text.items.len == 0) return 1;
+        var count: usize = 1;
+        for (self.text.items) |b| {
+            if (b == '\n') count += 1;
+        }
+        return count;
+    }
+
+    pub fn getLineBounds(self: *const MultiLineEditor, target_line: usize) ?struct { start: usize, end: usize } {
+        var cur_line: usize = 0;
+        var line_start: usize = 0;
+        var i: usize = 0;
+        while (i < self.text.items.len) : (i += 1) {
+            if (cur_line == target_line) {
+                break;
+            }
+            if (self.text.items[i] == '\n') {
+                cur_line += 1;
+                line_start = i + 1;
+            }
+        }
+        if (cur_line != target_line) {
+            if (target_line == cur_line and line_start <= self.text.items.len) {
+                return .{ .start = line_start, .end = self.text.items.len };
+            }
+            return null;
+        }
+        var line_end = line_start;
+        while (line_end < self.text.items.len and self.text.items[line_end] != '\n' and self.text.items[line_end] != '\r') : (line_end += 1) {}
+        return .{ .start = line_start, .end = line_end };
+    }
+
+    pub fn recomputeVisualLines(self: *MultiLineEditor, font: ?*const renderer.Font, size_px: u32, max_w: u32) void {
+        self.visual_lines.clearRetainingCapacity();
+        self.last_wrap_width = max_w;
+        self.last_wrap_font_size = size_px;
+
+        if (self.text.items.len == 0) {
+            self.visual_lines.append(self.allocator, .{
+                .start = 0,
+                .end = 0,
+                .logical_line = 0,
+                .is_first = true,
+            }) catch {};
+            return;
+        }
+
+        var logical_line: usize = 0;
+        var line_start: usize = 0;
+        const text = self.text.items;
+        const effective_max_w = @max(10, max_w);
+
+        while (line_start < text.len) {
+            var line_end = line_start;
+            while (line_end < text.len and text[line_end] != '\n' and text[line_end] != '\r') {
+                line_end += 1;
+            }
+
+            if (line_start == line_end) {
+                self.visual_lines.append(self.allocator, .{
+                    .start = line_start,
+                    .end = line_end,
+                    .logical_line = logical_line,
+                    .is_first = true,
+                }) catch {};
+            } else {
+                var v_start = line_start;
+                var is_first = true;
+                while (v_start < line_end) {
+                    var v_end = v_start;
+                    var last_space: ?usize = null;
+                    var curr_idx = v_start;
+
+                    while (curr_idx < line_end) {
+                        const next_len = std.unicode.utf8ByteSequenceLength(text[curr_idx]) catch 1;
+                        const test_end = @min(curr_idx + next_len, line_end);
+                        const test_slice = text[v_start..test_end];
+                        const w: u32 = if (font) |f|
+                            @constCast(f).measureTextWithSize(test_slice, size_px)
+                        else
+                            @intCast(test_slice.len * if (size_px > 0) size_px / 2 else 8);
+
+                        if (w > effective_max_w and curr_idx > v_start) {
+                            if (last_space) |sp| {
+                                if (sp > v_start and sp < curr_idx) {
+                                    v_end = sp + 1; // Wrap after space
+                                } else {
+                                    v_end = curr_idx;
+                                }
+                            } else {
+                                v_end = curr_idx;
+                            }
+                            break;
+                        }
+                        if (text[curr_idx] == ' ') {
+                            last_space = curr_idx;
+                        }
+                        curr_idx = test_end;
+                        v_end = curr_idx;
+                    }
+
+                    if (v_end <= v_start) {
+                        const step = std.unicode.utf8ByteSequenceLength(text[v_start]) catch 1;
+                        v_end = @min(v_start + step, line_end);
+                    }
+
+                    self.visual_lines.append(self.allocator, .{
+                        .start = v_start,
+                        .end = v_end,
+                        .logical_line = logical_line,
+                        .is_first = is_first,
+                    }) catch {};
+                    is_first = false;
+                    v_start = v_end;
+                }
+            }
+
+            logical_line += 1;
+            if (line_end < text.len and text[line_end] == '\r') line_end += 1;
+            if (line_end < text.len and text[line_end] == '\n') line_end += 1;
+            line_start = line_end;
+        }
+
+        if (text.len > 0 and (text[text.len - 1] == '\n' or text[text.len - 1] == '\r')) {
+            self.visual_lines.append(self.allocator, .{
+                .start = text.len,
+                .end = text.len,
+                .logical_line = logical_line,
+                .is_first = true,
+            }) catch {};
+        }
+    }
+
+    pub fn getVisualLineForCursor(self: *const MultiLineEditor) usize {
+        if (self.visual_lines.items.len == 0) return 0;
+        const cursor = self.cursor_idx;
+        var i: usize = 0;
+        while (i < self.visual_lines.items.len) : (i += 1) {
+            const vl = self.visual_lines.items[i];
+            if (cursor < vl.end) return i;
+            if (cursor == vl.end) {
+                if (i + 1 == self.visual_lines.items.len) return i;
+                const next_vl = self.visual_lines.items[i + 1];
+                if (next_vl.is_first) return i;
+                return i + 1;
+            }
+            if (i + 1 < self.visual_lines.items.len) {
+                const next_vl = self.visual_lines.items[i + 1];
+                if (cursor < next_vl.start) return i;
+            }
+        }
+        return self.visual_lines.items.len - 1;
+    }
+
+    pub fn findClosestCharOnVisualLine(self: *const MultiLineEditor, font: ?*const renderer.Font, size_px: u32, vl: VisualLine, target_x: u32) usize {
+        if (vl.start >= vl.end or vl.start >= self.text.items.len) return vl.start;
+        const slice = self.text.items[vl.start..vl.end];
+        var best_idx = vl.start;
+        var best_dist: u32 = target_x;
+        var b_idx: usize = 0;
+
+        while (b_idx <= slice.len) {
+            const measured: u32 = if (font) |f|
+                @constCast(f).measureTextWithSize(slice[0..b_idx], size_px)
+            else
+                @intCast(b_idx * if (size_px > 0) size_px / 2 else 8);
+
+            const dist = if (measured > target_x) measured - target_x else target_x - measured;
+            if (dist < best_dist) {
+                best_dist = dist;
+                best_idx = vl.start + b_idx;
+            }
+            if (b_idx == slice.len) break;
+            const seq_len = std.unicode.utf8ByteSequenceLength(slice[b_idx]) catch 1;
+            b_idx += seq_len;
+        }
+        return best_idx;
+    }
+
+    pub fn ensureCursorVisible(self: *MultiLineEditor, max_visible_lines: usize) void {
+        const v_line = if (self.visual_lines.items.len > 0)
+            self.getVisualLineForCursor()
+        else
+            self.getCursorPos(self.cursor_idx).line;
+
+        if (v_line < self.scroll_line) {
+            self.scroll_line = v_line;
+        } else if (v_line >= self.scroll_line + max_visible_lines) {
+            self.scroll_line = v_line - max_visible_lines + 1;
+        }
+    }
+
+    pub fn moveUp(self: *MultiLineEditor) void {
+        self.moveUpWithFont(null, 0);
+    }
+
+    pub fn moveUpWithFont(self: *MultiLineEditor, font: ?*const renderer.Font, size_px: u32) void {
+        if (self.visual_lines.items.len > 0) {
+            const cur_v = self.getVisualLineForCursor();
+            if (cur_v == 0) {
+                self.cursor_idx = 0;
+                self.selection_anchor = null;
+                self.caret_visible = true;
+                self.ensureCursorVisible(20);
+                return;
+            }
+            const cur_vl = self.visual_lines.items[cur_v];
+            const prev_vl = self.visual_lines.items[cur_v - 1];
+
+            const cur_slice = if (self.cursor_idx >= cur_vl.start) self.text.items[cur_vl.start..@min(self.cursor_idx, cur_vl.end)] else "";
+            const cur_x: u32 = if (font) |f|
+                @constCast(f).measureTextWithSize(cur_slice, size_px)
+            else
+                @intCast(cur_slice.len * if (size_px > 0) size_px / 2 else 8);
+
+            self.cursor_idx = self.findClosestCharOnVisualLine(font, size_px, prev_vl, cur_x);
+            self.selection_anchor = null;
+            self.caret_visible = true;
+            self.ensureCursorVisible(20);
+            return;
+        }
+
+        const pos = self.getCursorPos(self.cursor_idx);
+        if (pos.line == 0) {
+            self.cursor_idx = 0;
+            self.selection_anchor = null;
+            self.caret_visible = true;
+            self.ensureCursorVisible(20);
+            return;
+        }
+        if (self.getLineBounds(pos.line - 1)) |prev_bounds| {
+            const prev_len = prev_bounds.end - prev_bounds.start;
+            const target_col = @min(pos.col_bytes, prev_len);
+            var idx = prev_bounds.start + target_col;
+            while (idx > prev_bounds.start and idx < prev_bounds.end and (self.text.items[idx] & 0xC0) == 0x80) {
+                idx -= 1;
+            }
+            self.cursor_idx = idx;
+        }
+        self.selection_anchor = null;
+        self.caret_visible = true;
+        self.ensureCursorVisible(20);
+    }
+
+    pub fn moveDown(self: *MultiLineEditor) void {
+        self.moveDownWithFont(null, 0);
+    }
+
+    pub fn moveDownWithFont(self: *MultiLineEditor, font: ?*const renderer.Font, size_px: u32) void {
+        if (self.visual_lines.items.len > 0) {
+            const cur_v = self.getVisualLineForCursor();
+            if (cur_v + 1 >= self.visual_lines.items.len) {
+                self.cursor_idx = self.text.items.len;
+                self.selection_anchor = null;
+                self.caret_visible = true;
+                self.ensureCursorVisible(20);
+                return;
+            }
+            const cur_vl = self.visual_lines.items[cur_v];
+            const next_vl = self.visual_lines.items[cur_v + 1];
+
+            const cur_slice = if (self.cursor_idx >= cur_vl.start) self.text.items[cur_vl.start..@min(self.cursor_idx, cur_vl.end)] else "";
+            const cur_x: u32 = if (font) |f|
+                @constCast(f).measureTextWithSize(cur_slice, size_px)
+            else
+                @intCast(cur_slice.len * if (size_px > 0) size_px / 2 else 8);
+
+            self.cursor_idx = self.findClosestCharOnVisualLine(font, size_px, next_vl, cur_x);
+            self.selection_anchor = null;
+            self.caret_visible = true;
+            self.ensureCursorVisible(20);
+            return;
+        }
+
+        const pos = self.getCursorPos(self.cursor_idx);
+        if (self.getLineBounds(pos.line + 1)) |next_bounds| {
+            const next_len = next_bounds.end - next_bounds.start;
+            const target_col = @min(pos.col_bytes, next_len);
+            var idx = next_bounds.start + target_col;
+            while (idx > next_bounds.start and idx < next_bounds.end and (self.text.items[idx] & 0xC0) == 0x80) {
+                idx -= 1;
+            }
+            self.cursor_idx = idx;
+        } else {
+            self.cursor_idx = self.text.items.len;
+        }
+        self.selection_anchor = null;
+        self.caret_visible = true;
+        self.ensureCursorVisible(20);
+    }
+
+    pub fn moveHome(self: *MultiLineEditor) void {
+        if (self.visual_lines.items.len > 0) {
+            const v_line = self.getVisualLineForCursor();
+            const vl = self.visual_lines.items[v_line];
+            if (self.cursor_idx == vl.start and !vl.is_first) {
+                var idx = v_line;
+                while (idx > 0 and !self.visual_lines.items[idx].is_first) : (idx -= 1) {}
+                self.cursor_idx = self.visual_lines.items[idx].start;
+            } else {
+                self.cursor_idx = vl.start;
+            }
+            self.selection_anchor = null;
+            self.caret_visible = true;
+            self.ensureCursorVisible(20);
+            return;
+        }
+        const pos = self.getCursorPos(self.cursor_idx);
+        self.cursor_idx = pos.line_start;
+        self.selection_anchor = null;
+        self.caret_visible = true;
+        self.ensureCursorVisible(20);
+    }
+
+    pub fn moveEnd(self: *MultiLineEditor) void {
+        if (self.visual_lines.items.len > 0) {
+            const v_line = self.getVisualLineForCursor();
+            const vl = self.visual_lines.items[v_line];
+            if (self.cursor_idx == vl.end and v_line + 1 < self.visual_lines.items.len and !self.visual_lines.items[v_line + 1].is_first) {
+                var idx = v_line;
+                while (idx + 1 < self.visual_lines.items.len and !self.visual_lines.items[idx + 1].is_first) : (idx += 1) {}
+                self.cursor_idx = self.visual_lines.items[idx].end;
+            } else {
+                self.cursor_idx = vl.end;
+            }
+            self.selection_anchor = null;
+            self.caret_visible = true;
+            self.ensureCursorVisible(20);
+            return;
+        }
+        const pos = self.getCursorPos(self.cursor_idx);
+        self.cursor_idx = pos.line_end;
+        self.selection_anchor = null;
+        self.caret_visible = true;
+        self.ensureCursorVisible(20);
+    }
+
+    pub fn moveLeft(self: *MultiLineEditor) void {
+        if (self.cursor_idx > 0) {
+            var prev = self.cursor_idx - 1;
+            while (prev > 0 and (self.text.items[prev] & 0xC0) == 0x80) {
+                prev -= 1;
+            }
+            self.cursor_idx = prev;
+        }
+        self.selection_anchor = null;
+        self.caret_visible = true;
+        self.ensureCursorVisible(20);
+    }
+
+    pub fn moveRight(self: *MultiLineEditor) void {
+        if (self.cursor_idx < self.text.items.len) {
+            var next = self.cursor_idx + 1;
+            while (next < self.text.items.len and (self.text.items[next] & 0xC0) == 0x80) {
+                next += 1;
+            }
+            self.cursor_idx = next;
+        }
+        self.selection_anchor = null;
+        self.caret_visible = true;
+        self.ensureCursorVisible(20);
+    }
+
+    pub fn hasSelection(self: *const MultiLineEditor) bool {
+        if (self.selection_anchor) |anchor| {
+            return anchor != self.cursor_idx;
+        }
+        return false;
+    }
+
+    pub fn getSelectionRange(self: *const MultiLineEditor) ?struct { start: usize, end: usize } {
+        if (self.selection_anchor) |anchor| {
+            if (anchor == self.cursor_idx) return null;
+            return .{
+                .start = @min(anchor, self.cursor_idx),
+                .end = @max(anchor, self.cursor_idx),
+            };
+        }
+        return null;
+    }
+
+    pub fn removeSelection(self: *MultiLineEditor) bool {
+        if (self.getSelectionRange()) |range| {
+            const count = range.end - range.start;
+            var i = range.start;
+            while (i + count < self.text.items.len) : (i += 1) {
+                self.text.items[i] = self.text.items[i + count];
+            }
+            self.text.shrinkRetainingCapacity(self.text.items.len - count);
+            self.cursor_idx = range.start;
+            self.selection_anchor = null;
+            return true;
+        }
+        return false;
+    }
+
+    pub fn selectAll(self: *MultiLineEditor) void {
+        if (self.text.items.len == 0) return;
+        self.selection_anchor = 0;
+        self.cursor_idx = self.text.items.len;
+        self.caret_visible = true;
+    }
+
+    pub fn insertBytes(self: *MultiLineEditor, bytes: []const u8) !void {
+        _ = self.removeSelection();
+        self.cursor_idx = @min(self.cursor_idx, self.text.items.len);
+        try self.text.insertSlice(self.allocator, self.cursor_idx, bytes);
+        self.cursor_idx += bytes.len;
+        self.selection_anchor = null;
+        self.caret_visible = true;
+        self.ensureCursorVisible(20);
+    }
+
+    pub fn deleteBackward(self: *MultiLineEditor) !void {
+        if (self.removeSelection()) {
+            self.caret_visible = true;
+            self.ensureCursorVisible(20);
+            return;
+        }
+        if (self.cursor_idx == 0 or self.text.items.len == 0) return;
+
+        var prev = self.cursor_idx - 1;
+        if (self.text.items[prev] == '\n' and prev > 0 and self.text.items[prev - 1] == '\r') {
+            prev -= 1;
+        } else {
+            while (prev > 0 and (self.text.items[prev] & 0xC0) == 0x80) {
+                prev -= 1;
+            }
+        }
+        const count = self.cursor_idx - prev;
+        var i = prev;
+        while (i + count < self.text.items.len) : (i += 1) {
+            self.text.items[i] = self.text.items[i + count];
+        }
+        self.text.shrinkRetainingCapacity(self.text.items.len - count);
+        self.cursor_idx = prev;
+        self.caret_visible = true;
+        self.ensureCursorVisible(20);
+    }
+
+    pub fn deleteForward(self: *MultiLineEditor) !void {
+        if (self.removeSelection()) {
+            self.caret_visible = true;
+            self.ensureCursorVisible(20);
+            return;
+        }
+        if (self.cursor_idx >= self.text.items.len) return;
+
+        var next = self.cursor_idx + 1;
+        if (self.text.items[self.cursor_idx] == '\r' and next < self.text.items.len and self.text.items[next] == '\n') {
+            next += 1;
+        } else {
+            while (next < self.text.items.len and (self.text.items[next] & 0xC0) == 0x80) {
+                next += 1;
+            }
+        }
+        const count = next - self.cursor_idx;
+        var i = self.cursor_idx;
+        while (i + count < self.text.items.len) : (i += 1) {
+            self.text.items[i] = self.text.items[i + count];
+        }
+        self.text.shrinkRetainingCapacity(self.text.items.len - count);
+        self.caret_visible = true;
+        self.ensureCursorVisible(20);
+    }
+
+    pub fn copyToClipboard(self: *const MultiLineEditor) void {
+        const to_copy = if (self.getSelectionRange()) |range|
+            self.text.items[range.start..range.end]
+        else
+            self.text.items;
+        if (to_copy.len == 0) return;
+
+        const pid = c.fork();
+        if (pid == 0) {
+            _ = c.setsid();
+            const pipe = c.popen("export PATH=\"$PATH:/usr/sbin:/sbin:/usr/local/bin:/usr/bin:$HOME/.local/bin\"; wl-copy 2>/dev/null", "w");
+            if (pipe != null) {
+                _ = c.fwrite(to_copy.ptr, 1, to_copy.len, pipe);
+                _ = c.pclose(pipe);
+            }
+            c.exit(0);
+        }
+    }
+
+    pub fn cutToClipboard(self: *MultiLineEditor) void {
+        self.copyToClipboard();
+        _ = self.removeSelection();
+        self.caret_visible = true;
+    }
+
+    pub fn pasteFromClipboard(self: *MultiLineEditor) void {
+        const pipe = c.popen("export PATH=\"$PATH:/usr/sbin:/sbin:/usr/local/bin:/usr/bin:$HOME/.local/bin\"; wl-paste 2>/dev/null", "r");
+        if (pipe != null) {
+            defer _ = c.pclose(pipe);
+            var buf: [65536]u8 = undefined;
+            var total: usize = 0;
+            while (total < buf.len) {
+                const n = c.fread(buf[total..].ptr, 1, buf.len - total, pipe);
+                if (n == 0) break;
+                total += n;
+            }
+            if (total > 0) {
+                self.insertBytes(buf[0..total]) catch {};
+            }
+        }
+    }
+
+    pub fn findCursorFromCoords(self: *MultiLineEditor, font: *renderer.Font, size_px: u32, text_x: i32, px: i32, target_line: usize) void {
+        if (self.visual_lines.items.len > 0) {
+            if (target_line >= self.visual_lines.items.len) {
+                self.cursor_idx = self.text.items.len;
+                self.selection_anchor = null;
+                self.caret_visible = true;
+                return;
+            }
+            const vl = self.visual_lines.items[target_line];
+            const rel_x = @max(0, px - text_x);
+            self.cursor_idx = self.findClosestCharOnVisualLine(font, size_px, vl, @intCast(rel_x));
+            self.selection_anchor = null;
+            self.caret_visible = true;
+            return;
+        }
+
+        const total_lines = self.getTotalLines();
+        if (target_line >= total_lines) {
+            self.cursor_idx = self.text.items.len;
+            self.selection_anchor = null;
+            self.caret_visible = true;
+            return;
+        }
+        const bounds = self.getLineBounds(target_line) orelse {
+            self.cursor_idx = self.text.items.len;
+            self.selection_anchor = null;
+            self.caret_visible = true;
+            return;
+        };
+        const rel_x = px - text_x;
+        if (rel_x <= 0) {
+            self.cursor_idx = bounds.start;
+            self.selection_anchor = null;
+            self.caret_visible = true;
+            return;
+        }
+
+        const line_bytes = self.text.items[bounds.start..bounds.end];
+        var best_idx = bounds.start;
+        var best_dist: i32 = rel_x;
+        var b_idx: usize = 0;
+
+        while (b_idx <= line_bytes.len) {
+            const measured = @as(i32, @intCast(font.measureTextWithSize(line_bytes[0..b_idx], size_px)));
+            const dist = @abs(measured - rel_x);
+            if (dist < best_dist) {
+                best_dist = @as(i32, @intCast(dist));
+                best_idx = bounds.start + b_idx;
+            }
+            if (b_idx == line_bytes.len) break;
+            const seq_len = std.unicode.utf8ByteSequenceLength(line_bytes[b_idx]) catch 1;
+            b_idx += seq_len;
+        }
+
+        self.cursor_idx = best_idx;
+        self.selection_anchor = null;
+        self.caret_visible = true;
+    }
+};
+
 pub const ClipHitArea = struct {
     x: i32,
     y: i32,
@@ -462,6 +1145,10 @@ pub const ClipAction = union(enum) {
     toggle_qr,
     toggle_share,
     stop_share,
+    start_edit: usize,
+    save_edit,
+    cancel_edit,
+    editor_click,
 };
 
 const ClipInputDraw = struct {
@@ -531,6 +1218,11 @@ pub const ClipboardPanel = struct {
     show_qr: bool = false,
     show_share_view: bool = false,
 
+    is_editing: bool = false,
+    editing_original_id: u64 = 0,
+    editor: MultiLineEditor = .{ .allocator = std.heap.page_allocator, .text = std.ArrayList(u8).empty },
+    editor_card_rect: renderer.Rect = .{ .x = 0, .y = 0, .w = 0, .h = 0 },
+
     history_loading: bool = true,
     decode_cache: DecodedCache = .{},
     image_cache: ImageCache = .{},
@@ -559,6 +1251,7 @@ pub const ClipboardPanel = struct {
             .hit_areas = std.ArrayList(ClipHitArea).empty,
             .shared = shared,
             .image_cache = ImageCache.init(allocator),
+            .editor = MultiLineEditor.init(allocator),
         };
 
         self.input.focused = true;
@@ -615,6 +1308,7 @@ pub const ClipboardPanel = struct {
         // Release panel reference to shared context.
         self.shared.release();
 
+        self.editor.deinit();
         self.image_cache.deinit();
         self.hit_areas.deinit(self.allocator);
         self.filtered_indices.deinit(self.allocator);
@@ -630,6 +1324,9 @@ pub const ClipboardPanel = struct {
 
     pub fn toggleCaret(self: *ClipboardPanel) void {
         self.input.toggleCaret();
+        if (self.is_editing) {
+            self.editor.caret_visible = !self.editor.caret_visible;
+        }
     }
 
     /// Process background worker updates. Returns true if redraw needed.
@@ -1050,10 +1747,30 @@ pub const ClipboardPanel = struct {
             sys_status.spawnCmd("export PATH=\"$PATH:/usr/sbin:/sbin:/usr/local/bin:/usr/bin:$HOME/.local/bin\"; wl-copy --clear 2>/dev/null; wl-copy --primary --clear 2>/dev/null");
             session_cached_count = 0;
             session_has_cache = false;
+        } else if (session_has_cache and session_cached_count > 0) {
+            var found_idx: ?usize = null;
+            for (session_cached_items[0..session_cached_count], 0..) |ci, i| {
+                if (ci.id == item.id) {
+                    found_idx = i;
+                    break;
+                }
+            }
+            if (found_idx) |fidx| {
+                var j = fidx;
+                while (j + 1 < session_cached_count) : (j += 1) {
+                    session_cached_items[j] = session_cached_items[j + 1];
+                }
+                session_cached_count -= 1;
+                if (session_cached_count == 0) session_has_cache = false;
+            }
         }
 
         self.decode_cache.remove(item.id);
         self.image_cache.remove(item.id);
+
+        if (self.is_editing and self.editing_original_id == item.id) {
+            self.cancelEdit();
+        }
 
         var removed = self.items.orderedRemove(actual_idx);
         removed.deinit(self.allocator);
@@ -1061,6 +1778,7 @@ pub const ClipboardPanel = struct {
     }
 
     pub fn clearAll(self: *ClipboardPanel) void {
+        self.is_editing = false;
         _ = c.system("export PATH=\"$PATH:/usr/sbin:/sbin:/usr/local/bin:/usr/bin:$HOME/.local/bin\"; cliphist wipe 2>/dev/null; wl-copy --clear 2>/dev/null; wl-copy --primary --clear 2>/dev/null");
         sys_status.spawnCmd("export PATH=\"$PATH:/usr/sbin:/sbin:/usr/local/bin:/usr/bin:$HOME/.local/bin\"; cliphist wipe; wl-copy --clear 2>/dev/null; wl-copy --primary --clear 2>/dev/null");
         for (self.items.items) |*item| item.deinit(self.allocator);
@@ -1082,6 +1800,164 @@ pub const ClipboardPanel = struct {
             return cached;
         }
         return item.preview[0..item.preview_len];
+    }
+
+    pub fn getFullContent(self: *ClipboardPanel, item: ClipItem) []const u8 {
+        if (self.decode_cache.get(item.id)) |cached| {
+            return cached;
+        }
+        if (item.id != 999999 and item.clip_type == .text) {
+            var cmd_buf: [256]u8 = undefined;
+            if (std.fmt.bufPrintSentinel(&cmd_buf, "export PATH=\"$PATH:/usr/sbin:/sbin:/usr/local/bin:/usr/bin:$HOME/.local/bin\"; cliphist decode {d} 2>/dev/null", .{item.id}, 0)) |cmd| {
+                if (c.popen(cmd.ptr, "r")) |pipe| {
+                    defer _ = c.pclose(pipe);
+                    var buf: [65536]u8 = undefined;
+                    var total: usize = 0;
+                    while (total < buf.len) {
+                        const n = c.fread(buf[total..].ptr, 1, buf.len - total, pipe);
+                        if (n == 0) break;
+                        total += n;
+                    }
+                    if (total > 0) {
+                        self.decode_cache.put(item.id, buf[0..total]);
+                        if (self.decode_cache.get(item.id)) |cached| {
+                            return cached;
+                        }
+                    }
+                }
+            } else |_| {}
+        }
+        return item.preview[0..item.preview_len];
+    }
+
+    pub fn startEditing(self: *ClipboardPanel, actual_idx: usize) void {
+        if (actual_idx >= self.items.items.len) return;
+        const item = self.items.items[actual_idx];
+        if (item.clip_type != .text) return;
+
+        // Decode directly for editing so content > 8KB is not truncated by preview cache
+        if (item.id != 999999) {
+            var cmd_buf: [256]u8 = undefined;
+            if (std.fmt.bufPrintSentinel(&cmd_buf, "export PATH=\"$PATH:/usr/sbin:/sbin:/usr/local/bin:/usr/bin:$HOME/.local/bin\"; cliphist decode {d} 2>/dev/null", .{item.id}, 0)) |cmd| {
+                if (c.popen(cmd.ptr, "r")) |pipe| {
+                    defer _ = c.pclose(pipe);
+                    var buf = std.ArrayList(u8).empty;
+                    defer buf.deinit(self.allocator);
+                    var chunk: [4096]u8 = undefined;
+                    while (true) {
+                        const n = c.fread(&chunk, 1, chunk.len, pipe);
+                        if (n == 0) break;
+                        buf.appendSlice(self.allocator, chunk[0..n]) catch break;
+                    }
+                    if (buf.items.len > 0) {
+                        self.editor.setText(buf.items) catch return;
+                        self.is_editing = true;
+                        self.editing_original_id = item.id;
+                        self.input.focused = false;
+                        self.show_qr = false;
+                        return;
+                    }
+                }
+            } else |_| {}
+        }
+
+        const content = self.getFullContent(item);
+        self.editor.setText(content) catch return;
+        self.is_editing = true;
+        self.editing_original_id = item.id;
+        self.input.focused = false;
+        self.show_qr = false;
+    }
+
+    pub fn cancelEdit(self: *ClipboardPanel) void {
+        self.is_editing = false;
+        self.input.focused = true;
+    }
+
+    pub fn saveEdit(self: *ClipboardPanel) void {
+        if (!self.is_editing) return;
+        const edited_text = self.editor.getText();
+
+        // 1. Copy to system Wayland clipboard using wl-copy
+        {
+            const pipe = c.popen("export PATH=\"$PATH:/usr/sbin:/sbin:/usr/local/bin:/usr/bin:$HOME/.local/bin\"; wl-copy 2>/dev/null", "w");
+            if (pipe != null) {
+                if (edited_text.len > 0) {
+                    _ = c.fwrite(edited_text.ptr, 1, edited_text.len, pipe);
+                }
+                _ = c.pclose(pipe);
+            }
+        }
+
+        // 2. Also pipe into cliphist so cliphist persists it
+        {
+            const ch_pipe = c.popen("export PATH=\"$PATH:/usr/sbin:/sbin:/usr/local/bin:/usr/bin:$HOME/.local/bin\"; cliphist store 2>/dev/null", "w");
+            if (ch_pipe != null) {
+                if (edited_text.len > 0) {
+                    _ = c.fwrite(edited_text.ptr, 1, edited_text.len, ch_pipe);
+                }
+                _ = c.pclose(ch_pipe);
+            }
+        }
+
+        // 3. Create new ClipItem and insert at beginning of items list (old item stays!)
+        var max_id: u64 = 1000;
+        for (self.items.items) |item| {
+            if (item.id != 999999 and item.id > max_id) {
+                max_id = item.id;
+            }
+        }
+        const new_id = max_id + 1;
+
+        var new_item = ClipItem{
+            .id = new_id,
+            .clip_type = .text,
+        };
+        const max_p = @min(edited_text.len, new_item.preview.len);
+        const preview_len = trimToValidUtf8(edited_text[0..max_p]);
+        @memcpy(new_item.preview[0..preview_len], edited_text[0..preview_len]);
+        new_item.preview_len = preview_len;
+        loadItemFirstLine(&new_item);
+
+        // Cache the full decoded content in decode_cache under new_id
+        self.decode_cache.put(new_id, edited_text);
+
+        // Insert new item at index 0 (top of history)
+        self.items.insert(self.allocator, 0, new_item) catch {};
+
+        // Update session cache if warm reopen cache is active
+        if (session_has_cache and session_cached_count < session_cached_items.len) {
+            var j = session_cached_count;
+            while (j > 0) : (j -= 1) {
+                session_cached_items[j] = session_cached_items[j - 1];
+            }
+            session_cached_items[0] = new_item;
+            session_cached_count += 1;
+        }
+
+        // Update filter and select the new item
+        self.updateFilter();
+        self.selected_index = 0;
+        self.scroll_offset = 0;
+
+        // Exit editing mode
+        self.is_editing = false;
+        self.input.focused = true;
+    }
+
+    pub fn handleEditorClick(self: *ClipboardPanel, px: i32, py: i32, scale: u32) void {
+        if (!self.is_editing) return;
+        const iscale: i32 = @intCast(scale);
+        const card_x_log = @divTrunc(self.editor_card_rect.x, iscale);
+        const card_y_log = @divTrunc(self.editor_card_rect.y, iscale);
+        const gutter_x_log = card_x_log + 40;
+        const text_x_log = gutter_x_log + 12;
+        const line_step_log: i32 = 24;
+        const rel_y = py - (card_y_log + 12);
+        if (rel_y < 0) return;
+        const line_offset = @as(usize, @intCast(@divTrunc(rel_y, line_step_log)));
+        const target_line = self.editor.scroll_line + line_offset;
+        self.editor.findCursorFromCoords(&self.font, self.cfg.typography.ui * scale, text_x_log, px, target_line);
     }
 
     pub fn isAreaHovered(self: *const ClipboardPanel, x: i32, y: i32, w: u32, h: u32) bool {
@@ -1115,6 +1991,9 @@ pub const ClipboardPanel = struct {
         if (is_pressed) {
             const text_ox = self.search_rect.x + 40;
             if (self.input.handlePointerDown(x, y, self.search_rect.x, self.search_rect.y, self.search_rect.w, self.search_rect.h, text_ox, &self.font)) {
+                if (self.is_editing) {
+                    self.cancelEdit();
+                }
                 return true;
             }
 
@@ -1125,6 +2004,9 @@ pub const ClipboardPanel = struct {
                     switch (area.action) {
                         .none => {},
                         .click_card => |filter_idx| {
+                            if (self.is_editing) {
+                                self.cancelEdit();
+                            }
                             self.show_share_view = false;
                             if (self.selected_index == filter_idx) {
                                 if (filter_idx < self.filtered_indices.items.len) {
@@ -1157,6 +2039,23 @@ pub const ClipboardPanel = struct {
                             c.mizu_share_stop();
                             self.show_share_view = false;
                         },
+                        .start_edit => |filter_idx| {
+                            if (filter_idx < self.filtered_indices.items.len) {
+                                self.selected_index = filter_idx;
+                                self.adjustScroll();
+                                const actual_idx = self.filtered_indices.items[filter_idx];
+                                self.startEditing(actual_idx);
+                            }
+                        },
+                        .save_edit => {
+                            self.saveEdit();
+                        },
+                        .cancel_edit => {
+                            self.cancelEdit();
+                        },
+                        .editor_click => {
+                            self.handleEditorClick(x, y, self.ui_scale);
+                        },
                     }
                     return true;
                 }
@@ -1170,8 +2069,26 @@ pub const ClipboardPanel = struct {
     }
 
     pub fn handlePointerAxis(self: *ClipboardPanel, x: i32, y: i32, delta: i32) bool {
-        _ = x;
         _ = y;
+        const col1_w = @as(i32, @intCast(460));
+
+        if (self.is_editing and x >= col1_w) {
+            const total_lines = self.editor.getTotalLines();
+            const max_visible: usize = 20;
+            if (delta > 0) {
+                if (self.editor.scroll_line + max_visible < total_lines) {
+                    self.editor.scroll_line += 1;
+                    return true;
+                }
+            } else if (delta < 0) {
+                if (self.editor.scroll_line > 0) {
+                    self.editor.scroll_line -= 1;
+                    return true;
+                }
+            }
+            return false;
+        }
+
         const total = self.filtered_indices.items.len;
         if (total == 0) return false;
 
@@ -1209,8 +2126,101 @@ pub const ClipboardPanel = struct {
     }
 
     pub fn handleKey(self: *ClipboardPanel, sym: u32, utf8_bytes: []const u8, ctrl: bool, shift: bool) bool {
+        if (self.is_editing) {
+            if (sym == c.XKB_KEY_Escape) {
+                self.cancelEdit();
+                return true;
+            }
+            if (ctrl and (sym == c.XKB_KEY_s or sym == c.XKB_KEY_S)) {
+                self.saveEdit();
+                return true;
+            }
+            if (sym == c.XKB_KEY_Return or sym == c.XKB_KEY_KP_Enter) {
+                if (ctrl) {
+                    self.saveEdit();
+                    return true;
+                }
+                self.editor.insertBytes("\n") catch {};
+                return true;
+            }
+            if (ctrl) {
+                switch (sym) {
+                    c.XKB_KEY_a, c.XKB_KEY_A => {
+                        self.editor.selectAll();
+                        return true;
+                    },
+                    c.XKB_KEY_c, c.XKB_KEY_C => {
+                        self.editor.copyToClipboard();
+                        return true;
+                    },
+                    c.XKB_KEY_x, c.XKB_KEY_X => {
+                        self.editor.cutToClipboard();
+                        return true;
+                    },
+                    c.XKB_KEY_v, c.XKB_KEY_V => {
+                        self.editor.pasteFromClipboard();
+                        return true;
+                    },
+                    else => {},
+                }
+            }
+            switch (sym) {
+                c.XKB_KEY_Up => {
+                    self.editor.moveUpWithFont(&self.font, self.cfg.typography.ui * self.ui_scale);
+                    return true;
+                },
+                c.XKB_KEY_Down => {
+                    self.editor.moveDownWithFont(&self.font, self.cfg.typography.ui * self.ui_scale);
+                    return true;
+                },
+                c.XKB_KEY_Left => {
+                    self.editor.moveLeft();
+                    return true;
+                },
+                c.XKB_KEY_Right => {
+                    self.editor.moveRight();
+                    return true;
+                },
+                c.XKB_KEY_Home => {
+                    self.editor.moveHome();
+                    return true;
+                },
+                c.XKB_KEY_End => {
+                    self.editor.moveEnd();
+                    return true;
+                },
+                c.XKB_KEY_BackSpace => {
+                    self.editor.deleteBackward() catch {};
+                    return true;
+                },
+                c.XKB_KEY_Delete => {
+                    self.editor.deleteForward() catch {};
+                    return true;
+                },
+                c.XKB_KEY_Tab => {
+                    self.editor.insertBytes("    ") catch {};
+                    return true;
+                },
+                else => {
+                    if (utf8_bytes.len > 0 and utf8_bytes[0] >= 32 and utf8_bytes[0] != 127) {
+                        self.editor.insertBytes(utf8_bytes) catch {};
+                        return true;
+                    }
+                },
+            }
+            return true;
+        }
+
         // Navigation keys
         if (sym == c.XKB_KEY_Escape) {
+            if (self.show_qr) {
+                self.show_qr = false;
+                return true;
+            }
+            if (self.show_share_view) {
+                self.show_share_view = false;
+                return true;
+            }
             self.running = false;
             return true;
         } else if (sym == c.XKB_KEY_Return or sym == c.XKB_KEY_KP_Enter) {
@@ -1526,17 +2536,22 @@ pub const ClipboardPanel = struct {
                 });
 
                 // Dedicated icon slot on left
+                const edit_hov = ui.hovered("clip-edit-btn", @intCast(r));
                 _ = ui.open(.{
+                    .id = "clip-edit-btn",
+                    .index = @intCast(r),
                     .width = .{ .fixed = @floatFromInt(28 * scale) },
-                    .height = .{ .grow = .{} },
+                    .height = .{ .fixed = @floatFromInt(28 * scale) },
                     .direction = .column,
+                    .bg = if (edit_hov and item.clip_type == .text) Color.init(40, self.cfg.theme.accent.r, self.cfg.theme.accent.g, self.cfg.theme.accent.b) else null,
+                    .radius = ui.f(6),
                     .align_x = .center,
                     .align_y = .center,
                 });
                 if (item.clip_type == .image) {
                     ui.icon("image", 18 * scale, if (is_selected) self.cfg.theme.accent else self.cfg.theme.text_muted, 0);
                 } else {
-                    ui.icon("clipboard", 18 * scale, if (is_selected) self.cfg.theme.accent else self.cfg.theme.text_muted, 0);
+                    ui.icon("edit", 16 * scale, if (edit_hov) self.cfg.theme.accent else (if (is_selected) self.cfg.theme.accent else self.cfg.theme.text_muted), 0);
                 }
                 ui.close();
 
@@ -1630,9 +2645,15 @@ pub const ClipboardPanel = struct {
             while (r < visible_rows and (self.scroll_offset + r) < total_filtered) : (r += 1) {
                 const filter_idx = self.scroll_offset + r;
                 const actual_idx = self.filtered_indices.items[filter_idx];
+                const item = self.items.items[actual_idx];
                 // Delete is appended first so it wins the overlap test.
                 if (ui.rectOf("clip-del", @intCast(r))) |rect| {
                     try self.appendHitRect(rect, iscale, .{ .delete_item = actual_idx });
+                }
+                if (ui.rectOf("clip-edit-btn", @intCast(r))) |rect| {
+                    if (item.clip_type == .text) {
+                        try self.appendHitRect(rect, iscale, .{ .start_edit = filter_idx });
+                    }
                 }
                 if (ui.rectOf("clip-card", @intCast(r))) |rect| {
                     try self.appendHitRect(rect, iscale, .{ .click_card = filter_idx });
@@ -1714,79 +2735,284 @@ pub const ClipboardPanel = struct {
         const raw_url = c.mizu_share_get_url();
         const url = if (raw_url != null) std.mem.span(raw_url) else "";
         if (url.len > 0) {
-            const qr = qrcode.encodeText(url);
-            const quiet_zone: u32 = 2;
-            const total_modules = qr.size + quiet_zone * 2;
+            const qr_opt = generateQr(url);
+            if (qr_opt) |qr| {
+                const quiet_zone: u32 = 2;
+                const total_modules = qr.size + quiet_zone * 2;
 
-            const max_line_w = if (w > 48 * scale) w - 48 * scale else w;
-            var final_lines: [4][]const u8 = undefined;
-            var final_count: usize = 0;
+                const max_line_w = if (w > 48 * scale) w - 48 * scale else w;
+                var final_lines: [4][]const u8 = undefined;
+                var final_count: usize = 0;
 
-            if (target.measureTextWithSize(&self.font, url, sec_sz) <= max_line_w) {
-                final_lines[0] = url;
-                final_count = 1;
-            } else {
-                var raw_parts: [2][]const u8 = undefined;
-                var raw_part_count: usize = 1;
-                raw_parts[0] = url;
-                if (std.mem.indexOfScalar(u8, url, '?')) |q_idx| {
-                    raw_parts[0] = url[0..q_idx];
-                    raw_parts[1] = url[q_idx..];
-                    raw_part_count = 2;
-                }
+                if (target.measureTextWithSize(&self.font, url, sec_sz) <= max_line_w) {
+                    final_lines[0] = url;
+                    final_count = 1;
+                } else {
+                    var raw_parts: [2][]const u8 = undefined;
+                    var raw_part_count: usize = 1;
+                    raw_parts[0] = url;
+                    if (std.mem.indexOfScalar(u8, url, '?')) |q_idx| {
+                        raw_parts[0] = url[0..q_idx];
+                        raw_parts[1] = url[q_idx..];
+                        raw_part_count = 2;
+                    }
 
-                for (raw_parts[0..raw_part_count]) |raw_part| {
-                    var cur = raw_part;
-                    while (cur.len > 0 and final_count < final_lines.len) {
-                        if (target.measureTextWithSize(&self.font, cur, sec_sz) <= max_line_w) {
-                            final_lines[final_count] = cur;
+                    for (raw_parts[0..raw_part_count]) |raw_part| {
+                        var cur = raw_part;
+                        while (cur.len > 0 and final_count < final_lines.len) {
+                            if (target.measureTextWithSize(&self.font, cur, sec_sz) <= max_line_w) {
+                                final_lines[final_count] = cur;
+                                final_count += 1;
+                                break;
+                            }
+                            var split_idx = cur.len;
+                            while (split_idx > 1 and target.measureTextWithSize(&self.font, cur[0..split_idx], sec_sz) > max_line_w) {
+                                split_idx -= 1;
+                            }
+                            final_lines[final_count] = cur[0..split_idx];
                             final_count += 1;
-                            break;
+                            cur = cur[split_idx..];
                         }
-                        var split_idx = cur.len;
-                        while (split_idx > 1 and target.measureTextWithSize(&self.font, cur[0..split_idx], sec_sz) > max_line_w) {
-                            split_idx -= 1;
-                        }
-                        final_lines[final_count] = cur[0..split_idx];
-                        final_count += 1;
-                        cur = cur[split_idx..];
                     }
                 }
-            }
 
-            const text_h: u32 = @intCast(final_count * 18 * scale);
-            const reserved_v: u32 = (40 * scale) + text_h;
-            const max_box = @min(if (w > 48 * scale) w - 48 * scale else w, if (card_h > reserved_v) card_h - reserved_v else card_h);
-            const mod_size = @max(1, max_box / total_modules);
-            const qr_px = total_modules * mod_size;
-            const qr_box_x = x + @divTrunc(@as(i32, @intCast(w)) - @as(i32, @intCast(qr_px)), 2);
+                const text_h: u32 = @intCast(final_count * 18 * scale);
+                const reserved_v: u32 = (40 * scale) + text_h;
+                const max_box = @min(if (w > 48 * scale) w - 48 * scale else w, if (card_h > reserved_v) card_h - reserved_v else card_h);
+                const mod_size = @max(1, max_box / total_modules);
+                const qr_px = total_modules * mod_size;
+                const qr_box_x = x + @divTrunc(@as(i32, @intCast(w)) - @as(i32, @intCast(qr_px)), 2);
 
-            const total_content_h: i32 = @as(i32, @intCast(qr_px + (16 * scale))) + @as(i32, @intCast(text_h));
-            const qr_box_y = card_y + @max(16 * iscale, @divTrunc(@as(i32, @intCast(card_h)) - total_content_h, 2));
+                const total_content_h: i32 = @as(i32, @intCast(qr_px + (16 * scale))) + @as(i32, @intCast(text_h));
+                const qr_box_y = card_y + @max(16 * iscale, @divTrunc(@as(i32, @intCast(card_h)) - total_content_h, 2));
 
-            target.fillSquircle(qr_box_x, qr_box_y, qr_px, qr_px, 8 * scale, theme.Color.rgb(255, 255, 255));
-            target.drawSquircleBorder(qr_box_x, qr_box_y, qr_px, qr_px, 8 * scale, 1, theme.Color.rgb(200, 200, 200));
+                target.fillSquircle(qr_box_x, qr_box_y, qr_px, qr_px, 8 * scale, theme.Color.rgb(255, 255, 255));
+                target.drawSquircleBorder(qr_box_x, qr_box_y, qr_px, qr_px, 8 * scale, 1, theme.Color.rgb(200, 200, 200));
 
-            var qy: u32 = 0;
-            while (qy < qr.size) : (qy += 1) {
-                var qx: u32 = 0;
-                while (qx < qr.size) : (qx += 1) {
-                    if (qr.isDark(qx, qy)) {
-                        const mx = qr_box_x + @as(i32, @intCast((quiet_zone + qx) * mod_size));
-                        const my = qr_box_y + @as(i32, @intCast((quiet_zone + qy) * mod_size));
-                        target.fillRect(mx, my, mod_size, mod_size, theme.Color.rgb(0, 0, 0));
+                var qy: u32 = 0;
+                while (qy < qr.size) : (qy += 1) {
+                    var qx: u32 = 0;
+                    while (qx < qr.size) : (qx += 1) {
+                        if (qr.isDark(qx, qy)) {
+                            const mx = qr_box_x + @as(i32, @intCast((quiet_zone + qx) * mod_size));
+                            const my = qr_box_y + @as(i32, @intCast((quiet_zone + qy) * mod_size));
+                            target.fillRect(mx, my, mod_size, mod_size, theme.Color.rgb(0, 0, 0));
+                        }
                     }
                 }
-            }
 
-            var cur_y = qr_box_y + @as(i32, @intCast(qr_px)) + 18 * iscale;
-            for (final_lines[0..final_count]) |ln| {
-                const lw = target.measureTextWithSize(&self.font, ln, sec_sz);
-                const lx = x + @divTrunc(@as(i32, @intCast(w)) - @as(i32, @intCast(lw)), 2);
-                target.drawTextWithSize(&self.font, ln, lx, cur_y, sec_sz, self.cfg.theme.accent);
-                cur_y += 18 * iscale;
+                var cur_y = qr_box_y + @as(i32, @intCast(qr_px)) + 18 * iscale;
+                for (final_lines[0..final_count]) |ln| {
+                    const lw = target.measureTextWithSize(&self.font, ln, sec_sz);
+                    const lx = x + @divTrunc(@as(i32, @intCast(w)) - @as(i32, @intCast(lw)), 2);
+                    target.drawTextWithSize(&self.font, ln, lx, cur_y, sec_sz, self.cfg.theme.accent);
+                    cur_y += 18 * iscale;
+                }
             }
         }
+    }
+
+    fn renderEditor(
+        self: *ClipboardPanel,
+        target: renderer.Renderer,
+        x: i32,
+        y: i32,
+        w: u32,
+        h: u32,
+        scale: u32,
+    ) !void {
+        const iscale: i32 = @intCast(scale);
+        const card_y = y + 36 * iscale;
+        const card_h: u32 = if (h > 36 * scale) h - 36 * scale else 0;
+        const sec_sz = self.cfg.typography.secondary * scale;
+        const ui_sz = self.cfg.typography.ui * scale;
+        const button_sz = self.cfg.typography.button_text * scale;
+
+        self.editor_card_rect = .{
+            .x = x,
+            .y = card_y,
+            .w = w,
+            .h = card_h,
+        };
+
+        // Header
+        icons.drawSvgIcon(
+            target,
+            self.allocator,
+            "edit",
+            16 * scale,
+            scale,
+            x + 10 * iscale,
+            y + 18 * iscale,
+            self.cfg.theme.accent,
+        );
+        target.drawTextWithSize(&self.font, "Edit Item", x + 24 * iscale, y + 23 * iscale, ui_sz, self.cfg.theme.text_bright);
+
+        // Buttons on right of header: Cancel and Save
+        const save_w: u32 = 68 * scale;
+        const save_h: u32 = 26 * scale;
+        const save_x = x + @as(i32, @intCast(w)) - @as(i32, @intCast(save_w));
+        const save_y = y + 5 * iscale;
+        const save_hov = self.isAreaHovered(@divTrunc(save_x, iscale), @divTrunc(save_y, iscale), 68, 26);
+
+        const cancel_w: u32 = 64 * scale;
+        const cancel_h: u32 = 26 * scale;
+        const cancel_x = save_x - @as(i32, @intCast(cancel_w)) - 8 * iscale;
+        const cancel_y = y + 5 * iscale;
+        const cancel_hov = self.isAreaHovered(@divTrunc(cancel_x, iscale), @divTrunc(cancel_y, iscale), 64, 26);
+
+        // Cancel Button
+        target.fillSquircle(cancel_x, cancel_y, cancel_w, cancel_h, 6 * scale, if (cancel_hov) self.cfg.theme.elevated else self.cfg.theme.surface);
+        target.drawSquircleBorder(cancel_x, cancel_y, cancel_w, cancel_h, 6 * scale, 1, self.cfg.theme.border);
+        const cw = target.measureTextWithSize(&self.font, "Cancel", sec_sz);
+        target.drawTextWithSize(
+            &self.font,
+            "Cancel",
+            cancel_x + @divTrunc(@as(i32, @intCast(cancel_w)) - @as(i32, @intCast(cw)), 2),
+            cancel_y + 18 * iscale,
+            sec_sz,
+            if (cancel_hov) self.cfg.theme.text_bright else self.cfg.theme.text_muted,
+        );
+        try self.hit_areas.append(self.allocator, .{
+            .x = @divTrunc(cancel_x, iscale),
+            .y = @divTrunc(cancel_y, iscale),
+            .w = 64,
+            .h = 26,
+            .action = .cancel_edit,
+        });
+
+        // Save Button
+        const save_bg = if (save_hov)
+            self.cfg.theme.accent
+        else
+            Color.init(50, self.cfg.theme.accent.r, self.cfg.theme.accent.g, self.cfg.theme.accent.b);
+        target.fillSquircle(save_x, save_y, save_w, save_h, 6 * scale, save_bg);
+        target.drawSquircleBorder(save_x, save_y, save_w, save_h, 6 * scale, 1, self.cfg.theme.accent);
+
+        icons.drawSvgIcon(
+            target,
+            self.allocator,
+            "check",
+            13 * scale,
+            scale,
+            save_x + 14 * iscale,
+            save_y + 13 * iscale,
+            if (save_hov) self.cfg.theme.accent_fg else self.cfg.theme.accent,
+        );
+        target.drawTextWithSize(
+            &self.font,
+            "Save",
+            save_x + 26 * iscale,
+            save_y + 18 * iscale,
+            button_sz,
+            if (save_hov) self.cfg.theme.accent_fg else self.cfg.theme.accent,
+        );
+        try self.hit_areas.append(self.allocator, .{
+            .x = @divTrunc(save_x, iscale),
+            .y = @divTrunc(save_y, iscale),
+            .w = 68,
+            .h = 26,
+            .action = .save_edit,
+        });
+
+        // Content Card
+        target.fillSquircle(x, card_y, w, card_h, 10 * scale, self.cfg.theme.surface);
+        target.drawSquircleBorder(x, card_y, w, card_h, 10 * scale, 1, self.cfg.theme.accent);
+
+        // Entire card is clickable to set cursor position
+        try self.hit_areas.append(self.allocator, .{
+            .x = @divTrunc(x, iscale),
+            .y = @divTrunc(card_y, iscale),
+            .w = @intCast(@divTrunc(@as(i32, @intCast(w)), iscale)),
+            .h = @intCast(@divTrunc(@as(i32, @intCast(card_h)), iscale)),
+            .action = .editor_click,
+        });
+
+        // Gutter
+        const gutter_x = x + 40 * iscale;
+        target.fillRect(gutter_x, card_y + 12 * iscale, 1, if (card_h > 24 * scale) card_h - 24 * scale else 0, Color.init(30, self.cfg.theme.border.r, self.cfg.theme.border.g, self.cfg.theme.border.b));
+
+        const max_line_w = if (w > 68 * scale) w - 68 * scale else w;
+        const line_step: i32 = @as(i32, @intCast(24 * scale));
+        const max_visible_lines: usize = if (card_h > 48 * scale) @intCast(@divTrunc(card_h - 48 * scale, 24 * scale)) else 10;
+
+        self.editor.recomputeVisualLines(&self.font, ui_sz, max_line_w);
+        self.editor.ensureCursorVisible(max_visible_lines);
+
+        const total_lines = self.editor.visual_lines.items.len;
+        const cursor_v_line = self.editor.getVisualLineForCursor();
+
+        var view_line: usize = 0;
+        var cur_line_y: i32 = card_y + 26 * iscale;
+
+        while (view_line < max_visible_lines and (self.editor.scroll_line + view_line) < total_lines) : (view_line += 1) {
+            const v_idx = self.editor.scroll_line + view_line;
+            const vl = self.editor.visual_lines.items[v_idx];
+            const is_cursor_line = (v_idx == cursor_v_line);
+
+            // Line number on first visual line of each logical line
+            if (vl.is_first) {
+                var num_buf: [16]u8 = undefined;
+                const num_str = std.fmt.bufPrint(&num_buf, "{d}", .{vl.logical_line + 1}) catch "";
+                const nw = target.measureTextWithSize(&self.font, num_str, sec_sz);
+                const nx = gutter_x - @as(i32, @intCast(nw)) - 8 * iscale;
+                target.drawTextWithSize(&self.font, num_str, nx, cur_line_y, sec_sz, if (is_cursor_line) self.cfg.theme.accent else self.cfg.theme.text_muted);
+            }
+
+            // Line text wrapped
+            if (vl.start < vl.end and vl.start < self.editor.text.items.len) {
+                const raw_slice = self.editor.text.items[vl.start..vl.end];
+
+                // Sanitize tabs and control chars
+                var clean_buf: [512]u8 = undefined;
+                var clen: usize = 0;
+                for (raw_slice) |ch| {
+                    if (clen >= clean_buf.len) break;
+                    if (ch == '\t') {
+                        const spaces_to_add = @min(4, clean_buf.len - clen);
+                        @memset(clean_buf[clen .. clen + spaces_to_add], ' ');
+                        clen += spaces_to_add;
+                    } else if (ch >= 32 or ch == 0) {
+                        clean_buf[clen] = ch;
+                        clen += 1;
+                    }
+                }
+                clen = trimToValidUtf8(clean_buf[0..clen]);
+                target.drawTextWithSize(&self.font, clean_buf[0..clen], gutter_x + 12 * iscale, cur_line_y, ui_sz, self.cfg.theme.text_bright);
+            }
+
+            // Caret on cursor visual line
+            if (is_cursor_line and self.editor.caret_visible) {
+                const pre_len = if (self.editor.cursor_idx >= vl.start) @min(self.editor.cursor_idx - vl.start, vl.end - vl.start) else 0;
+                const pre_slice = self.editor.text.items[vl.start .. vl.start + pre_len];
+                var pre_clean: [512]u8 = undefined;
+                var pre_clen: usize = 0;
+                for (pre_slice) |ch| {
+                    if (pre_clen >= pre_clean.len) break;
+                    if (ch == '\t') {
+                        const sp = @min(4, pre_clean.len - pre_clen);
+                        @memset(pre_clean[pre_clen .. pre_clen + sp], ' ');
+                        pre_clen += sp;
+                    } else if (ch >= 32 or ch == 0) {
+                        pre_clean[pre_clen] = ch;
+                        pre_clen += 1;
+                    }
+                }
+                pre_clen = trimToValidUtf8(pre_clean[0..pre_clen]);
+                const pre_w = target.measureTextWithSize(&self.font, pre_clean[0..pre_clen], ui_sz);
+                const caret_x = gutter_x + 12 * iscale + @as(i32, @intCast(pre_w));
+                target.fillRect(caret_x, cur_line_y - 14 * iscale, 2 * scale, 18 * scale, self.cfg.theme.accent);
+            }
+
+            cur_line_y += line_step;
+        }
+
+        // Shortcut hint at bottom
+        const hint = "Ctrl+S to save as new · Esc to cancel";
+        const hw = target.measureTextWithSize(&self.font, hint, sec_sz);
+        const hx = x + @as(i32, @intCast(w)) - @as(i32, @intCast(hw)) - 16 * iscale;
+        const hy = card_y + @as(i32, @intCast(card_h)) - 14 * iscale;
+        target.drawTextWithSize(&self.font, hint, hx, hy, sec_sz, self.cfg.theme.text_muted);
     }
 
     fn renderPreviewColumn(
@@ -1806,6 +3032,11 @@ pub const ClipboardPanel = struct {
         const sec_sz = self.cfg.typography.secondary * scale;
         const ui_sz = self.cfg.typography.ui * scale;
         const heading_sz = self.cfg.typography.heading * scale;
+
+        if (self.is_editing) {
+            try self.renderEditor(target, x, y, w, h, scale);
+            return;
+        }
 
         if (self.show_share_view and c.mizu_share_is_running() != 0) {
             try self.renderShareView(target, x, y, w, card_h, card_y, scale);
@@ -1841,7 +3072,7 @@ pub const ClipboardPanel = struct {
         const actual_idx = selected_actual_idx.?;
         const item = self.items.items[actual_idx];
         const preview_content = self.getDecodedContent(item);
-        const qr_available = preview_content.len > 0 and preview_content.len <= 2048;
+        const qr_available = item.clip_type == .text and preview_content.len > 0 and preview_content.len <= 4296;
 
         // QR icon button replacing "Preview" label
         const qr_btn_x = x;
@@ -1851,12 +3082,12 @@ pub const ClipboardPanel = struct {
         const qr_icon_sz = 18 * scale;
         const qr_hov = self.isAreaHovered(@divTrunc(qr_btn_x, iscale), @divTrunc(qr_btn_y, iscale), 28, 28);
 
-        if (qr_available and (self.show_qr or qr_hov)) {
+        if (self.show_qr or (qr_available and qr_hov)) {
             target.fillSquircle(qr_btn_x, qr_btn_y, qr_btn_w, qr_btn_h, 6 * scale, if (self.show_qr) self.cfg.theme.accent else self.cfg.theme.surface);
             target.drawSquircleBorder(qr_btn_x, qr_btn_y, qr_btn_w, qr_btn_h, 6 * scale, 1, self.cfg.theme.border);
         }
 
-        const qr_icon_col = if (self.show_qr and qr_available) self.cfg.theme.accent_fg else (if (qr_available and qr_hov) self.cfg.theme.accent else self.cfg.theme.text_muted);
+        const qr_icon_col = if (self.show_qr) self.cfg.theme.accent_fg else (if (qr_available and qr_hov) self.cfg.theme.accent else (if (qr_available) self.cfg.theme.text_main else self.cfg.theme.text_muted));
         icons.drawSvgIcon(
             target,
             self.allocator,
@@ -1868,19 +3099,19 @@ pub const ClipboardPanel = struct {
             qr_icon_col,
         );
 
-        if (qr_available) {
-            try self.hit_areas.append(self.allocator, .{
-                .x = @divTrunc(qr_btn_x, iscale),
-                .y = @divTrunc(qr_btn_y, iscale),
-                .w = 28,
-                .h = 28,
-                .action = .toggle_qr,
-            });
-        }
+        // Always register the QR button in hit areas so clicking it toggles state safely
+        // instead of unhandled clicks or force closing the clipboard.
+        try self.hit_areas.append(self.allocator, .{
+            .x = @divTrunc(qr_btn_x, iscale),
+            .y = @divTrunc(qr_btn_y, iscale),
+            .w = 28,
+            .h = 28,
+            .action = .toggle_qr,
+        });
 
         if (self.show_qr) {
             const content = self.getDecodedContent(item);
-            const can_qr = content.len > 0 and content.len <= 2048;
+            const can_qr = item.clip_type == .text and content.len > 0 and content.len <= 4296;
             var meta_buf: [64]u8 = undefined;
             const meta_str = if (item.clip_type == .image)
                 "QR Code"
@@ -1894,34 +3125,46 @@ pub const ClipboardPanel = struct {
             target.drawSquircleBorder(x, card_y, w, card_h, 10 * scale, 1, self.cfg.theme.border);
 
             if (can_qr) {
-                const qr = qrcode.encodeText(content);
-                const quiet_zone: u32 = 2;
-                const total_modules = qr.size + quiet_zone * 2;
-                const max_box = @min(if (w > 48 * scale) w - 48 * scale else w, if (card_h > 48 * scale) card_h - 48 * scale else card_h);
-                // Pixel-perfect integer scaling: maximize module size without exceeding box
-                const mod_size = @max(1, max_box / total_modules);
-                const qr_px = total_modules * mod_size;
-                const qr_box_x = x + @divTrunc(@as(i32, @intCast(w)) - @as(i32, @intCast(qr_px)), 2);
-                const qr_box_y = card_y + @divTrunc(@as(i32, @intCast(card_h)) - @as(i32, @intCast(qr_px)), 2);
+                if (generateQr(content)) |qr| {
+                    const quiet_zone: u32 = 2;
+                    const total_modules = qr.size + quiet_zone * 2;
+                    const max_box = @min(if (w > 48 * scale) w - 48 * scale else w, if (card_h > 48 * scale) card_h - 48 * scale else card_h);
+                    // Pixel-perfect integer scaling: maximize module size without exceeding box
+                    const mod_size = @max(1, max_box / total_modules);
+                    const qr_px = total_modules * mod_size;
+                    const qr_box_x = x + @divTrunc(@as(i32, @intCast(w)) - @as(i32, @intCast(qr_px)), 2);
+                    const qr_box_y = card_y + @divTrunc(@as(i32, @intCast(card_h)) - @as(i32, @intCast(qr_px)), 2);
 
-                // Sharp high-contrast background with quiet zone
-                target.fillSquircle(qr_box_x, qr_box_y, qr_px, qr_px, 8 * scale, theme.Color.rgb(255, 255, 255));
-                target.drawSquircleBorder(qr_box_x, qr_box_y, qr_px, qr_px, 8 * scale, 1, theme.Color.rgb(200, 200, 200));
+                    // Sharp high-contrast background with quiet zone
+                    target.fillSquircle(qr_box_x, qr_box_y, qr_px, qr_px, 8 * scale, theme.Color.rgb(255, 255, 255));
+                    target.drawSquircleBorder(qr_box_x, qr_box_y, qr_px, qr_px, 8 * scale, 1, theme.Color.rgb(200, 200, 200));
 
-                // Crisp pixel-perfect modules: pure black on pure white
-                var qy: u32 = 0;
-                while (qy < qr.size) : (qy += 1) {
-                    var qx: u32 = 0;
-                    while (qx < qr.size) : (qx += 1) {
-                        if (qr.isDark(qx, qy)) {
-                            const mx = qr_box_x + @as(i32, @intCast((quiet_zone + qx) * mod_size));
-                            const my = qr_box_y + @as(i32, @intCast((quiet_zone + qy) * mod_size));
-                            target.fillRect(mx, my, mod_size, mod_size, theme.Color.rgb(0, 0, 0));
+                    // Crisp pixel-perfect modules: pure black on pure white
+                    var qy: u32 = 0;
+                    while (qy < qr.size) : (qy += 1) {
+                        var qx: u32 = 0;
+                        while (qx < qr.size) : (qx += 1) {
+                            if (qr.isDark(qx, qy)) {
+                                const mx = qr_box_x + @as(i32, @intCast((quiet_zone + qx) * mod_size));
+                                const my = qr_box_y + @as(i32, @intCast((quiet_zone + qy) * mod_size));
+                                target.fillRect(mx, my, mod_size, mod_size, theme.Color.rgb(0, 0, 0));
+                            }
                         }
                     }
+                } else {
+                    const msg = "Content cannot be converted to QR code";
+                    const msg_w = target.measureTextWithSize(&self.font, msg, ui_sz);
+                    const center_x = x + @divTrunc(@as(i32, @intCast(w)) - @as(i32, @intCast(msg_w)), 2);
+                    const center_y = card_y + @divTrunc(@as(i32, @intCast(card_h)), 2);
+                    target.drawTextWithSize(&self.font, msg, center_x, center_y, ui_sz, self.cfg.theme.text_muted);
                 }
             } else {
-                const msg = if (content.len == 0) "No content to generate QR" else "Clipboard content is too large (max 2 KB)";
+                const msg = if (item.clip_type == .image)
+                    "Cannot generate QR code for images"
+                else if (content.len == 0)
+                    "No content to generate QR code"
+                else
+                    "Clipboard content is too large (max 4,296 characters)";
                 const msg_w = target.measureTextWithSize(&self.font, msg, ui_sz);
                 const center_x = x + @divTrunc(@as(i32, @intCast(w)) - @as(i32, @intCast(msg_w)), 2);
                 const center_y = card_y + @divTrunc(@as(i32, @intCast(card_h)), 2);
@@ -2937,4 +4180,217 @@ test "Mizu Share HTTP endpoints and security" {
             _ = c.unlink(p.ptr);
         } else |_| {}
     }
+}
+
+test "MultiLineEditor text manipulation, navigation and line bounds" {
+    const allocator = std.testing.allocator;
+    var editor = MultiLineEditor.init(allocator);
+    defer editor.deinit();
+
+    try editor.setText("Line 1\nLine 2\nLine 3");
+    try std.testing.expectEqual(@as(usize, 3), editor.getTotalLines());
+
+    const pos = editor.getCursorPos(editor.cursor_idx);
+    try std.testing.expectEqual(@as(usize, 2), pos.line);
+
+    editor.moveUp();
+    const pos_up = editor.getCursorPos(editor.cursor_idx);
+    try std.testing.expectEqual(@as(usize, 1), pos_up.line);
+
+    editor.moveHome();
+    const pos_home = editor.getCursorPos(editor.cursor_idx);
+    try std.testing.expectEqual(@as(usize, 0), pos_home.col_bytes);
+
+    try editor.insertBytes("Edited ");
+    try std.testing.expect(std.mem.startsWith(u8, editor.text.items[pos_home.line_start..], "Edited Line 2"));
+
+    editor.moveDown();
+    editor.moveEnd();
+    try editor.insertBytes("\nLine 4");
+    try std.testing.expectEqual(@as(usize, 4), editor.getTotalLines());
+
+    // Backspace
+    try editor.deleteBackward(); // deletes '4'
+    try std.testing.expect(std.mem.endsWith(u8, editor.getText(), "Line "));
+}
+
+test "ClipboardPanel edit mode and save as new item keeping old item" {
+    const allocator = std.testing.allocator;
+    var cfg = config.Config.init(allocator);
+    defer cfg.deinit(allocator);
+
+    const shared = try SharedWorkerContext.create(allocator);
+    defer shared.release();
+
+    var panel = ClipboardPanel{
+        .allocator = allocator,
+        .cfg = cfg,
+        .font = undefined,
+        .items = std.ArrayList(ClipItem).empty,
+        .filtered_indices = std.ArrayList(usize).empty,
+        .input = text_input.TextInput.init(allocator, "Search...", false),
+        .hit_areas = std.ArrayList(ClipHitArea).empty,
+        .shared = shared,
+        .editor = MultiLineEditor.init(allocator),
+    };
+    defer {
+        panel.editor.deinit();
+        panel.hit_areas.deinit(allocator);
+        panel.filtered_indices.deinit(allocator);
+        panel.input.deinit();
+        panel.items.deinit(allocator);
+    }
+
+    var orig_item = ClipItem{ .id = 42 };
+    const orig_text = "Original Item Content";
+    @memcpy(orig_item.preview[0..orig_text.len], orig_text);
+    orig_item.preview_len = orig_text.len;
+    loadItemFirstLine(&orig_item);
+    try panel.items.append(allocator, orig_item);
+    panel.decode_cache.put(42, orig_text);
+    panel.updateFilter();
+
+    try std.testing.expectEqual(@as(usize, 1), panel.items.items.len);
+    try std.testing.expectEqual(@as(usize, 1), panel.filtered_indices.items.len);
+
+    // Start editing item at actual_idx 0
+    panel.startEditing(0);
+    try std.testing.expect(panel.is_editing);
+    try std.testing.expectEqualStrings(orig_text, panel.editor.getText());
+
+    // Modify the content in editor
+    panel.editor.moveEnd();
+    try panel.editor.insertBytes(" - Updated");
+    try std.testing.expectEqualStrings("Original Item Content - Updated", panel.editor.getText());
+
+    // Save edit
+    panel.saveEdit();
+
+    // After save:
+    // 1. is_editing must be false
+    try std.testing.expect(!panel.is_editing);
+    // 2. Both old item and new item must exist!
+    try std.testing.expectEqual(@as(usize, 2), panel.items.items.len);
+    // 3. New item is at index 0
+    const new_item = panel.items.items[0];
+    try std.testing.expect(new_item.id != 42);
+    // 4. Old item is at index 1
+    const kept_old_item = panel.items.items[1];
+    try std.testing.expectEqual(@as(u64, 42), kept_old_item.id);
+    // 5. Decoded content for new item has the updated text
+    try std.testing.expectEqualStrings("Original Item Content - Updated", panel.getDecodedContent(new_item));
+    // 6. Decoded content for old item is preserved
+    try std.testing.expectEqualStrings(orig_text, panel.getDecodedContent(kept_old_item));
+    // 7. Selection points to the newly saved item at index 0
+    try std.testing.expectEqual(@as(usize, 0), panel.selected_index);
+}
+
+test "ClipboardPanel cancel editing discards changes" {
+    const allocator = std.testing.allocator;
+    var cfg = config.Config.init(allocator);
+    defer cfg.deinit(allocator);
+
+    const shared = try SharedWorkerContext.create(allocator);
+    defer shared.release();
+
+    var panel = ClipboardPanel{
+        .allocator = allocator,
+        .cfg = cfg,
+        .font = undefined,
+        .items = std.ArrayList(ClipItem).empty,
+        .filtered_indices = std.ArrayList(usize).empty,
+        .input = text_input.TextInput.init(allocator, "Search...", false),
+        .hit_areas = std.ArrayList(ClipHitArea).empty,
+        .shared = shared,
+        .editor = MultiLineEditor.init(allocator),
+    };
+    defer {
+        panel.editor.deinit();
+        panel.hit_areas.deinit(allocator);
+        panel.filtered_indices.deinit(allocator);
+        panel.input.deinit();
+        panel.items.deinit(allocator);
+    }
+
+    var orig_item = ClipItem{ .id = 99 };
+    const orig_text = "Do Not Change";
+    @memcpy(orig_item.preview[0..orig_text.len], orig_text);
+    orig_item.preview_len = orig_text.len;
+    loadItemFirstLine(&orig_item);
+    try panel.items.append(allocator, orig_item);
+    panel.updateFilter();
+
+    panel.startEditing(0);
+    try std.testing.expect(panel.is_editing);
+    try panel.editor.insertBytes("Modified ");
+
+    panel.cancelEdit();
+    try std.testing.expect(!panel.is_editing);
+    try std.testing.expectEqual(@as(usize, 1), panel.items.items.len);
+    try std.testing.expectEqual(@as(u64, 99), panel.items.items[0].id);
+}
+
+test "generateQr uses qrcode.h to produce valid QR matrices" {
+    const qr1 = generateQr("https://example.com");
+    try std.testing.expect(qr1 != null);
+    const code = qr1.?;
+    try std.testing.expect(code.size >= 21);
+    // Position detection patterns must be dark at (0, 0), (code.size - 1, 0), (0, code.size - 1)
+    try std.testing.expect(code.isDark(0, 0));
+    try std.testing.expect(code.isDark(code.size - 1, 0));
+    try std.testing.expect(code.isDark(0, code.size - 1));
+
+    // Test larger content
+    const large_text = "This is a longer test string to test QR code version scaling using qrcode.h header in clipboard panel";
+    const qr2 = generateQr(large_text);
+    try std.testing.expect(qr2 != null);
+    try std.testing.expect(qr2.?.size > code.size);
+
+    var buf_1500: [1500]u8 = @splat('A');
+    const qr3 = generateQr(&buf_1500);
+    try std.testing.expect(qr3 != null);
+
+    var buf_4296: [4296]u8 = @splat('A');
+    const qr4 = generateQr(&buf_4296);
+    try std.testing.expect(qr4 != null);
+    try std.testing.expectEqual(@as(u32, 177), qr4.?.size);
+
+    // Over limit: 4297 characters
+    var buf_4297: [4297]u8 = @splat('A');
+    const qr5 = generateQr(&buf_4297);
+    try std.testing.expect(qr5 == null);
+}
+
+test "MultiLineEditor text wrapping and visual navigation" {
+    const allocator = std.testing.allocator;
+    var editor = MultiLineEditor.init(allocator);
+    defer editor.deinit();
+
+    // With null font, each character is 8px wide. max_w = 80px allows ~10 chars per line.
+    try editor.setText("The quick brown fox jumps over the lazy dog");
+    editor.recomputeVisualLines(null, 16, 80);
+
+    // Should wrap into multiple visual lines
+    try std.testing.expect(editor.visual_lines.items.len > 1);
+    try std.testing.expectEqual(@as(usize, 0), editor.visual_lines.items[0].logical_line);
+    try std.testing.expect(editor.visual_lines.items[0].is_first);
+    try std.testing.expectEqual(@as(usize, 0), editor.visual_lines.items[1].logical_line);
+    try std.testing.expect(!editor.visual_lines.items[1].is_first);
+
+    // Test visual Up and Down navigation
+    editor.cursor_idx = 0;
+    try std.testing.expectEqual(@as(usize, 0), editor.getVisualLineForCursor());
+
+    editor.moveDownWithFont(null, 16);
+    try std.testing.expectEqual(@as(usize, 1), editor.getVisualLineForCursor());
+
+    editor.moveUpWithFont(null, 16);
+    try std.testing.expectEqual(@as(usize, 0), editor.getVisualLineForCursor());
+
+    // Test Home and End on wrapped lines
+    editor.moveEnd(); // moves to visual line end
+    try std.testing.expectEqual(editor.visual_lines.items[0].end, editor.cursor_idx);
+
+    editor.moveHome(); // moves to visual line start
+    try std.testing.expectEqual(@as(usize, 0), editor.cursor_idx);
 }

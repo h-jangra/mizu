@@ -1399,7 +1399,7 @@ fn workerLoop(shared: *SharedWorkerState) void {
         }
 
         // Earphone safety volume monitoring
-        if (now - last_audio_check >= safety_interval_ms) {
+        if (shared.earbud_safety_enabled.load(.acquire) and now - last_audio_check >= safety_interval_ms) {
             last_audio_check = now;
             var sink_buf: [128]u8 = undefined;
             if (getDefaultSinkName(&sink_buf)) |cur_sink| {

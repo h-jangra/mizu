@@ -105,7 +105,7 @@ static void query_pixmap(DBusMessageIter *variant_iter, MizuTrayItem *item) {
                     item->pixmap_w = target_w;
                     item->pixmap_h = target_h;
 
-                    for (uint32_t y = 0; y < target_w; y++) {
+                    for (uint32_t y = 0; y < target_h; y++) {
                         uint32_t src_y = (y * (uint32_t)h) / target_h;
                         for (uint32_t x = 0; x < target_w; x++) {
                             uint32_t src_x = (x * (uint32_t)w) / target_w;

@@ -263,6 +263,10 @@ pub const WaylandApp = struct {
             c.wl_compositor_destroy(comp);
             self.compositor = null;
         }
+        if (self.output) |o| {
+            c.wl_output_destroy(o);
+            self.output = null;
+        }
         if (self.registry) |reg| {
             c.wl_registry_destroy(reg);
             self.registry = null;

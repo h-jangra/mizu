@@ -979,8 +979,7 @@ pub const Launcher = struct {
                     const stripped = stripLeadingPrefix(trimmed, '=');
                     try self.updateCalcResults(stripped);
                 } else if (trimmed[0] == '/') {
-                    const stripped = stripLeadingPrefix(trimmed, '/');
-                    try self.updateFileResults(stripped);
+                    try self.updateFileResults(trimmed);
                 } else if (isAutoCalcExpression(trimmed)) {
                     try self.updateCalcResults(trimmed);
                 } else {
@@ -999,8 +998,7 @@ pub const Launcher = struct {
             const stripped = stripLeadingPrefix(trimmed, '=');
             try self.updateCalcResults(stripped);
         } else if (self.mode == .files) {
-            const stripped = stripLeadingPrefix(trimmed, '/');
-            try self.updateFileResults(stripped);
+            try self.updateFileResults(trimmed);
         }
 
         if (self.items.items.len == 0) {

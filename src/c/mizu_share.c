@@ -876,6 +876,7 @@ static void handle_client(int client_fd) {
                         else { json[j++] = c; }
                     }
                     free(text);
+                    text = NULL;
                 }
                 j += snprintf(json + j, cap - j, "\"}");
 
@@ -893,6 +894,7 @@ static void handle_client(int client_fd) {
                 (void)write(client_fd, json, j);
                 free(json);
             }
+            if (text) free(text);
         } else if (strcmp(clean_path, "/api/image") == 0) {
             stream_clipboard_image(client_fd);
         } else {
@@ -1126,6 +1128,7 @@ int mizu_share_start(void) {
     signal(SIGTERM, sigterm_handler);
     signal(SIGINT, sigterm_handler);
     signal(SIGPIPE, SIG_IGN);
+    signal(SIGCHLD, SIG_IGN);
 
     int devnull = open("/dev/null", O_RDWR);
     if (devnull >= 0) {

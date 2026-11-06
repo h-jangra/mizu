@@ -156,9 +156,26 @@ pub const NotificationStore = struct {
         var cursor: usize = 0;
         while (cursor < content.len) {
             const start_obj = std.mem.indexOfPos(u8, content, cursor, "{") orelse break;
-            const end_obj = std.mem.indexOfPos(u8, content, start_obj, "}") orelse break;
-            const obj_str = content[start_obj .. end_obj + 1];
-            cursor = end_obj + 1;
+            var in_str = false;
+            var esc = false;
+            var end_obj: ?usize = null;
+            var i = start_obj + 1;
+            while (i < content.len) : (i += 1) {
+                const b = content[i];
+                if (esc) {
+                    esc = false;
+                } else if (b == '\\' and in_str) {
+                    esc = true;
+                } else if (b == '"') {
+                    in_str = !in_str;
+                } else if (b == '}' and !in_str) {
+                    end_obj = i;
+                    break;
+                }
+            }
+            const close_idx = end_obj orelse break;
+            const obj_str = content[start_obj .. close_idx + 1];
+            cursor = close_idx + 1;
 
             var notif = Notification{};
             if (extractJsonUint(obj_str, "\"id\":")) |id| notif.id = @intCast(id);
@@ -213,15 +230,19 @@ pub const NotificationStore = struct {
     fn extractJsonString(src: []const u8, key: []const u8, out_buf: []u8) ?usize {
         const pos = std.mem.indexOf(u8, src, key) orelse return null;
         var start = pos + key.len;
-        while (start < src.len and (src[start] == ' ' or src[start] == ':' or src[start] == '"')) : (start += 1) {}
+        while (start < src.len and (src[start] == ' ' or src[start] == ':')) : (start += 1) {}
+        if (start >= src.len or src[start] != '"') return null;
+        start += 1; // skip opening quote
         var end = start;
         while (end < src.len and src[end] != '"') : (end += 1) {
             if (src[end] == '\\' and end + 1 < src.len) end += 1;
         }
-        if (end >= start) {
+        if (end <= src.len) {
             const raw = src[start..end];
             const copy_len = @min(raw.len, out_buf.len);
-            @memcpy(out_buf[0..copy_len], raw[0..copy_len]);
+            if (copy_len > 0) {
+                @memcpy(out_buf[0..copy_len], raw[0..copy_len]);
+            }
             return copy_len;
         }
         return null;
@@ -430,4 +451,25 @@ test "NotificationStore add, persist and reload" {
     try std.testing.expect(store.items.items.len >= 1);
     try std.testing.expectEqualStrings("Hello Mizu", store.items.items[0].getSummary());
     try std.testing.expectEqualStrings("TestApp", store.items.items[0].getAppName());
+
+    var notif_code = Notification{
+        .id = 43,
+        .timestamp = 1700000010,
+        .expire_timeout_ms = 5000,
+    };
+    const code_body = "fn test() { return 1; }";
+    @memcpy(notif_code.body[0..code_body.len], code_body);
+    notif_code.body_len = code_body.len;
+    store.add(notif_code);
+    store.saveHistory();
+
+    var reloaded = NotificationStore{
+        .allocator = allocator,
+        .items = std.ArrayList(Notification).empty,
+    };
+    defer reloaded.deinit();
+    reloaded.initPath();
+    reloaded.loadHistory();
+    try std.testing.expect(reloaded.items.items.len >= 2);
+    try std.testing.expectEqualStrings(code_body, reloaded.items.items[0].getBody());
 }

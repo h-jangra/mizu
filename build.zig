@@ -53,6 +53,7 @@ fn configureMizuModule(
         "src/core/nanosvg_rasterizer.c",
         "src/c/webp_export.c",
         "src/c/mizu_share.c",
+        "src/c/qrcode.c",
     };
 
     for (c_sources) |source| {

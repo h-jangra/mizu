@@ -321,12 +321,13 @@ pub const ImageViewerApp = struct {
     }
 
     pub fn openInAnnotate(self: *ImageViewerApp) void {
+        var tmp_buf: [128]u8 = undefined;
+        const tmp_path = std.fmt.bufPrint(&tmp_buf, "/tmp/mizu_view_edit_{d}.png", .{c.getuid()}) catch "/tmp/mizu_view_edit.png";
         const path_to_open: []const u8 = if (self.file_path) |p| p else blk: {
-            const tmp = "/tmp/mizu_view_edit.png";
             if (self.image) |*img| {
-                _ = img.savePng(tmp) catch {};
+                _ = img.savePng(tmp_path) catch {};
             }
-            break :blk tmp;
+            break :blk tmp_path;
         };
 
         const pid = c.fork();

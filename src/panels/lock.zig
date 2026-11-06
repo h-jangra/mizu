@@ -660,9 +660,14 @@ pub fn authenticatePAM(username: [:0]const u8, password: [:0]const u8) bool {
         if (ret != c.PAM_SUCCESS or pamh == null) continue;
         const auth_ret = c.pam_authenticate(pamh.?, 0);
         if (auth_ret == c.PAM_SUCCESS) {
-            _ = c.pam_setcred(pamh.?, c.PAM_REFRESH_CRED);
-            _ = c.pam_end(pamh.?, c.PAM_SUCCESS);
-            return true;
+            const acct_ret = c.pam_acct_mgmt(pamh.?, c.PAM_SILENT);
+            if (acct_ret == c.PAM_SUCCESS) {
+                _ = c.pam_setcred(pamh.?, c.PAM_REFRESH_CRED);
+                _ = c.pam_end(pamh.?, c.PAM_SUCCESS);
+                return true;
+            }
+            _ = c.pam_end(pamh.?, acct_ret);
+            continue;
         }
         _ = c.pam_end(pamh.?, auth_ret);
     }
