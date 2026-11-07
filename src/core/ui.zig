@@ -466,15 +466,15 @@ pub const Ui = struct {
                 const data = cmd.renderData.border;
                 const col = self.applyOverlay(rectFromClay(data.color));
                 if (col.a == 0) return;
-                const radius: u32 = @intFromFloat(@max(
-                    @max(data.cornerRadius.topLeft, data.cornerRadius.topRight),
-                    @max(data.cornerRadius.bottomLeft, data.cornerRadius.bottomRight),
-                ));
+                const r_tl: u32 = @intFromFloat(@max(0, data.cornerRadius.topLeft));
+                const r_tr: u32 = @intFromFloat(@max(0, data.cornerRadius.topRight));
+                const r_br: u32 = @intFromFloat(@max(0, data.cornerRadius.bottomRight));
+                const r_bl: u32 = @intFromFloat(@max(0, data.cornerRadius.bottomLeft));
                 const w = data.width;
                 if (w.left == w.right and w.top == w.bottom and w.left == w.top) {
-                    target.drawRoundedBorder(bx, by, bw, bh, radius, w.left, col);
+                    target.drawRoundedBorderCorners(bx, by, bw, bh, r_tl, r_tr, r_br, r_bl, w.left, col);
                 } else {
-                    drawBorderSides(target.*, bounds, radius, w, col);
+                    drawBorderSides(target.*, bounds, @max(@max(r_tl, r_tr), @max(r_br, r_bl)), w, col);
                 }
             },
             c.CLAY_RENDER_COMMAND_TYPE_TEXT => {

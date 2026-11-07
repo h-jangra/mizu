@@ -51,6 +51,7 @@ pub const ClipItem = struct {
     first_line: [160]u8 = @splat(0),
     first_line_len: usize = 0,
     first_line_loaded: bool = false,
+    pinned: bool = false,
 
     // Image-specific fields
     image_width: u32 = 0,
@@ -470,6 +471,11 @@ pub const SharedWorkerContext = struct {
 var session_cached_items: [500]ClipItem = @splat(ClipItem{ .id = 0 });
 var session_cached_count: usize = 0;
 var session_has_cache: bool = false;
+
+// Process-level registry of pinned item previews (survives reopen)
+var session_pinned_previews: [50][160]u8 = @splat(@splat(0));
+var session_pinned_preview_lens: [50]usize = @splat(0);
+var session_pinned_count: usize = 0;
 
 pub const VisualLine = struct {
     start: usize,
@@ -1024,6 +1030,72 @@ pub const MultiLineEditor = struct {
         self.ensureCursorVisible(20);
     }
 
+    pub fn deleteWordBackward(self: *MultiLineEditor) void {
+        if (self.removeSelection()) {
+            self.caret_visible = true;
+            self.ensureCursorVisible(20);
+            return;
+        }
+        if (self.cursor_idx == 0) return;
+        var start = self.cursor_idx;
+        while (start > 0 and self.text.items[start - 1] == ' ') start -= 1;
+        while (start > 0 and self.text.items[start - 1] != ' ' and self.text.items[start - 1] != '\n' and self.text.items[start - 1] != '\r' and self.text.items[start - 1] != '\t') start -= 1;
+        if (start >= self.cursor_idx) return;
+        const count = self.cursor_idx - start;
+        var i = start;
+        while (i + count < self.text.items.len) : (i += 1) {
+            self.text.items[i] = self.text.items[i + count];
+        }
+        self.text.shrinkRetainingCapacity(self.text.items.len - count);
+        self.cursor_idx = start;
+        self.caret_visible = true;
+        self.ensureCursorVisible(20);
+    }
+
+    pub fn deleteToLineStart(self: *MultiLineEditor) void {
+        if (self.removeSelection()) {
+            self.caret_visible = true;
+            self.ensureCursorVisible(20);
+            return;
+        }
+        if (self.cursor_idx == 0) return;
+        var line_start: usize = 0;
+        var i: usize = 0;
+        while (i < self.cursor_idx) : (i += 1) {
+            if (self.text.items[i] == '\n' or self.text.items[i] == '\r') line_start = i + 1;
+        }
+        if (line_start >= self.cursor_idx) return;
+        const count = self.cursor_idx - line_start;
+        var j = line_start;
+        while (j + count < self.text.items.len) : (j += 1) {
+            self.text.items[j] = self.text.items[j + count];
+        }
+        self.text.shrinkRetainingCapacity(self.text.items.len - count);
+        self.cursor_idx = line_start;
+        self.caret_visible = true;
+        self.ensureCursorVisible(20);
+    }
+
+    pub fn deleteToEndOfLine(self: *MultiLineEditor) void {
+        if (self.removeSelection()) {
+            self.caret_visible = true;
+            self.ensureCursorVisible(20);
+            return;
+        }
+        if (self.cursor_idx >= self.text.items.len) return;
+        var line_end = self.cursor_idx;
+        while (line_end < self.text.items.len and self.text.items[line_end] != '\n' and self.text.items[line_end] != '\r') : (line_end += 1) {}
+        if (line_end <= self.cursor_idx) return;
+        const count = line_end - self.cursor_idx;
+        var j = self.cursor_idx;
+        while (j + count < self.text.items.len) : (j += 1) {
+            self.text.items[j] = self.text.items[j + count];
+        }
+        self.text.shrinkRetainingCapacity(self.text.items.len - count);
+        self.caret_visible = true;
+        self.ensureCursorVisible(20);
+    }
+
     pub fn copyToClipboard(self: *const MultiLineEditor) void {
         const to_copy = if (self.getSelectionRange()) |range|
             self.text.items[range.start..range.end]
@@ -1149,6 +1221,10 @@ pub const ClipAction = union(enum) {
     save_edit,
     cancel_edit,
     editor_click,
+    pin_toggle: usize,
+    confirm_cancel,
+    confirm_ok,
+    confirm_open,
 };
 
 const ClipInputDraw = struct {
@@ -1219,6 +1295,8 @@ pub const ClipboardPanel = struct {
     show_share_view: bool = false,
 
     is_editing: bool = false,
+    confirm_clear: bool = false,
+    confirm_clear_rect: renderer.Rect = .{ .x = 0, .y = 0, .w = 0, .h = 0 },
     editing_original_id: u64 = 0,
     editor: MultiLineEditor = .{ .allocator = std.heap.page_allocator, .text = std.ArrayList(u8).empty },
     editor_card_rect: renderer.Rect = .{ .x = 0, .y = 0, .w = 0, .h = 0 },
@@ -1341,12 +1419,20 @@ pub const ClipboardPanel = struct {
             self.items.clearRetainingCapacity();
             self.image_cache.clear();
             for (self.shared.history_items[0..count]) |item| {
-                self.items.append(self.allocator, item) catch break;
+                var it = item;
+                // Restore pinned state for items matching the pinned registry.
+                for (0..session_pinned_count) |pi| {
+                    const plen = session_pinned_preview_lens[pi];
+                    if (plen > 0 and plen == it.preview_len and std.mem.eql(u8, session_pinned_previews[pi][0..plen], it.preview[0..plen])) {
+                        it.pinned = true;
+                    }
+                }
+                self.items.append(self.allocator, it) catch break;
             }
             self.history_loading = false;
 
             session_cached_count = @min(count, session_cached_items.len);
-            @memcpy(session_cached_items[0..session_cached_count], self.shared.history_items[0..session_cached_count]);
+            @memcpy(session_cached_items[0..session_cached_count], self.items.items[0..session_cached_count]);
             session_has_cache = true;
             self.shared.history_lock.unlock();
 
@@ -1777,12 +1863,75 @@ pub const ClipboardPanel = struct {
         self.updateFilter();
     }
 
+    fn pinToggleItem(self: *ClipboardPanel, filter_idx: usize, do_reorder: bool) void {
+        if (filter_idx >= self.filtered_indices.items.len) return;
+        const actual_idx = self.filtered_indices.items[filter_idx];
+        self.items.items[actual_idx].pinned = !self.items.items[actual_idx].pinned;
+        if (do_reorder) {
+            // Move pinned items to the front while preserving relative order.
+            var write: usize = 0;
+            var i: usize = 0;
+            while (i < self.items.items.len) : (i += 1) {
+                if (self.items.items[i].pinned) {
+                    if (i != write) {
+                        const tmp = self.items.items[i];
+                        var j = i;
+                        while (j > write) : (j -= 1) {
+                            self.items.items[j] = self.items.items[j - 1];
+                        }
+                        self.items.items[write] = tmp;
+                    }
+                    write += 1;
+                }
+            }
+        }
+        self.updateFilter();
+    }
+
     pub fn clearAll(self: *ClipboardPanel) void {
         self.is_editing = false;
+        // Record pinned items and re-store them to cliphist so they survive reopen.
+        session_pinned_count = 0;
+        for (self.items.items) |item| {
+            if (!item.pinned) continue;
+            if (session_pinned_count >= session_pinned_previews.len) break;
+            const plen = item.preview_len;
+            const copy_len = @min(plen, 160);
+            @memcpy(session_pinned_previews[session_pinned_count][0..copy_len], item.preview[0..copy_len]);
+            session_pinned_preview_lens[session_pinned_count] = copy_len;
+            session_pinned_count += 1;
+        }
         _ = c.system("export PATH=\"$PATH:/usr/sbin:/sbin:/usr/local/bin:/usr/bin:$HOME/.local/bin\"; cliphist wipe 2>/dev/null; wl-copy --clear 2>/dev/null; wl-copy --primary --clear 2>/dev/null");
         sys_status.spawnCmd("export PATH=\"$PATH:/usr/sbin:/sbin:/usr/local/bin:/usr/bin:$HOME/.local/bin\"; cliphist wipe; wl-copy --clear 2>/dev/null; wl-copy --primary --clear 2>/dev/null");
-        for (self.items.items) |*item| item.deinit(self.allocator);
-        self.items.clearRetainingCapacity();
+        // Re-store pinned items after wipe
+        for (self.items.items) |item| {
+            if (!item.pinned) continue;
+            const content = self.getDecodedContent(item);
+            if (content.len > 0) {
+                const ch_pipe = c.popen("export PATH=\"$PATH:/usr/sbin:/sbin:/usr/local/bin:/usr/bin:$HOME/.local/bin\"; cliphist store 2>/dev/null", "w");
+                if (ch_pipe) |pipe| {
+                    _ = c.fwrite(content.ptr, 1, content.len, pipe);
+                    _ = c.pclose(pipe);
+                }
+            }
+        }
+        // Remove non-pinned items only, keep pinned ones
+        var to_remove = std.ArrayList(usize).empty;
+        defer to_remove.deinit(self.allocator);
+        to_remove.ensureTotalCapacity(self.allocator, self.items.items.len) catch {};
+        for (self.items.items, 0..) |*item, idx| {
+            if (!item.pinned) {
+                to_remove.append(self.allocator, idx) catch {};
+            }
+        }
+        // Deinit and remove in reverse to keep indices valid
+        var ri: usize = to_remove.items.len;
+        while (ri > 0) {
+            ri -= 1;
+            const r_idx = to_remove.items[ri];
+            self.items.items[r_idx].deinit(self.allocator);
+            _ = self.items.orderedRemove(r_idx);
+        }
         self.decode_cache.clear();
         self.image_cache.clear();
         session_cached_count = 0;
@@ -2053,6 +2202,19 @@ pub const ClipboardPanel = struct {
                         .cancel_edit => {
                             self.cancelEdit();
                         },
+                        .confirm_cancel => {
+                            self.confirm_clear = false;
+                        },
+                        .confirm_ok => {
+                            self.clearAll();
+                            self.confirm_clear = false;
+                        },
+                        .confirm_open => {
+                            self.confirm_clear = true;
+                        },
+                        .pin_toggle => |filter_idx| {
+                            self.pinToggleItem(filter_idx, true);
+                        },
                         .editor_click => {
                             self.handleEditorClick(x, y, self.ui_scale);
                         },
@@ -2159,6 +2321,38 @@ pub const ClipboardPanel = struct {
                     },
                     c.XKB_KEY_v, c.XKB_KEY_V => {
                         self.editor.pasteFromClipboard();
+                        return true;
+                    },
+                    c.XKB_KEY_w, c.XKB_KEY_W => {
+                        self.editor.deleteWordBackward();
+                        return true;
+                    },
+                    c.XKB_KEY_u, c.XKB_KEY_U => {
+                        self.editor.deleteToLineStart();
+                        return true;
+                    },
+                    c.XKB_KEY_k, c.XKB_KEY_K => {
+                        self.editor.deleteToEndOfLine();
+                        return true;
+                    },
+                    c.XKB_KEY_h, c.XKB_KEY_H => {
+                        self.editor.deleteBackward() catch {};
+                        return true;
+                    },
+                    c.XKB_KEY_d, c.XKB_KEY_D => {
+                        self.editor.deleteForward() catch {};
+                        return true;
+                    },
+                    c.XKB_KEY_b, c.XKB_KEY_B => {
+                        self.editor.moveLeft();
+                        return true;
+                    },
+                    c.XKB_KEY_f, c.XKB_KEY_F => {
+                        self.editor.moveRight();
+                        return true;
+                    },
+                    c.XKB_KEY_e, c.XKB_KEY_E => {
+                        self.editor.moveEnd();
                         return true;
                     },
                     else => {},
@@ -2422,21 +2616,51 @@ pub const ClipboardPanel = struct {
         });
         ui.close();
 
-        const clear_hov = ui.hovered("clip-clear", 0);
-        _ = ui.open(.{
-            .id = "clip-clear",
-            .width = .{ .fixed = @floatFromInt(64 * scale) },
-            .height = .{ .fixed = @floatFromInt(28 * scale) },
-            .bg = if (clear_hov) self.cfg.theme.elevated else null,
-            .radius = ui.f(6),
-            .align_x = .center,
-            .align_y = .center,
-        });
-        ui.text("Clear", .{
-            .size = button_sz,
-            .color = if (clear_hov) self.cfg.theme.error_color else self.cfg.theme.text_muted,
-        });
-        ui.close();
+        ui.spacerSized(.{ .grow = .{} }, .{ .fixed = 0 });
+
+        if (self.confirm_clear) {
+            const cancel_hov = ui.hovered("confirm-cancel", 0);
+            _ = ui.open(.{
+                .id = "confirm-cancel",
+                .width = .{ .fixed = @floatFromInt(30 * scale) },
+                .height = .{ .fixed = @floatFromInt(28 * scale) },
+                .bg = if (cancel_hov) self.cfg.theme.elevated else null,
+                .radius = ui.f(6),
+                .align_x = .center,
+                .align_y = .center,
+            });
+            ui.icon("x", 14 * scale, if (cancel_hov) self.cfg.theme.error_color else self.cfg.theme.text_muted, 0);
+            ui.close();
+
+            const ok_hov = ui.hovered("confirm-ok", 0);
+            _ = ui.open(.{
+                .id = "confirm-ok",
+                .width = .{ .fixed = @floatFromInt(30 * scale) },
+                .height = .{ .fixed = @floatFromInt(28 * scale) },
+                .bg = if (ok_hov) Color.init(42, self.cfg.theme.accent.r, self.cfg.theme.accent.g, self.cfg.theme.accent.b) else null,
+                .radius = ui.f(6),
+                .align_x = .center,
+                .align_y = .center,
+            });
+            ui.icon("check", 14 * scale, if (ok_hov) self.cfg.theme.accent else self.cfg.theme.text_muted, 0);
+            ui.close();
+        } else {
+            const clear_hov = ui.hovered("clip-clear", 0);
+            _ = ui.open(.{
+                .id = "clip-clear",
+                .width = .{ .fixed = @floatFromInt(66 * scale) },
+                .height = .{ .fixed = @floatFromInt(28 * scale) },
+                .bg = if (clear_hov) self.cfg.theme.elevated else null,
+                .radius = ui.f(6),
+                .align_x = .center,
+                .align_y = .center,
+            });
+            ui.text("Clear", .{
+                .size = button_sz,
+                .color = if (clear_hov) self.cfg.theme.error_color else self.cfg.theme.text_muted,
+            });
+            ui.close();
+        }
         ui.close(); // header
 
         // Search field.
@@ -2532,28 +2756,28 @@ pub const ClipboardPanel = struct {
                     .bg = row_bg,
                     .radius_top = if (row_first) ui.f(10) else 0,
                     .radius_bottom = if (row_last) ui.f(10) else 0,
+                    .border = if (item.pinned) ui.su(1) else 0,
+                    .border_color = if (item.pinned) self.cfg.theme.accent else self.cfg.theme.border,
                     .align_y = .center,
                 });
 
-                // Dedicated icon slot on left
-                const edit_hov = ui.hovered("clip-edit-btn", @intCast(r));
-                _ = ui.open(.{
-                    .id = "clip-edit-btn",
-                    .index = @intCast(r),
-                    .width = .{ .fixed = @floatFromInt(28 * scale) },
-                    .height = .{ .fixed = @floatFromInt(28 * scale) },
-                    .direction = .column,
-                    .bg = if (edit_hov and item.clip_type == .text) Color.init(40, self.cfg.theme.accent.r, self.cfg.theme.accent.g, self.cfg.theme.accent.b) else null,
-                    .radius = ui.f(6),
-                    .align_x = .center,
-                    .align_y = .center,
-                });
-                if (item.clip_type == .image) {
-                    ui.icon("image", 18 * scale, if (is_selected) self.cfg.theme.accent else self.cfg.theme.text_muted, 0);
-                } else {
-                    ui.icon("edit", 16 * scale, if (edit_hov) self.cfg.theme.accent else (if (is_selected) self.cfg.theme.accent else self.cfg.theme.text_muted), 0);
+                // Pin icon (only on hover, with bg)
+                const pin_hov = ui.hovered("clip-pin-btn", @intCast(r));
+                if (card_hov or item.pinned) {
+                    _ = ui.open(.{
+                        .id = "clip-pin-btn",
+                        .index = @intCast(r),
+                        .width = .{ .fixed = @floatFromInt(28 * scale) },
+                        .height = .{ .fixed = @floatFromInt(28 * scale) },
+                        .direction = .column,
+                        .bg = if (pin_hov or item.pinned) Color.init(40, self.cfg.theme.accent.r, self.cfg.theme.accent.g, self.cfg.theme.accent.b) else null,
+                        .radius = ui.f(6),
+                        .align_x = .center,
+                        .align_y = .center,
+                    });
+                    ui.icon("pin", 16 * scale, if (pin_hov) self.cfg.theme.accent else (if (item.pinned) self.cfg.theme.accent else self.cfg.theme.text_muted), 0);
+                    ui.close();
                 }
-                ui.close();
 
                 const first_line = if (item.first_line_len > 0) item.first_line[0..item.first_line_len] else item.preview[0..item.preview_len];
                 var clean_buf: [160]u8 = undefined;
@@ -2591,19 +2815,22 @@ pub const ClipboardPanel = struct {
                 });
                 ui.close();
 
+                // Trash icon (only on hover) on right
                 const del_hov = ui.hovered("clip-del", @intCast(r));
-                _ = ui.open(.{
-                    .id = "clip-del",
-                    .index = @intCast(r),
-                    .width = .{ .fixed = @floatFromInt(30 * scale) },
-                    .height = .{ .fixed = @floatFromInt(30 * scale) },
-                    .bg = if (del_hov) Color.init(45, self.cfg.theme.error_color.r, self.cfg.theme.error_color.g, self.cfg.theme.error_color.b) else null,
-                    .radius = ui.f(6),
-                    .align_x = .center,
-                    .align_y = .center,
-                });
-                ui.icon("trash", 15 * scale, if (del_hov) self.cfg.theme.error_color else Color.init(90, self.cfg.theme.text_muted.r, self.cfg.theme.text_muted.g, self.cfg.theme.text_muted.b), 0);
-                ui.close();
+                if (card_hov or del_hov) {
+                    _ = ui.open(.{
+                        .id = "clip-del",
+                        .index = @intCast(r),
+                        .width = .{ .fixed = @floatFromInt(30 * scale) },
+                        .height = .{ .fixed = @floatFromInt(30 * scale) },
+                        .bg = if (del_hov) Color.init(45, self.cfg.theme.error_color.r, self.cfg.theme.error_color.g, self.cfg.theme.error_color.b) else null,
+                        .radius = ui.f(6),
+                        .align_x = .center,
+                        .align_y = .center,
+                    });
+                    ui.icon("trash", 15 * scale, if (del_hov) self.cfg.theme.error_color else Color.init(90, self.cfg.theme.text_muted.r, self.cfg.theme.text_muted.g, self.cfg.theme.text_muted.b), 0);
+                    ui.close();
+                }
 
                 ui.close(); // card
             }
@@ -2634,10 +2861,16 @@ pub const ClipboardPanel = struct {
             };
         }
         if (ui.rectOf("clip-clear", 0)) |rect| {
-            try self.appendHitRect(rect, iscale, .clear_all);
+            try self.appendHitRect(rect, iscale, .confirm_open);
         }
         if (ui.rectOf("clip-share", 0)) |rect| {
             try self.appendHitRect(rect, iscale, .toggle_share);
+        }
+        if (ui.rectOf("confirm-cancel", 0)) |rect| {
+            try self.appendHitRect(rect, iscale, .confirm_cancel);
+        }
+        if (ui.rectOf("confirm-ok", 0)) |rect| {
+            try self.appendHitRect(rect, iscale, .confirm_ok);
         }
         if (total_filtered > 0) {
             const visible_rows: usize = 10;
@@ -2654,6 +2887,9 @@ pub const ClipboardPanel = struct {
                     if (item.clip_type == .text) {
                         try self.appendHitRect(rect, iscale, .{ .start_edit = filter_idx });
                     }
+                }
+                if (ui.rectOf("clip-pin-btn", @intCast(r))) |rect| {
+                    try self.appendHitRect(rect, iscale, .{ .pin_toggle = filter_idx });
                 }
                 if (ui.rectOf("clip-card", @intCast(r))) |rect| {
                     try self.appendHitRect(rect, iscale, .{ .click_card = filter_idx });
@@ -2889,20 +3125,10 @@ pub const ClipboardPanel = struct {
         target.fillSquircle(save_x, save_y, save_w, save_h, 6 * scale, save_bg);
         target.drawSquircleBorder(save_x, save_y, save_w, save_h, 6 * scale, 1, self.cfg.theme.accent);
 
-        icons.drawSvgIcon(
-            target,
-            self.allocator,
-            "check",
-            13 * scale,
-            scale,
-            save_x + 14 * iscale,
-            save_y + 13 * iscale,
-            if (save_hov) self.cfg.theme.accent_fg else self.cfg.theme.accent,
-        );
         target.drawTextWithSize(
             &self.font,
             "Save",
-            save_x + 26 * iscale,
+            save_x + 14 * iscale,
             save_y + 18 * iscale,
             button_sz,
             if (save_hov) self.cfg.theme.accent_fg else self.cfg.theme.accent,
@@ -3108,6 +3334,41 @@ pub const ClipboardPanel = struct {
             .h = 28,
             .action = .toggle_qr,
         });
+
+        // Edit icon button (2nd column right of QR code) - only visible when not editing
+        if (!self.is_editing) {
+            const edit_btn_x = qr_btn_x + 32 * iscale;
+            const edit_btn_y = qr_btn_y;
+            const edit_btn_w: u32 = 28 * scale;
+            const edit_btn_h: u32 = 28 * scale;
+            const edit_icon_sz = 18 * scale;
+
+            // Only show edit icon button if item is text (not image)
+            if (item.clip_type == .text) {
+                const edit_hov = self.isAreaHovered(@divTrunc(edit_btn_x, iscale), @divTrunc(edit_btn_y, iscale), edit_btn_w, edit_btn_h);
+                if (edit_hov) {
+                    target.fillSquircle(edit_btn_x, edit_btn_y, edit_btn_w, edit_btn_h, 6 * scale, self.cfg.theme.surface);
+                    target.drawSquircleBorder(edit_btn_x, edit_btn_y, edit_btn_w, edit_btn_h, 6 * scale, 1, self.cfg.theme.border);
+                }
+                icons.drawSvgIcon(
+                    target,
+                    self.allocator,
+                    "edit",
+                    edit_icon_sz,
+                    scale,
+                    edit_btn_x + @as(i32, @intCast(edit_btn_w / 2)),
+                    edit_btn_y + @as(i32, @intCast(edit_btn_h / 2)),
+                    if (edit_hov) self.cfg.theme.accent else self.cfg.theme.text_muted,
+                );
+                try self.hit_areas.append(self.allocator, .{
+                    .x = @divTrunc(edit_btn_x, iscale),
+                    .y = @divTrunc(edit_btn_y, iscale),
+                    .w = 28,
+                    .h = 28,
+                    .action = .{ .start_edit = self.selected_index },
+                });
+            }
+        }
 
         if (self.show_qr) {
             const content = self.getDecodedContent(item);

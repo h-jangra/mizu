@@ -1794,6 +1794,70 @@ pub const Renderer = struct {
         self.drawRoundedBorder(x, y, w, h, radius, border_w, color);
     }
 
+    pub fn drawRoundedBorderCorners(self: Renderer, x: i32, y: i32, w: u32, h: u32, r_tl: u32, r_tr: u32, r_br: u32, r_bl: u32, border_w: u32, color: Color) void {
+        if (color.a == 0 or w == 0 or h == 0 or border_w == 0) return;
+        const max_r = @min(w / 2, h / 2);
+        const rtl = @min(r_tl, max_r);
+        const rtr = @min(r_tr, max_r);
+        const rbr = @min(r_br, max_r);
+        const rbl = @min(r_bl, max_r);
+        const bw = border_w;
+        const bw_i = @as(i32, @intCast(bw));
+        const w_i = @as(i32, @intCast(w));
+        const h_i = @as(i32, @intCast(h));
+
+        // Straight edges between corners.
+        const top_l = x + @as(i32, @intCast(rtl));
+        const top_r = x + w_i - @as(i32, @intCast(rtr));
+        if (top_r > top_l) self.fillRect(top_l, y, @intCast(top_r - top_l), bw, color);
+        const bot_l = x + @as(i32, @intCast(rbl));
+        const bot_r = x + w_i - @as(i32, @intCast(rbr));
+        if (bot_r > bot_l) self.fillRect(bot_l, y + h_i - bw_i, @intCast(bot_r - bot_l), bw, color);
+        const left_t = y + @as(i32, @intCast(rtl));
+        const left_b = y + h_i - @as(i32, @intCast(rbl));
+        if (left_b > left_t) self.fillRect(x, left_t, bw, @intCast(left_b - left_t), color);
+        const right_t = y + @as(i32, @intCast(rtr));
+        const right_b = y + h_i - @as(i32, @intCast(rbr));
+        if (right_b > right_t) self.fillRect(x + w_i - bw_i, right_t, bw, @intCast(right_b - right_t), color);
+
+        const corner_list = [_]struct { r: u32, cx: i32, cy: i32, sx: i32, sy: i32 }{
+            .{ .r = rtl, .cx = x + @as(i32, @intCast(rtl)), .cy = y + @as(i32, @intCast(rtl)), .sx = x, .sy = y },
+            .{ .r = rtr, .cx = x + w_i - @as(i32, @intCast(rtr)), .cy = y + @as(i32, @intCast(rtr)), .sx = x + w_i - @as(i32, @intCast(rtr)), .sy = y },
+            .{ .r = rbr, .cx = x + w_i - @as(i32, @intCast(rbr)), .cy = y + h_i - @as(i32, @intCast(rbr)), .sx = x + w_i - @as(i32, @intCast(rbr)), .sy = y + h_i - @as(i32, @intCast(rbr)) },
+            .{ .r = rbl, .cx = x + @as(i32, @intCast(rbl)), .cy = y + h_i - @as(i32, @intCast(rbl)), .sx = x, .sy = y + h_i - @as(i32, @intCast(rbl)) },
+        };
+
+        for (corner_list) |cinfo| {
+            if (cinfo.r == 0) continue;
+            const r = cinfo.r;
+            const r_f = @as(f32, @floatFromInt(r));
+            const r_inner = if (r > bw) r - bw else 0;
+            const r_inner_f = @as(f32, @floatFromInt(r_inner));
+            const end_y = cinfo.sy + @as(i32, @intCast(r));
+            const end_x = cinfo.sx + @as(i32, @intCast(r));
+            var cy = cinfo.sy;
+            while (cy < end_y) : (cy += 1) {
+                const py = @as(f32, @floatFromInt(cy)) + 0.5;
+                const dy = py - @as(f32, @floatFromInt(cinfo.cy));
+                const dy_sq = dy * dy;
+                var cx = cinfo.sx;
+                while (cx < end_x) : (cx += 1) {
+                    const px = @as(f32, @floatFromInt(cx)) + 0.5;
+                    const dx = px - @as(f32, @floatFromInt(cinfo.cx));
+                    const dist = @sqrt(dx * dx + dy_sq);
+                    const d_out = dist - r_f;
+                    const cov_out = std.math.clamp(0.5 - d_out, 0.0, 1.0);
+                    const d_in = r_inner_f - dist;
+                    const cov_in = if (r_inner > 0) std.math.clamp(0.5 - d_in, 0.0, 1.0) else 1.0;
+                    const cov = cov_out * cov_in;
+                    if (cov > 0.001) {
+                        self.setPixelCoverage(cx, cy, color, @as(u8, @intFromFloat(cov * 255.0)));
+                    }
+                }
+            }
+        }
+    }
+
     pub fn fillCircle(self: Renderer, cx: f64, cy: f64, radius: f64, color: Color) void {
         if (color.a == 0 or radius <= 0) return;
 
